@@ -9,6 +9,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/mitchellh/copystructure v1.2.0
+	github.com/openshift-hyperfleet/hyperfleet-applier v0.0.0-20260827133207-94b7a4d56697
 	github.com/openshift-hyperfleet/hyperfleet-broker v1.1.2-0.20260805201321-4ebbef72d0d2
 	github.com/openshift-hyperfleet/hyperfleet-logger v0.0.0-20260811173525-c9f9e282d029
 	github.com/openshift-online/maestro v0.0.0-20260202062555-48b47506a254
@@ -181,7 +182,7 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	k8s.io/api v0.37.0 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
-	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
+	k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098 // indirect
 	k8s.io/utils v0.0.0-20260707023825-cf1189d6abe3 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
