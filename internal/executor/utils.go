@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,8 +15,8 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 )
 
 // ToConditionDefs converts configloader.Condition slice to criteria.ConditionDef slice.
@@ -39,7 +40,6 @@ func ExecuteLogAction(
 	ctx context.Context,
 	logAction *configloader.LogAction,
 	execCtx *ExecutionContext,
-	log logger.Logger,
 ) {
 	if logAction == nil || logAction.Message == "" {
 		return
@@ -48,30 +48,16 @@ func ExecuteLogAction(
 	// Render the message template
 	message, err := utils.RenderTemplate(logAction.Message, execCtx.Params)
 	if err != nil {
-		errCtx := logger.WithErrorField(ctx, err)
-		log.Errorf(errCtx, "failed to render log message")
+		slog.ErrorContext(ctx, "failed to render log message", "error", err)
 		return
 	}
 
-	// Log at the specified level (default: info)
-	level := strings.ToLower(logAction.Level)
-	if level == "" {
-		level = "info"
+	// Log at the specified level; unknown levels fall back to info.
+	level, err := hfl.ParseLevel(logAction.Level)
+	if err != nil {
+		slog.WarnContext(ctx, "invalid log level", "error", err)
 	}
-
-	switch level {
-	case "debug":
-		log.Debugf(ctx, "[config] %s", message)
-	case "info":
-		log.Infof(ctx, "[config] %s", message)
-	case "warning", "warn":
-		log.Warnf(ctx, "[config] %s", message)
-	case "error":
-		log.Errorf(ctx, "[config] %s", message)
-	default:
-		log.Infof(ctx, "[config] %s", message)
-	}
-
+	slog.Log(ctx, level, "[config] "+message)
 }
 
 // ExecuteAPICall executes an API call with the given configuration and returns the response and rendered URL
@@ -83,7 +69,6 @@ func ExecuteAPICall(
 	apiCall *configloader.APICall,
 	execCtx *ExecutionContext,
 	apiClient hyperfleetapi.Client,
-	log logger.Logger,
 ) (*hyperfleetapi.Response, string, error) {
 	if apiCall == nil {
 		return nil, "", fmt.Errorf("apiCall is nil")
@@ -98,7 +83,7 @@ func ExecuteAPICall(
 	// Then build the final URL - this handles absolute URLs vs relative paths
 	url := buildHyperfleetAPICallURL(renderedURL, execCtx)
 
-	log.Infof(ctx, "Making API call: %s %s", apiCall.Method, url)
+	slog.InfoContext(ctx, "making api call", "method", apiCall.Method)
 
 	// Build request options
 	opts := make([]hyperfleetapi.RequestOption, 0)
@@ -122,7 +107,8 @@ func ExecuteAPICall(
 		if timeoutErr == nil {
 			opts = append(opts, hyperfleetapi.WithRequestTimeout(timeout))
 		} else {
-			log.Warnf(ctx, "failed to parse timeout '%s': %v, using default timeout", apiCall.Timeout, timeoutErr)
+			slog.WarnContext(ctx, "failed to parse timeout, using default timeout",
+				"timeout", apiCall.Timeout, "error", timeoutErr)
 		}
 	}
 
@@ -148,7 +134,6 @@ func ExecuteAPICall(
 				return nil, url, fmt.Errorf("failed to render body template: %w", err)
 			}
 		}
-		log.Debugf(ctx, "API call payload: %s %s payload=%s", apiCall.Method, url, string(body))
 		resp, err = apiClient.Post(ctx, url, body, opts...)
 		// Log error message on failure for debugging purposes
 		if err != nil || (resp != nil && !resp.IsSuccess()) {
@@ -156,10 +141,9 @@ func ExecuteAPICall(
 			if err != nil {
 				logErr = err
 			} else {
-				logErr = fmt.Errorf("POST %s returned non-success status: %d", url, resp.StatusCode)
+				logErr = fmt.Errorf("POST returned non-success status: %d", resp.StatusCode)
 			}
-			errCtx := logger.WithErrorField(ctx, logErr)
-			log.Error(errCtx, "POST Request failed")
+			slog.ErrorContext(ctx, "post request failed", "error", logErr)
 		}
 	case http.MethodPut:
 		body := []byte(apiCall.Body)
@@ -169,7 +153,6 @@ func ExecuteAPICall(
 				return nil, "", fmt.Errorf("failed to render body template: %w", err)
 			}
 		}
-		log.Debugf(ctx, "API call payload: %s %s payload=%s", apiCall.Method, url, string(body))
 		resp, err = apiClient.Put(ctx, url, body, opts...)
 		// Log error message on failure for debugging purposes
 		if err != nil || (resp != nil && !resp.IsSuccess()) {
@@ -177,10 +160,9 @@ func ExecuteAPICall(
 			if err != nil {
 				logErr = err
 			} else {
-				logErr = fmt.Errorf("PUT %s returned non-success status: %d", url, resp.StatusCode)
+				logErr = fmt.Errorf("PUT returned non-success status: %d", resp.StatusCode)
 			}
-			errCtx := logger.WithErrorField(ctx, logErr)
-			log.Error(errCtx, "PUT Request failed")
+			slog.ErrorContext(ctx, "put request failed", "error", logErr)
 		}
 	case http.MethodPatch:
 		body := []byte(apiCall.Body)
@@ -190,7 +172,6 @@ func ExecuteAPICall(
 				return nil, "", fmt.Errorf("failed to render body template: %w", err)
 			}
 		}
-		log.Debugf(ctx, "API call payload: %s %s payload=%s", apiCall.Method, url, string(body))
 		resp, err = apiClient.Patch(ctx, url, body, opts...)
 	case http.MethodDelete:
 		resp, err = apiClient.Delete(ctx, url, opts...)
@@ -202,7 +183,7 @@ func ExecuteAPICall(
 		// Return response AND error - response may contain useful details even on error
 		// (e.g., HTTP status code, response body)
 		if resp != nil {
-			log.Warnf(ctx, "API call failed: %d %s, error: %v", resp.StatusCode, resp.Status, err)
+			slog.WarnContext(ctx, "api call failed", "status_code", resp.StatusCode, "status", resp.Status, "error", err)
 			// Wrap as APIError with full context
 			apiErr := apierrors.NewAPIError(
 				apiCall.Method,
@@ -216,7 +197,7 @@ func ExecuteAPICall(
 			)
 			return resp, url, apiErr
 		} else {
-			log.Warnf(ctx, "API call failed: %v", err)
+			slog.WarnContext(ctx, "api call failed", "error", err)
 			// No response - create APIError with minimal context
 			apiErr := apierrors.NewAPIError(
 				apiCall.Method,
@@ -236,7 +217,7 @@ func ExecuteAPICall(
 		return nil, url, apierrors.NewAPIError(apiCall.Method, url, 0, "", nil, 0, 0, nilErr)
 	}
 
-	log.Infof(ctx, "API call completed: %d %s", resp.StatusCode, resp.Status)
+	slog.InfoContext(ctx, "api call completed", "status_code", resp.StatusCode, "status", resp.Status)
 	return resp, url, nil
 }
 

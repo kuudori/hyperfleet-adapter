@@ -89,6 +89,7 @@ IMPORTANT: These return `*ServiceError`, not `error`. Use `.AsError()` to conver
 
 - `internal/executor/` — event execution pipeline (params → preconditions → resources → post-actions)
 - `internal/transportclient/` — unified apply interface abstracting K8s direct and Maestro ManifestWork
+- `internal/logctx/` — adapter-specific typed context keys and the stack-trace filter for the shared `hyperfleet-logger` handler (see `docs/conventions/logging.md`)
 
 ## Links
 

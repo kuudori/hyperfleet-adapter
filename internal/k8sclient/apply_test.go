@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -17,10 +16,8 @@ import (
 func newTestClient() *Client {
 	scheme := runtime.NewScheme()
 	builder := fake.NewClientBuilder().WithScheme(scheme)
-	log, _ := logger.NewLogger(logger.Config{Level: "error", Output: "stdout", Format: "json"})
 	return &Client{
 		client: builder.Build(),
-		log:    log,
 	}
 }
 

@@ -18,7 +18,6 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/test/integration/testutil"
 )
 
@@ -91,7 +90,6 @@ type TestEnvPrebuilt struct {
 	Client    *k8sclient.Client
 	Config    *rest.Config
 	Ctx       context.Context
-	Log       logger.Logger
 }
 
 // Cleanup terminates the container (no-op for shared containers, use CleanupSharedEnv)
@@ -106,7 +104,6 @@ func (e *TestEnvPrebuilt) Cleanup(t *testing.T) {
 // Returns an error instead of panicking to allow graceful handling.
 func setupSharedTestEnv() (*TestEnvPrebuilt, error) {
 	ctx := context.Background()
-	log := logger.NewTestLogger()
 
 	// Check that INTEGRATION_ENVTEST_IMAGE is set
 	imageName := os.Getenv("INTEGRATION_ENVTEST_IMAGE")
@@ -164,7 +161,7 @@ func setupSharedTestEnv() (*TestEnvPrebuilt, error) {
 	}
 
 	// Create client
-	client, err := k8sclient.NewClientFromConfig(ctx, restConfig, log)
+	client, err := k8sclient.NewClientFromConfig(ctx, restConfig)
 	if err != nil {
 		sharedContainer.Cleanup()
 		return nil, fmt.Errorf("failed to create K8s client: %w", err)
@@ -181,7 +178,6 @@ func setupSharedTestEnv() (*TestEnvPrebuilt, error) {
 		Client:    client,
 		Config:    restConfig,
 		Ctx:       ctx,
-		Log:       log,
 	}, nil
 }
 

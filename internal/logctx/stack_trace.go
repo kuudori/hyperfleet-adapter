@@ -1,18 +1,17 @@
-package logger
+package logctx
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
-	"runtime"
+	"log/slog"
 
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // -----------------------------------------------------------------------------
-// Stack Trace Capture
+// Stack Trace Capture Filter
 // -----------------------------------------------------------------------------
 
 // skipStackTraceCheckers is a list of functions that check if an error should skip stack trace capture.
@@ -78,11 +77,26 @@ func isK8sResourceDataError(err error) bool {
 	return errors.As(err, &k8sDataErr)
 }
 
-// shouldCaptureStackTrace determines if a stack trace should be captured for the given error.
-// Returns false for expected operational errors (high frequency, known causes) to avoid
-// performance overhead during error storms. Returns true for unexpected errors that
-// indicate bugs or require investigation.
-func shouldCaptureStackTrace(err error) bool {
+// StackTraceFilter determines whether a stack trace should be attached to the
+// given log record. It is intended to be passed to hfl.WithStackTrace
+// at handler construction time.
+//
+// It extracts the error from the record's "error" attribute (if any) and
+// returns false for expected operational errors (high frequency, known
+// causes) to avoid performance overhead during error storms. Returns true for
+// unexpected errors that indicate bugs or require investigation.
+func StackTraceFilter(_ context.Context, r slog.Record) bool {
+	var err error
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "error" {
+			if e, ok := a.Value.Any().(error); ok {
+				err = e
+			}
+			return false
+		}
+		return true
+	})
+
 	if err == nil {
 		return false
 	}
@@ -96,39 +110,4 @@ func shouldCaptureStackTrace(err error) bool {
 
 	// Capture stack trace for unexpected/internal errors
 	return true
-}
-
-// withStackTraceField returns a context with the stack trace set.
-// If frames is nil or empty, returns the context unchanged.
-func withStackTraceField(ctx context.Context, frames []string) context.Context {
-	if len(frames) == 0 {
-		return ctx
-	}
-	return WithLogField(ctx, StackTraceKey, frames)
-}
-
-// CaptureStackTrace captures the current call stack and returns it as a slice of strings.
-// Each string contains the file path, line number, and function name.
-// The skip parameter specifies how many stack frames to skip:
-//   - skip=0 starts from the caller of CaptureStackTrace
-//   - skip=1 skips one additional level, etc.
-func CaptureStackTrace(skip int) []string {
-	const maxFrames = 32
-	pcs := make([]uintptr, maxFrames)
-	// +2 to skip runtime.Callers and CaptureStackTrace itself
-	n := runtime.Callers(skip+2, pcs)
-	if n == 0 {
-		return nil
-	}
-
-	frames := runtime.CallersFrames(pcs[:n])
-	var stack []string
-	for {
-		frame, more := frames.Next()
-		stack = append(stack, fmt.Sprintf("%s:%d %s", frame.File, frame.Line, frame.Function))
-		if !more {
-			break
-		}
-	}
-	return stack
 }

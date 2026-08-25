@@ -1,9 +1,11 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -11,7 +13,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -722,15 +723,46 @@ func TestExecuteLogAction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			log := logger.NewTestLogger()
 			execCtx := &ExecutionContext{Params: tt.params}
 
 			// This should not panic
-			ExecuteLogAction(context.Background(), tt.logAction, execCtx, log)
+			ExecuteLogAction(context.Background(), tt.logAction, execCtx)
 
 			// We don't verify the exact log output, just that it doesn't error
 		})
 	}
+}
+
+func TestExecuteLogActionInvalidLevelFallsBackToInfo(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ExecuteLogAction(context.Background(), &configloader.LogAction{
+		Message: "hello",
+		Level:   "not-a-level",
+	}, &ExecutionContext{Params: map[string]interface{}{}})
+
+	out := buf.String()
+	assert.Contains(t, out, "invalid log level")
+	assert.Contains(t, out, "[config] hello")
+}
+
+func TestExecuteLogActionTemplateError(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ExecuteLogAction(context.Background(), &configloader.LogAction{
+		Message: "{{ .unterminated",
+		Level:   "info",
+	}, &ExecutionContext{Params: map[string]interface{}{}})
+
+	out := buf.String()
+	assert.Contains(t, out, "failed to render log message")
+	assert.NotContains(t, out, "[config]")
 }
 
 // TestGetResourceAsMap tests resource to map conversion

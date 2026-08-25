@@ -12,7 +12,6 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -259,7 +258,7 @@ func TestIsTransientGRPCError(t *testing.T) {
 }
 
 func TestRetryOnTransientGRPC(t *testing.T) {
-	client := &Client{log: logger.NewTestLogger()}
+	client := &Client{}
 	ctx := context.Background()
 
 	t.Run("succeeds first try", func(t *testing.T) {

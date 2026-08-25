@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"k8s.io/client-go/rest"
 )
 
@@ -16,7 +15,6 @@ type TestEnv interface {
 	GetClient() *k8sclient.Client
 	GetConfig() *rest.Config
 	GetContext() context.Context
-	GetLogger() logger.Logger
 	Cleanup(t *testing.T)
 }
 
@@ -36,11 +34,6 @@ func (e *TestEnvPrebuilt) GetConfig() *rest.Config {
 // GetContext returns the context
 func (e *TestEnvPrebuilt) GetContext() context.Context {
 	return e.Ctx
-}
-
-// GetLogger returns the logger
-func (e *TestEnvPrebuilt) GetLogger() logger.Logger {
-	return e.Log
 }
 
 // isAlreadyExistsError checks if the error is an "already exists" error

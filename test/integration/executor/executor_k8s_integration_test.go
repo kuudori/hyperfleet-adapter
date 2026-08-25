@@ -329,7 +329,7 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 
 	// Create config with K8s resources
 	config := createK8sTestConfig(testNamespace)
-	apiClient, err := hyperfleetapi.NewClient(testLog(),
+	apiClient, err := hyperfleetapi.NewClient(
 		hyperfleetapi.WithTimeout(10*time.Second),
 		hyperfleetapi.WithRetryAttempts(1),
 	)
@@ -340,7 +340,6 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -488,13 +487,12 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 	// Only include ConfigMap resource for this test
 	config.Resources = config.Resources[:1]
 
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -595,13 +593,12 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 		},
 	}
 
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -666,13 +663,12 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 		},
 	}
 
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -724,13 +720,12 @@ func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 
 	// Execute with default config (ConfigMap + Secret)
 	config := createK8sTestConfig(testNamespace)
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -772,13 +767,12 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createK8sTestConfig(nonExistentNamespace)
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -920,13 +914,12 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 		},
 	}
 
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 
@@ -995,13 +988,12 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	t.Setenv("HYPERFLEET_API_VERSION", "v1")
 
 	config := createK8sTestConfig(testNamespace)
-	apiClient, err := hyperfleetapi.NewClient(testLog())
+	apiClient, err := hyperfleetapi.NewClient()
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
-		WithLogger(k8sEnv.Log).
 		Build()
 	require.NoError(t, err)
 

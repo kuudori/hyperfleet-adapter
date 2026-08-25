@@ -9,37 +9,18 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	sharedTestLogger logger.Logger
-	loggerOnce       sync.Once
-)
-
-func testLog() logger.Logger {
-	loggerOnce.Do(func() {
-		var err error
-		cfg := logger.Config{Level: "error", Format: "text", Output: "stdout", Component: "test", Version: "test"}
-		sharedTestLogger, err = logger.NewLogger(cfg)
-		if err != nil {
-			panic(err)
-		}
-	})
-	return sharedTestLogger
-}
-
 func TestNewClient(t *testing.T) {
 	// NewClient requires base URL - test with explicit base URL
-	client, err := NewClient(testLog(), WithBaseURL("http://localhost:8080"))
+	client, err := NewClient(WithBaseURL("http://localhost:8080"))
 	require.NoError(t, err)
 	require.NotNil(t, client)
 }
@@ -62,7 +43,7 @@ func TestNewClientMissingBaseURL(t *testing.T) {
 		})
 	}
 
-	_, err := NewClient(testLog())
+	_, err := NewClient()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "base URL")
 }
@@ -136,7 +117,7 @@ func TestNewClientWithOptions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := NewClient(testLog(), tt.opts...)
+			client, err := NewClient(tt.opts...)
 			if err != nil {
 				t.Errorf("NewClient returned error: %v", err)
 			}
@@ -161,7 +142,7 @@ func TestClientGet(t *testing.T) {
 	defer server.Close()
 
 	// Use server URL as base URL for testing
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -194,7 +175,7 @@ func TestClientPost(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 	body := []byte(`{"key":"value"}`)
@@ -226,7 +207,7 @@ func TestClientWithHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL),
+	client, err := NewClient(WithBaseURL(server.URL),
 		WithDefaultHeader("Authorization", "Bearer default-token"))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
@@ -266,7 +247,7 @@ func TestClientRetry(t *testing.T) {
 	config.RetryAttempts = 3
 	config.BaseDelay = 10 * time.Millisecond // Short delay for tests
 
-	client, err := NewClient(testLog(), WithConfig(config))
+	client, err := NewClient(WithConfig(config))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -301,7 +282,7 @@ func TestClientRetryExhausted(t *testing.T) {
 	config.RetryAttempts = 3
 	config.BaseDelay = 10 * time.Millisecond
 
-	client, err := NewClient(testLog(), WithConfig(config))
+	client, err := NewClient(WithConfig(config))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -332,7 +313,7 @@ func TestClientNoRetryOn4xx(t *testing.T) {
 	config.BaseURL = server.URL
 	config.RetryAttempts = 3
 
-	client, err := NewClient(testLog(), WithConfig(config))
+	client, err := NewClient(WithConfig(config))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -362,7 +343,7 @@ func TestClientTimeout(t *testing.T) {
 	config.Timeout = 100 * time.Millisecond
 	config.RetryAttempts = 1
 
-	client, err := NewClient(testLog(), WithConfig(config))
+	client, err := NewClient(WithConfig(config))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -377,7 +358,7 @@ func TestClientContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -480,7 +461,7 @@ func TestClientPut(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -501,7 +482,7 @@ func TestClientPatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -522,7 +503,7 @@ func TestClientDelete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -657,7 +638,7 @@ func TestAPIErrorInRetryExhausted(t *testing.T) {
 	config.RetryAttempts = 2
 	config.BaseDelay = 10 * time.Millisecond
 
-	client, err := NewClient(testLog(), WithConfig(config))
+	client, err := NewClient(WithConfig(config))
 	require.NoError(t, err, "failed to create client")
 	ctx := context.Background()
 
@@ -700,7 +681,7 @@ func TestClientBearerTokenAuth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(),
+	client, err := NewClient(
 		WithBaseURL(server.URL),
 		WithAuth(&AuthConfig{TokenPath: tokenFile, TokenCacheTTL: 0}),
 	)
@@ -722,7 +703,7 @@ func TestClientNoAuthHeader_WhenNoAuth(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(testLog(), WithBaseURL(server.URL))
+	client, err := NewClient(WithBaseURL(server.URL))
 	require.NoError(t, err)
 
 	_, err = client.Get(context.Background(), "/test")

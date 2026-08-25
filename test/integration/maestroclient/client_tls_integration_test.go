@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,16 +24,9 @@ import (
 func createTLSTestClient(t *testing.T, config *maestroclient.Config, timeout time.Duration) *testClient {
 	t.Helper()
 
-	log, err := logger.NewLogger(logger.Config{
-		Level:     "debug",
-		Format:    "text",
-		Component: "maestro-tls-integration-test",
-	})
-	require.NoError(t, err)
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
-	client, err := maestroclient.NewMaestroClient(ctx, config, log)
+	client, err := maestroclient.NewMaestroClient(ctx, config)
 	if err != nil {
 		cancel()
 		require.NoError(t, err, "Should create TLS Maestro client successfully")
@@ -235,17 +227,10 @@ func TestTLSNoConfigFails(t *testing.T) {
 		Insecure:          false,
 	}
 
-	log, err := logger.NewLogger(logger.Config{
-		Level:     "debug",
-		Format:    "text",
-		Component: "maestro-tls-no-config-test",
-	})
-	require.NoError(t, err)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	_, err = maestroclient.NewMaestroClient(ctx, config, log)
+	_, err := maestroclient.NewMaestroClient(ctx, config)
 	require.Error(t, err, "Should fail when Insecure=false and no TLS config provided")
 	assert.Contains(t, err.Error(), "no TLS configuration provided")
 	t.Logf("No TLS config correctly rejected: %v", err)

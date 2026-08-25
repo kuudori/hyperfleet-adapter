@@ -8,7 +8,6 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,13 +40,6 @@ func createTestClient(t *testing.T, sourceID string, timeout time.Duration) *tes
 
 	env := GetSharedEnv(t)
 
-	log, err := logger.NewLogger(logger.Config{
-		Level:     "debug",
-		Format:    "text",
-		Component: "maestro-integration-test",
-	})
-	require.NoError(t, err)
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 
 	config := &maestroclient.Config{
@@ -57,7 +49,7 @@ func createTestClient(t *testing.T, sourceID string, timeout time.Duration) *tes
 		Insecure:          true,
 	}
 
-	client, err := maestroclient.NewMaestroClient(ctx, config, log)
+	client, err := maestroclient.NewMaestroClient(ctx, config)
 	if err != nil {
 		cancel()
 		require.NoError(t, err, "Should create Maestro client successfully")

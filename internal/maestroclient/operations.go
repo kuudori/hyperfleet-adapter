@@ -3,13 +3,15 @@ package maestroclient
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
+
+// withManifestWorkLogCtx enriches ctx with the Maestro consumer and ManifestWork name
+// log fields shared by every operations.go call site acting on a specific ManifestWork.
+func withManifestWorkLogCtx(ctx context.Context, consumerName, workName string) context.Context {
+	ctx = hfl.Set(ctx, logctx.MaestroConsumerKey, consumerName)
+	return hfl.Set(ctx, logctx.ManifestWorkKey, workName)
+}
 
 const (
 	grpcRetryMaxAttempts = 3
@@ -50,8 +59,7 @@ func (c *Client) retryOnTransientGRPC(ctx context.Context, fn func() error) erro
 		if !isTransientGRPCError(lastErr) {
 			return false, lastErr
 		}
-		retryCtx := logger.WithErrorField(ctx, lastErr)
-		c.log.Warn(retryCtx, "transient gRPC error, retrying")
+		slog.WarnContext(ctx, "transient gRPC error, retrying", "error", lastErr)
 		return false, nil
 	})
 	if wait.Interrupted(waitErr) && lastErr != nil {
@@ -89,9 +97,8 @@ func (c *Client) CreateManifestWork(
 	}
 
 	// Enrich context with common fields
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", work.Name)
-	ctx = logger.WithObservedGeneration(ctx, manifest.GetGeneration(work.ObjectMeta))
+	ctx = withManifestWorkLogCtx(ctx, consumerName, work.Name)
+	ctx = hfl.Set(ctx, logctx.ObservedGenerationKey, manifest.GetGeneration(work.ObjectMeta))
 
 	// Set namespace to consumer name (required by Maestro)
 	work.Namespace = consumerName
@@ -120,8 +127,7 @@ func (c *Client) GetManifestWork(
 	consumerName string,
 	workName string,
 ) (*workv1.ManifestWork, error) {
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", workName)
+	ctx = withManifestWorkLogCtx(ctx, consumerName, workName)
 
 	var work *workv1.ManifestWork
 	err := c.retryOnTransientGRPC(ctx, func() error {
@@ -147,8 +153,7 @@ func (c *Client) PatchManifestWork(
 	workName string,
 	patchData []byte,
 ) (*workv1.ManifestWork, error) {
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", workName)
+	ctx = withManifestWorkLogCtx(ctx, consumerName, workName)
 
 	var patched *workv1.ManifestWork
 	err := c.retryOnTransientGRPC(ctx, func() error {
@@ -176,8 +181,7 @@ func (c *Client) DeleteManifestWork(
 	consumerName string,
 	workName string,
 ) error {
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", workName)
+	ctx = withManifestWorkLogCtx(ctx, consumerName, workName)
 
 	err := c.workClient.ManifestWorks(consumerName).Delete(ctx, workName, metav1.DeleteOptions{})
 	if err != nil {
@@ -198,7 +202,7 @@ func (c *Client) ListManifestWorks(
 	consumerName string,
 	labelSelector string,
 ) (*workv1.ManifestWorkList, error) {
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
+	ctx = hfl.Set(ctx, logctx.MaestroConsumerKey, consumerName)
 
 	opts := metav1.ListOptions{}
 	if labelSelector != "" {
@@ -248,9 +252,8 @@ func (c *Client) ApplyManifestWork(
 	newGeneration := manifest.GetGeneration(manifestWork.ObjectMeta)
 
 	// Enrich context with common fields
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", manifestWork.Name)
-	ctx = logger.WithObservedGeneration(ctx, newGeneration)
+	ctx = withManifestWorkLogCtx(ctx, consumerName, manifestWork.Name)
+	ctx = hfl.Set(ctx, logctx.ObservedGenerationKey, newGeneration)
 
 	// Check if ManifestWork exists
 	existing, err := c.GetManifestWork(ctx, consumerName, manifestWork.Name)
@@ -268,10 +271,9 @@ func (c *Client) ApplyManifestWork(
 	// Compare generations to determine operation
 	decision := manifest.CompareGenerations(newGeneration, existingGeneration, exists)
 
-	c.log.WithFields(map[string]interface{}{
-		"operation": decision.Operation,
-		"reason":    decision.Reason,
-	}).Debug(ctx, "Apply operation determined")
+	slog.DebugContext(ctx, "apply operation determined",
+		"operation", decision.Operation,
+		"reason", decision.Reason)
 
 	// Execute operation based on comparison result
 	switch decision.Operation {
@@ -337,8 +339,7 @@ func (c *Client) DiscoverManifest(
 	workName string,
 	discovery manifest.Discovery,
 ) (*unstructured.UnstructuredList, error) {
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
-	ctx = logger.WithLogField(ctx, "manifestwork", workName)
+	ctx = withManifestWorkLogCtx(ctx, consumerName, workName)
 
 	// Get the ManifestWork
 	work, err := c.GetManifestWork(ctx, consumerName, workName)

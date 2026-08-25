@@ -36,7 +36,6 @@ func TestIntegration_NewClient(t *testing.T) {
 	t.Run("client is properly initialized", func(t *testing.T) {
 		assert.NotNil(t, env.GetClient())
 		assert.NotNil(t, env.GetContext())
-		assert.NotNil(t, env.GetLogger())
 	})
 }
 

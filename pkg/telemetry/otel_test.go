@@ -4,16 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 )
-
-func testLogger() logger.Logger {
-	log, _ := logger.NewLogger(logger.Config{Level: "error", Output: "stdout", Format: "json"})
-	return log
-}
 
 // clearOtelEnv ensures all OTel env vars are cleared to prevent interference from the local shell environment.
 func clearOtelEnv(t *testing.T) {
@@ -26,12 +20,11 @@ func clearOtelEnv(t *testing.T) {
 }
 
 func TestCreateExporter(t *testing.T) {
-	log := testLogger()
 	ctx := context.Background()
 
 	t.Run("stdout exporter when no endpoint set", func(t *testing.T) {
 		clearOtelEnv(t)
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -40,7 +33,7 @@ func TestCreateExporter(t *testing.T) {
 	t.Run("grpc exporter when endpoint set with default protocol", func(t *testing.T) {
 		clearOtelEnv(t)
 		t.Setenv(envOtelExporterOtlpEndpoint, "http://localhost:4318")
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -50,7 +43,7 @@ func TestCreateExporter(t *testing.T) {
 		clearOtelEnv(t)
 		t.Setenv(envOtelExporterOtlpEndpoint, "localhost:4317")
 		t.Setenv(envOtelExporterOtlpProtocol, "grpc")
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -60,7 +53,7 @@ func TestCreateExporter(t *testing.T) {
 		clearOtelEnv(t)
 		t.Setenv(envOtelExporterOtlpEndpoint, "http://localhost:4318")
 		t.Setenv(envOtelExporterOtlpProtocol, "unknown-protocol")
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -69,7 +62,7 @@ func TestCreateExporter(t *testing.T) {
 	t.Run("traces-specific endpoint takes precedence", func(t *testing.T) {
 		clearOtelEnv(t)
 		t.Setenv(envOtelExporterOtlpTracesEndpoint, "http://localhost:4318")
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -80,7 +73,7 @@ func TestCreateExporter(t *testing.T) {
 		t.Setenv(envOtelExporterOtlpEndpoint, "http://localhost:4318")
 		t.Setenv(envOtelExporterOtlpProtocol, "grpc")
 		t.Setenv(envOtelExporterOtlpTracesProtocol, "http/protobuf")
-		exporter, err := createExporter(ctx, log)
+		exporter, err := createExporter(ctx)
 		require.NoError(t, err)
 		assert.NotNil(t, exporter)
 		assert.NoError(t, exporter.Shutdown(ctx))
@@ -88,7 +81,6 @@ func TestCreateExporter(t *testing.T) {
 }
 
 func TestInitTraceProvider(t *testing.T) {
-	log := testLogger()
 	ctx := context.Background()
 
 	t.Run("initializes with stdout exporter when no endpoint", func(t *testing.T) {
@@ -99,7 +91,7 @@ func TestInitTraceProvider(t *testing.T) {
 			otel.SetTextMapPropagator(prevProp)
 		})
 		clearOtelEnv(t)
-		tp, err := InitTraceProvider(ctx, log, "test-service", "0.0.1")
+		tp, err := InitTraceProvider(ctx, "test-service", "0.0.1")
 		require.NoError(t, err)
 		require.NotNil(t, tp)
 		assert.NoError(t, tp.Shutdown(ctx))
@@ -113,7 +105,7 @@ func TestInitTraceProvider(t *testing.T) {
 		})
 		clearOtelEnv(t)
 		t.Setenv(envOtelExporterOtlpEndpoint, "http://localhost:4318")
-		tp, err := InitTraceProvider(ctx, log, "test-service", "0.0.1")
+		tp, err := InitTraceProvider(ctx, "test-service", "0.0.1")
 		require.NoError(t, err)
 		require.NotNil(t, tp)
 		assert.NoError(t, tp.Shutdown(ctx))
@@ -121,7 +113,6 @@ func TestInitTraceProvider(t *testing.T) {
 }
 
 func TestSelectSampler(t *testing.T) {
-	log := testLogger()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -149,14 +140,13 @@ func TestSelectSampler(t *testing.T) {
 				t.Setenv(envOtelTracesSamplerArg, tt.samplerArg)
 			}
 
-			sampler := selectSampler(ctx, log)
+			sampler := selectSampler(ctx)
 			assert.NotNil(t, sampler)
 		})
 	}
 }
 
 func TestParseSamplingRate(t *testing.T) {
-	log := testLogger()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -180,14 +170,13 @@ func TestParseSamplingRate(t *testing.T) {
 				t.Setenv(envOtelTracesSamplerArg, tt.envValue)
 			}
 
-			rate := parseSamplingRate(ctx, log)
+			rate := parseSamplingRate(ctx)
 			assert.Equal(t, tt.expected, rate)
 		})
 	}
 }
 
 func TestInitTraceProvider_SamplerEnvironmentVariables(t *testing.T) {
-	log := testLogger()
 	ctx := context.Background()
 
 	tests := []struct {
@@ -221,7 +210,7 @@ func TestInitTraceProvider_SamplerEnvironmentVariables(t *testing.T) {
 				t.Setenv(envOtelTracesSamplerArg, tt.samplerArg)
 			}
 
-			tp, err := InitTraceProvider(ctx, log, "test-service", "0.0.1")
+			tp, err := InitTraceProvider(ctx, "test-service", "0.0.1")
 			require.NoError(t, err)
 			defer func() { assert.NoError(t, tp.Shutdown(ctx)) }()
 

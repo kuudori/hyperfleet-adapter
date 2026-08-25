@@ -4,19 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"text/template/parse"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 )
 
 // PostActionExecutor executes post-processing actions
 type PostActionExecutor struct {
 	apiClient hyperfleetapi.Client
-	log       logger.Logger
 }
 
 // newPostActionExecutor creates a new post-action executor
@@ -24,7 +23,6 @@ type PostActionExecutor struct {
 func newPostActionExecutor(config *ExecutorConfig) *PostActionExecutor {
 	return &PostActionExecutor{
 		apiClient: config.APIClient,
-		log:       config.Logger,
 	}
 }
 
@@ -42,23 +40,24 @@ func (pae *PostActionExecutor) ExecuteAll(
 	// Step 1: Build post payloads (like clusterStatusPayload)
 	var skippedPayloads map[string]bool
 	if len(postConfig.Payloads) > 0 {
-		pae.log.Infof(ctx, "Building %d post payloads", len(postConfig.Payloads))
+		slog.InfoContext(ctx, "building post payloads", "payload_count", len(postConfig.Payloads))
 		var err error
 		skippedPayloads, err = pae.buildPostPayloads(ctx, postConfig.Payloads, execCtx)
 		if err != nil {
-			errCtx := logger.WithErrorField(ctx, err)
-			pae.log.Errorf(errCtx, "Failed to build post payloads")
-			execCtx.Adapter.ExecutionError = &ExecutionError{
-				Phase:   string(PhasePostActions),
-				Step:    "build_payloads",
-				Message: err.Error(),
+			slog.ErrorContext(ctx, "failed to build post payloads", "error", err)
+			if execCtx.Adapter.ExecutionError == nil {
+				execCtx.Adapter.ExecutionError = &ExecutionError{
+					Phase:   string(PhasePostActions),
+					Step:    "build_payloads",
+					Message: err.Error(),
+				}
 			}
 			return []PostActionResult{}, NewExecutorError(
 				PhasePostActions, "build_payloads", "failed to build post payloads", err)
 		}
 		for _, payload := range postConfig.Payloads {
 			if !skippedPayloads[payload.Name] {
-				pae.log.Debugf(ctx, "payload[%s] built successfully", payload.Name)
+				slog.DebugContext(ctx, "payload built successfully", "payload", payload.Name)
 			}
 		}
 	}
@@ -70,23 +69,23 @@ func (pae *PostActionExecutor) ExecuteAll(
 		results = append(results, result)
 
 		if err != nil {
-			errCtx := logger.WithErrorField(ctx, err)
-			pae.log.Errorf(errCtx, "PostAction[%s] processed: FAILED", action.Name)
+			slog.ErrorContext(ctx, "post action processed: failed", "post_action", action.Name, "error", err)
 
-			// Set ExecutionError for failed post action
-			execCtx.Adapter.ExecutionError = &ExecutionError{
-				Phase:   string(PhasePostActions),
-				Step:    action.Name,
-				Message: err.Error(),
+			if execCtx.Adapter.ExecutionError == nil {
+				execCtx.Adapter.ExecutionError = &ExecutionError{
+					Phase:   string(PhasePostActions),
+					Step:    action.Name,
+					Message: err.Error(),
+				}
 			}
 
 			// Stop execution - don't run remaining post actions
 			return results, err
 		}
 		if result.Skipped {
-			pae.log.Infof(ctx, "PostAction[%s] processed: SKIPPED - reason=%s", action.Name, result.SkipReason)
+			slog.InfoContext(ctx, "post action processed: skipped", "post_action", action.Name, "reason", result.SkipReason)
 		} else {
-			pae.log.Infof(ctx, "PostAction[%s] processed: SUCCESS - status=%s", action.Name, result.Status)
+			slog.InfoContext(ctx, "post action processed: success", "post_action", action.Name, "status", result.Status)
 		}
 	}
 
@@ -106,7 +105,7 @@ func (pae *PostActionExecutor) buildPostPayloads(
 	evalCtx := criteria.NewEvaluationContext()
 	evalCtx.SetVariablesFromMap(execCtx.GetCELVariables())
 
-	evaluator, err := criteria.NewEvaluator(ctx, evalCtx, pae.log)
+	evaluator, err := criteria.NewEvaluator(ctx, evalCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create evaluator: %w", err)
 	}
@@ -122,7 +121,7 @@ func (pae *PostActionExecutor) buildPostPayloads(
 				return nil, fmt.Errorf("when condition evaluation error for payload '%s': %w", payload.Name, celResult.Error)
 			}
 			if !celResult.Matched {
-				pae.log.Infof(ctx, "Payload '%s' skipped: when condition is false", payload.Name)
+				slog.InfoContext(ctx, "payload skipped: when condition is false", "payload", payload.Name)
 				skippedPayloads[payload.Name] = true
 				continue
 			}
@@ -224,9 +223,9 @@ func (pae *PostActionExecutor) processValue(
 			// If value is nil (field not found or empty), use default
 			if result.Value == nil {
 				if result.Error != nil && valueDef.Default == nil {
-					pae.log.Warnf(ctx, "Field '%s' not found in payload: %v", result.Source, result.Error)
+					slog.WarnContext(ctx, "field not found in payload", "field", result.Source, "error", result.Error)
 				} else if valueDef.Default != nil {
-					pae.log.Debugf(ctx, "Using default value for '%s': %v", result.Source, valueDef.Default)
+					slog.DebugContext(ctx, "using default value", "field", result.Source)
 				}
 				return valueDef.Default, nil
 			}
@@ -278,7 +277,7 @@ func (pae *PostActionExecutor) executePostAction(
 				result.Skipped = true
 				result.Status = StatusSkipped
 				result.SkipReason = fmt.Sprintf("referenced payload '%s' was skipped", payloadName)
-				pae.log.Infof(ctx, "PostAction[%s] skipped: payload '%s' was not built", action.Name, payloadName)
+				slog.InfoContext(ctx, "post action skipped: payload not built", "post_action", action.Name, "payload", payloadName)
 				return result, nil
 			}
 		}
@@ -288,7 +287,7 @@ func (pae *PostActionExecutor) executePostAction(
 	if action.When != nil {
 		evalCtx := criteria.NewEvaluationContext()
 		evalCtx.SetVariablesFromMap(execCtx.GetCELVariables())
-		evaluator, err := criteria.NewEvaluator(ctx, evalCtx, pae.log)
+		evaluator, err := criteria.NewEvaluator(ctx, evalCtx)
 		if err != nil {
 			execErr := NewExecutorError(PhasePostActions, action.Name, "failed to create evaluator for when condition", err)
 			result.Status = StatusFailed
@@ -312,14 +311,14 @@ func (pae *PostActionExecutor) executePostAction(
 			result.Skipped = true
 			result.Status = StatusSkipped
 			result.SkipReason = fmt.Sprintf("when condition evaluated to false: %s", action.When.Expression)
-			pae.log.Infof(ctx, "PostAction[%s] skipped: when condition is false", action.Name)
+			slog.InfoContext(ctx, "post action skipped: when condition is false", "post_action", action.Name)
 			return result, nil
 		}
 	}
 
 	// Execute log action if configured
 	if action.Log != nil {
-		ExecuteLogAction(ctx, action.Log, execCtx, pae.log)
+		ExecuteLogAction(ctx, action.Log, execCtx)
 	}
 
 	// Execute API call if configured
@@ -339,7 +338,7 @@ func (pae *PostActionExecutor) executeAPICall(
 	execCtx *ExecutionContext,
 	result *PostActionResult,
 ) error {
-	resp, url, err := ExecuteAPICall(ctx, apiCall, execCtx, pae.apiClient, pae.log)
+	resp, url, err := ExecuteAPICall(ctx, apiCall, execCtx, pae.apiClient)
 	result.APICallMade = true
 
 	// Capture response details if available (even if err != nil)

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,12 +14,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/version"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"github.com/openshift-online/maestro/pkg/api/openapi"
 	"github.com/openshift-online/maestro/pkg/client/cloudevents/grpcsource"
 	"google.golang.org/grpc"
@@ -45,7 +47,6 @@ type Client struct {
 	workClient       workv1client.WorkV1Interface
 	maestroAPIClient *openapi.APIClient
 	config           *Config
-	log              logger.Logger
 	grpcOptions      *grpcopts.GRPCOptions
 }
 
@@ -112,8 +113,8 @@ type Config struct {
 //	    ClientCertFile:    "/etc/maestro/certs/client.crt",
 //	    ClientKeyFile:     "/etc/maestro/certs/client.key",
 //	}
-//	client, err := NewMaestroClient(ctx, config, log)
-func NewMaestroClient(ctx context.Context, config *Config, log logger.Logger) (*Client, error) {
+//	client, err := NewMaestroClient(ctx, config)
+func NewMaestroClient(ctx context.Context, config *Config) (*Client, error) {
 	if config == nil {
 		return nil, apperrors.ConfigurationError("maestro config is required")
 	}
@@ -158,11 +159,10 @@ func NewMaestroClient(ctx context.Context, config *Config, log logger.Logger) (*
 		serverHealthinessTimeout = DefaultServerHealthinessTimeout
 	}
 
-	log.WithFields(map[string]interface{}{
-		"maestroServer": config.MaestroServerAddr,
-		"grpcServer":    config.GRPCServerAddr,
-		"sourceID":      config.SourceID,
-	}).Info(ctx, "Creating Maestro client")
+	slog.InfoContext(ctx, "creating Maestro client",
+		"maestro_server", config.MaestroServerAddr,
+		"grpc_server", config.GRPCServerAddr,
+		"source_id", config.SourceID)
 
 	// Create HTTP client with appropriate TLS configuration
 	httpTransport, transportErr := createHTTPTransport(config)
@@ -216,7 +216,7 @@ func NewMaestroClient(ctx context.Context, config *Config, log logger.Logger) (*
 	// This returns a workv1client.WorkV1Interface with Kubernetes-style API
 	workClient, err := grpcsource.NewMaestroGRPCSourceWorkClient(
 		ctx,
-		newOCMLoggerAdapter(log),
+		newOCMLoggerAdapter(),
 		maestroAPIClient,
 		grpcOptions,
 		config.SourceID,
@@ -225,15 +225,12 @@ func NewMaestroClient(ctx context.Context, config *Config, log logger.Logger) (*
 		return nil, apperrors.MaestroError("failed to create Maestro work client: %v", err)
 	}
 
-	log.WithFields(map[string]interface{}{
-		"sourceID": config.SourceID,
-	}).Info(ctx, "Maestro client created successfully")
+	slog.InfoContext(ctx, "maestro client created successfully", "source_id", config.SourceID)
 
 	return &Client{
 		workClient:       workClient,
 		maestroAPIClient: maestroAPIClient,
 		config:           config,
-		log:              log,
 		grpcOptions:      grpcOptions,
 	}, nil
 }
@@ -511,7 +508,7 @@ func (c *Client) ApplyResource(
 				"set TransportContext.ConsumerName")
 	}
 
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
+	ctx = hfl.Set(ctx, logctx.MaestroConsumerKey, consumerName)
 
 	// Parse bytes into ManifestWork
 	work, err := parseManifestWork(manifestBytes)
@@ -551,7 +548,7 @@ func (c *Client) GetResource(
 		return nil, apierrors.NewNotFound(gr, name)
 	}
 
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
+	ctx = hfl.Set(ctx, logctx.MaestroConsumerKey, consumerName)
 
 	// If the GVK is ManifestWork, get the ManifestWork object directly
 	if gvk.Kind == constants.ManifestWorkKind &&
@@ -607,7 +604,7 @@ func (c *Client) DiscoverResources(
 		return &unstructured.UnstructuredList{}, nil
 	}
 
-	ctx = logger.WithMaestroConsumer(ctx, consumerName)
+	ctx = hfl.Set(ctx, logctx.MaestroConsumerKey, consumerName)
 
 	// List all ManifestWorks for this consumer
 	workList, err := c.ListManifestWorks(ctx, consumerName, "")

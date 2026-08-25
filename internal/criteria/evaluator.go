@@ -3,11 +3,10 @@ package criteria
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
-
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // EvaluationResult contains the result of evaluating a condition
@@ -39,7 +38,6 @@ type ConditionsResult struct {
 // Evaluator evaluates criteria against an evaluation context
 type Evaluator struct {
 	evalCtx *EvaluationContext
-	log     logger.Logger
 	ctx     context.Context
 
 	// Lazily cached CEL evaluator for repeated CEL evaluations
@@ -52,19 +50,15 @@ type Evaluator struct {
 // NewEvaluator creates a new criteria evaluator.
 // All parameters are required - ctx for logging correlation, evalCtx for CEL data.
 // Returns an error if any required parameter is nil.
-func NewEvaluator(ctx context.Context, evalCtx *EvaluationContext, log logger.Logger) (*Evaluator, error) {
+func NewEvaluator(ctx context.Context, evalCtx *EvaluationContext) (*Evaluator, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required for Evaluator")
 	}
 	if evalCtx == nil {
 		return nil, fmt.Errorf("evalCtx is required for Evaluator")
 	}
-	if log == nil {
-		return nil, fmt.Errorf("log is required for Evaluator")
-	}
 	return &Evaluator{
 		evalCtx: evalCtx,
-		log:     log,
 		ctx:     ctx,
 	}, nil
 }
@@ -206,7 +200,7 @@ func (e *Evaluator) ExtractValue(field, expression string) (*ExtractValueResult,
 			// Caller should handle logging based on CELResult.Error
 			// This is NOT a parse error, so we don't return error - caller can use default
 			// Only caught field missing or empty value as warn log
-			e.log.Warnf(e.ctx, "CEL evaluation failed for %q: %v", expression, celResult.Error)
+			slog.WarnContext(e.ctx, "cel evaluation failed", "expression", expression, "error", celResult.Error)
 		}
 		result.Value = celResult.Value
 		result.Source = expression

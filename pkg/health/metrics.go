@@ -2,10 +2,10 @@ package health
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -13,7 +13,6 @@ import (
 // MetricsServer provides HTTP metrics endpoint for Prometheus.
 type MetricsServer struct {
 	server    *http.Server
-	log       logger.Logger
 	buildInfo *prometheus.GaugeVec
 	upGauge   prometheus.Gauge
 	port      string
@@ -27,7 +26,7 @@ type MetricsConfig struct {
 }
 
 // NewMetricsServer creates a new metrics server with required HyperFleet metrics.
-func NewMetricsServer(log logger.Logger, port string, cfg MetricsConfig) *MetricsServer {
+func NewMetricsServer(port string, cfg MetricsConfig) *MetricsServer {
 	// Create build_info metric per HyperFleet metrics standard
 	buildInfo := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -63,7 +62,6 @@ func NewMetricsServer(log logger.Logger, port string, cfg MetricsConfig) *Metric
 	mux.Handle("/metrics", promhttp.Handler())
 
 	return &MetricsServer{
-		log:       log,
 		port:      port,
 		upGauge:   upGauge,
 		buildInfo: buildInfo,
@@ -77,22 +75,25 @@ func NewMetricsServer(log logger.Logger, port string, cfg MetricsConfig) *Metric
 
 // Start starts the metrics server in a goroutine.
 func (s *MetricsServer) Start(ctx context.Context) error {
-	s.log.Infof(ctx, "Starting metrics server on port %s", s.port)
+	slog.InfoContext(ctx, "starting metrics server", "port", s.port)
 
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCtx := logger.WithErrorField(ctx, err)
-			s.log.Errorf(errCtx, "Metrics server error")
+			slog.ErrorContext(ctx, "metrics server error", "error", err)
 		}
 	}()
 
 	return nil
 }
 
+// MarkShuttingDown sets hyperfleet_adapter_up to 0 without stopping the metrics HTTP server.
+func (s *MetricsServer) MarkShuttingDown() {
+	s.upGauge.Set(0)
+}
+
 // Shutdown gracefully shuts down the metrics server.
 func (s *MetricsServer) Shutdown(ctx context.Context) error {
-	s.log.Info(ctx, "Shutting down metrics server...")
-	// Set up to 0 during shutdown
-	s.upGauge.Set(0)
+	slog.InfoContext(ctx, "shutting down metrics server...")
+	s.MarkShuttingDown()
 	return s.server.Shutdown(ctx)
 }

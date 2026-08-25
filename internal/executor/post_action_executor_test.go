@@ -10,7 +10,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,7 +18,6 @@ import (
 // testPAE creates a PostActionExecutor for tests
 func testPAE() *PostActionExecutor {
 	return newPostActionExecutor(&ExecutorConfig{
-		Logger:    logger.NewTestLogger(),
 		APIClient: newMockAPIClient(),
 	})
 }
@@ -97,7 +95,7 @@ func TestBuildPayload(t *testing.T) {
 			for k, v := range tt.params {
 				evalCtx.Set(k, v)
 			}
-			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx, pae.log)
+			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx)
 			assert.NoError(t, err)
 
 			result, err := pae.buildPayload(context.Background(), tt.build, evaluator, tt.params)
@@ -177,7 +175,7 @@ func TestBuildMapPayload(t *testing.T) {
 			for k, v := range tt.params {
 				evalCtx.Set(k, v)
 			}
-			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx, pae.log)
+			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx)
 			require.NoError(t, err)
 			result, err := pae.buildMapPayload(context.Background(), tt.input, evaluator, tt.params)
 
@@ -287,7 +285,7 @@ func TestProcessValue(t *testing.T) {
 			for k, v := range tt.evalCtxData {
 				evalCtx.Set(k, v)
 			}
-			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx, pae.log)
+			evaluator, err := criteria.NewEvaluator(context.Background(), evalCtx)
 			require.NoError(t, err)
 			result, err := pae.processValue(context.Background(), tt.value, evaluator, tt.params)
 
@@ -392,7 +390,6 @@ func TestPostActionExecutor_ExecuteAll(t *testing.T) {
 
 			pae := newPostActionExecutor(&ExecutorConfig{
 				APIClient: mockClient,
-				Logger:    logger.NewTestLogger(),
 			})
 
 			evt := event.New()
@@ -635,7 +632,6 @@ func TestExecuteAPICall(t *testing.T) {
 				tt.apiCall,
 				execCtx,
 				mockClient,
-				logger.NewTestLogger(),
 			)
 
 			if tt.expectError {
@@ -711,7 +707,6 @@ func TestPostActionWhenCondition(t *testing.T) {
 
 			pae := newPostActionExecutor(&ExecutorConfig{
 				APIClient: mockClient,
-				Logger:    logger.NewTestLogger(),
 			})
 
 			action := configloader.PostAction{
@@ -828,7 +823,6 @@ func TestPostActionSkippedWhenReferencedPayloadSkipped(t *testing.T) {
 
 	pae := newPostActionExecutor(&ExecutorConfig{
 		APIClient: mockClient,
-		Logger:    logger.NewTestLogger(),
 	})
 
 	action := configloader.PostAction{
@@ -864,7 +858,6 @@ func TestPostActionNotSkippedWhenPayloadBuilt(t *testing.T) {
 
 	pae := newPostActionExecutor(&ExecutorConfig{
 		APIClient: mockClient,
-		Logger:    logger.NewTestLogger(),
 	})
 
 	action := configloader.PostAction{

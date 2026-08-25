@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -17,13 +16,7 @@ type K8sTestEnv struct {
 	Client  *k8sclient.Client
 	Config  *rest.Config
 	Ctx     context.Context
-	Log     logger.Logger
 	cleanup func()
-}
-
-// testLog returns a shared logger for tests (independent of K8s environment)
-func testLog() logger.Logger {
-	return logger.NewTestLogger()
 }
 
 // SetupK8sTestEnv returns the shared K8s test environment
