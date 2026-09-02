@@ -16,10 +16,9 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/dryrun"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportregistry"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/health"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/telemetry"
@@ -335,85 +334,6 @@ func createAPIClient(apiConfig configloader.HyperfleetAPIConfig) (hyperfleetapi.
 	return hyperfleetapi.NewClient(opts...)
 }
 
-// createTransportClient creates the appropriate transport client based on config.
-func createTransportClient(
-	ctx context.Context,
-	config *configloader.Config,
-) (transportclient.TransportClient, error) {
-	if config.Clients.Maestro != nil {
-		slog.InfoContext(ctx, "creating maestro transport client...")
-		client, err := createMaestroClient(ctx, config.Clients.Maestro)
-		if err != nil {
-			return nil, err
-		}
-		slog.InfoContext(ctx, "maestro transport client created successfully")
-		return client, nil
-	}
-
-	slog.InfoContext(ctx, "creating kubernetes transport client...")
-	client, err := createK8sClient(ctx, config.Clients.Kubernetes)
-	if err != nil {
-		return nil, err
-	}
-	slog.InfoContext(ctx, "kubernetes transport client created successfully")
-	return client, nil
-}
-
-// createK8sClient creates a Kubernetes client from the config
-func createK8sClient(
-	ctx context.Context,
-	k8sConfig configloader.KubernetesConfig,
-) (*k8sclient.Client, error) {
-	clientConfig := k8sclient.ClientConfig{
-		KubeConfigPath: k8sConfig.KubeConfigPath,
-		QPS:            k8sConfig.QPS,
-		Burst:          k8sConfig.Burst,
-	}
-	return k8sclient.NewClient(ctx, clientConfig)
-}
-
-// createMaestroClient creates a Maestro client from the config
-func createMaestroClient(
-	ctx context.Context,
-	maestroConfig *configloader.MaestroClientConfig,
-) (*maestroclient.Client, error) {
-	config := &maestroclient.Config{
-		MaestroServerAddr: maestroConfig.HTTPServerAddress,
-		GRPCServerAddr:    maestroConfig.GRPCServerAddress,
-		SourceID:          maestroConfig.SourceID,
-		Insecure:          maestroConfig.Insecure,
-	}
-
-	if maestroConfig.Timeout != "" {
-		d, err := time.ParseDuration(maestroConfig.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid maestro timeout %q: %w", maestroConfig.Timeout, err)
-		}
-		config.HTTPTimeout = d
-	}
-
-	if maestroConfig.ServerHealthinessTimeout != "" {
-		d, err := time.ParseDuration(maestroConfig.ServerHealthinessTimeout)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid maestro serverHealthinessTimeout %q: %w",
-				maestroConfig.ServerHealthinessTimeout,
-				err,
-			)
-		}
-		config.ServerHealthinessTimeout = d
-	}
-
-	if maestroConfig.Auth.TLSConfig != nil {
-		config.CAFile = maestroConfig.Auth.TLSConfig.CAFile
-		config.ClientCertFile = maestroConfig.Auth.TLSConfig.CertFile
-		config.ClientKeyFile = maestroConfig.Auth.TLSConfig.KeyFile
-		config.HTTPCAFile = maestroConfig.Auth.TLSConfig.HTTPCAFile
-	}
-
-	return maestroclient.NewMaestroClient(ctx, config)
-}
-
 // buildExecutor creates the executor with the given clients.
 func buildExecutor(
 	config *configloader.Config,
@@ -563,10 +483,24 @@ func runServe(flags *pflag.FlagSet) error {
 		return fmt.Errorf("failed to create HyperFleet API client: %w", err)
 	}
 
-	tc, err := createTransportClient(ctx, config)
+	transportRuntime, err := transportregistry.Build(ctx, config)
 	if err != nil {
-		slog.ErrorContext(ctx, "failed to create transport client", "error", err)
-		return fmt.Errorf("failed to create transport client: %w", err)
+		slog.ErrorContext(ctx, "failed to create transport registry", "error", err)
+		return fmt.Errorf("failed to create transport registry: %w", err)
+	}
+	defer func() {
+		if closeErr := transportRuntime.Close(); closeErr != nil {
+			slog.WarnContext(ctx, "failed to close transport registry", "error", closeErr)
+		}
+	}()
+
+	compatibilityKey := configloader.TransportClientKubernetes
+	if config.Clients.Maestro != nil {
+		compatibilityKey = configloader.TransportClientMaestro
+	}
+	tc, err := transportRuntime.Registry.Get(compatibilityKey)
+	if err != nil {
+		return fmt.Errorf("failed to resolve transport client: %w", err)
 	}
 
 	// Build executor
@@ -745,8 +679,27 @@ func runDryRun(flags *pflag.FlagSet) error {
 		dryrunClient = dryrun.NewDryrunTransportClient()
 	}
 
+	transportRuntime, err := transportregistry.BuildRecording(config, dryrunClient)
+	if err != nil {
+		return fmt.Errorf("failed to create recording transport registry: %w", err)
+	}
+	defer func() {
+		if closeErr := transportRuntime.Close(); closeErr != nil {
+			slog.WarnContext(ctx, "failed to close recording transport registry", "error", closeErr)
+		}
+	}()
+
+	compatibilityKey := configloader.TransportClientKubernetes
+	if config.Clients.Maestro != nil {
+		compatibilityKey = configloader.TransportClientMaestro
+	}
+	tc, err := transportRuntime.Registry.Get(compatibilityKey)
+	if err != nil {
+		return fmt.Errorf("failed to resolve recording transport client: %w", err)
+	}
+
 	// Build executor with mock clients (same builder as serve, no metrics in dry-run)
-	exec, err := buildExecutor(config, dryrunAPI, dryrunClient, nil)
+	exec, err := buildExecutor(config, dryrunAPI, tc, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create executor: %w", err)
 	}

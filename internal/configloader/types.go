@@ -2,6 +2,7 @@ package configloader
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
@@ -11,14 +12,16 @@ import (
 // Config is the unified configuration passed throughout the application.
 // Created by merging AdapterConfig (deployment) and AdapterTaskConfig (task).
 type Config struct {
-	Post          *PostConfig    `yaml:"post,omitempty"`
-	Log           LogConfig      `yaml:"log,omitempty"`
-	Adapter       AdapterInfo    `yaml:"adapter"`
-	Params        []Parameter    `yaml:"params,omitempty"`
-	Preconditions []Precondition `yaml:"preconditions,omitempty"`
-	Resources     []Resource     `yaml:"resources,omitempty"`
-	Clients       ClientsConfig  `yaml:"clients"`
-	DebugConfig   bool           `yaml:"debug_config,omitempty"`
+	Transports    map[string]TransportDefinition `yaml:"transports,omitempty"`
+	Stores        map[string]StoreDefinition     `yaml:"stores,omitempty"`
+	Post          *PostConfig                    `yaml:"post,omitempty"`
+	Log           LogConfig                      `yaml:"log,omitempty"`
+	Adapter       AdapterInfo                    `yaml:"adapter"`
+	Params        []Parameter                    `yaml:"params,omitempty"`
+	Preconditions []Precondition                 `yaml:"preconditions,omitempty"`
+	Resources     []Resource                     `yaml:"resources,omitempty"`
+	Clients       ClientsConfig                  `yaml:"clients"`
+	DebugConfig   bool                           `yaml:"debug_config,omitempty"`
 }
 
 // Merge combines AdapterConfig (deployment) and AdapterTaskConfig (task) into a unified Config.
@@ -32,6 +35,8 @@ func Merge(adapterCfg *AdapterConfig, taskCfg *AdapterTaskConfig) *Config {
 	return &Config{
 		Adapter:       adapterCfg.Adapter,
 		Clients:       adapterCfg.Clients,
+		Transports:    adapterCfg.Transports,
+		Stores:        adapterCfg.Stores,
 		DebugConfig:   adapterCfg.DebugConfig,
 		Log:           adapterCfg.Log,
 		Params:        taskCfg.Params,
@@ -50,6 +55,7 @@ func (c *Config) Redacted() *Config {
 	}
 	copy := *c
 	copy.Clients = redactedClients(c.Clients)
+	copy.Stores = redactedStores(c.Stores)
 	return &copy
 }
 
@@ -76,6 +82,32 @@ func redactedClients(clients ClientsConfig) ClientsConfig {
 		copy.Maestro = &maestroCopy
 	}
 	return copy
+}
+
+func redactedStores(stores map[string]StoreDefinition) map[string]StoreDefinition {
+	if stores == nil {
+		return nil
+	}
+
+	copy := make(map[string]StoreDefinition, len(stores))
+	for name, store := range stores {
+		store.URL = redactRedisURL(store.URL)
+		copy[name] = store
+	}
+	return copy
+}
+
+func redactRedisURL(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil || parsedURL.User == nil {
+		return rawURL
+	}
+	if _, hasPassword := parsedURL.User.Password(); !hasPassword {
+		return rawURL
+	}
+
+	parsedURL.User = url.UserPassword(parsedURL.User.Username(), redactedValue)
+	return parsedURL.String()
 }
 
 // FieldExpressionDef represents a common pattern for value extraction.
@@ -644,10 +676,25 @@ func (ve *ValidationErrors) HasErrors() bool {
 // Contains infrastructure settings that can be overridden via environment variables
 // and CLI flags using Viper.
 type AdapterConfig struct {
-	Adapter     AdapterInfo   `yaml:"adapter" mapstructure:"adapter"`
-	Log         LogConfig     `yaml:"log,omitempty" mapstructure:"log"`
-	Clients     ClientsConfig `yaml:"clients" mapstructure:"clients"`
-	DebugConfig bool          `yaml:"debug_config,omitempty" mapstructure:"debug_config"`
+	Transports  map[string]TransportDefinition `yaml:"transports,omitempty" mapstructure:"transports"`
+	Stores      map[string]StoreDefinition     `yaml:"stores,omitempty" mapstructure:"stores"`
+	Log         LogConfig                      `yaml:"log,omitempty" mapstructure:"log"`
+	Adapter     AdapterInfo                    `yaml:"adapter" mapstructure:"adapter"`
+	Clients     ClientsConfig                  `yaml:"clients" mapstructure:"clients"`
+	DebugConfig bool                           `yaml:"debug_config,omitempty" mapstructure:"debug_config"`
+}
+
+// TransportDefinition is a named deployment transport entry. It is distinct
+// from TransportConfig, which belongs to the task resource DSL.
+type TransportDefinition struct {
+	Type  string `yaml:"type" mapstructure:"type"`
+	Store string `yaml:"store,omitempty" mapstructure:"store"`
+}
+
+// StoreDefinition is a named deployment store entry used by remote transports.
+type StoreDefinition struct {
+	Type string `yaml:"type" mapstructure:"type"`
+	URL  string `yaml:"url,omitempty" mapstructure:"url"`
 }
 
 // ClientsConfig contains configuration for all external clients

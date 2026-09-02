@@ -4,14 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"cel.dev/cel-go/cel"
 	"github.com/Masterminds/semver/v3"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
@@ -54,8 +57,62 @@ func (v *AdapterConfigValidator) ValidateStructure() error {
 	if err := v.validateHyperfleetAuth(); err != nil {
 		return err
 	}
+	if err := v.validateTransportRegistry(); err != nil {
+		return err
+	}
 
 	return nil
+}
+
+func (v *AdapterConfigValidator) validateTransportRegistry() error {
+	// sort for deterministic validation order
+	storeNames := sortedStoreNames(v.config.Stores)
+	for _, name := range storeNames {
+		store := v.config.Stores[name]
+		path := fmt.Sprintf("%s.%s", FieldStores, name)
+		switch store.Type {
+		case StoreTypeMemory:
+		case StoreTypeRedis:
+			if strings.TrimSpace(store.URL) == "" {
+				return fmt.Errorf("%s.url is required for redis store", path)
+			}
+			if _, err := redis.ParseURL(store.URL); err != nil {
+				return fmt.Errorf("%s.url is invalid: %w", path, err)
+			}
+		default:
+			return fmt.Errorf("%s.type %q is unsupported (supported: %s, %s)",
+				path, store.Type, StoreTypeMemory, StoreTypeRedis)
+		}
+	}
+
+	// sort for deterministic validation order
+	for _, name := range sortedTransportNames(v.config.Transports) {
+		transport := v.config.Transports[name]
+		path := fmt.Sprintf("%s.%s", FieldTransports, name)
+		switch transport.Type {
+		case TransportTypeKubernetes:
+		case TransportTypeRemote:
+			if strings.TrimSpace(transport.Store) == "" {
+				return fmt.Errorf("%s.%s is required for remote transport", path, FieldStore)
+			}
+			if _, ok := v.config.Stores[transport.Store]; !ok {
+				return fmt.Errorf("%s.%s references unknown store %q", path, FieldStore, transport.Store)
+			}
+		default:
+			return fmt.Errorf("%s.type %q is unsupported (supported: %s, %s)",
+				path, transport.Type, TransportTypeKubernetes, TransportTypeRemote)
+		}
+	}
+
+	return nil
+}
+
+func sortedStoreNames(stores map[string]StoreDefinition) []string {
+	return slices.Sorted(maps.Keys(stores))
+}
+
+func sortedTransportNames(transports map[string]TransportDefinition) []string {
+	return slices.Sorted(maps.Keys(transports))
 }
 
 func (v *AdapterConfigValidator) validateHyperfleetAuth() error {
