@@ -15,11 +15,14 @@ const (
 	FieldPost          = "post"
 	FieldEnv           = "env"
 	FieldEvent         = "event"
+	FieldTransports    = "transports"
+	FieldStores        = "stores"
 )
 
 // Adapter field names
 const (
 	FieldVersion = "version"
+	FieldStore   = "store"
 )
 
 // Parameter field names
@@ -81,6 +84,18 @@ const (
 const (
 	TransportClientKubernetes = "kubernetes"
 	TransportClientMaestro    = "maestro"
+)
+
+// Deployment transport types.
+const (
+	TransportTypeKubernetes = "kubernetes"
+	TransportTypeRemote     = "remote"
+)
+
+// Deployment store types.
+const (
+	StoreTypeMemory = "memory"
+	StoreTypeRedis  = "redis"
 )
 
 // Resource field names

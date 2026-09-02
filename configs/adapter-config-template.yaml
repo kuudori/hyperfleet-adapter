@@ -32,6 +32,28 @@ adapter:
 # Flag: --debug-config
 debug_config: false
 
+# Named deployment transports and stores. These are infrastructure settings,
+# loaded with the deployment config (including Viper overrides); they do not
+# belong in the task configuration.
+#
+# A Kubernetes entry needs no store. A remote entry writes desires through a
+# named memory or Redis store. Names are stable registry keys, so multiple
+# entries can use the same transport or store type.
+transports:
+  kubernetes:
+    type: kubernetes
+  remote:
+    type: remote
+    store: adapter-desires
+
+stores:
+  adapter-desires:
+    type: memory
+  # For Redis, replace the memory store above (or add another named store):
+  # redis-desires:
+  #   type: redis
+  #   url: "rediss://username:password@redis.example.com:6379/0"
+
 # Logging configuration
 # Priority: CLI flag > LOG_LEVEL/LOG_FORMAT/LOG_OUTPUT env vars > this file > defaults
 log:

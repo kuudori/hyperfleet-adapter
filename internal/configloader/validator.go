@@ -12,9 +12,11 @@ import (
 
 	"cel.dev/cel-go/cel"
 	"github.com/Masterminds/semver/v3"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 )
 
 // templateVarRegex matches Go template variables like {{ .varName }} or {{ .nested.var }}
@@ -53,6 +55,70 @@ func (v *AdapterConfigValidator) ValidateStructure() error {
 
 	if err := v.validateHyperfleetAuth(); err != nil {
 		return err
+	}
+	if err := v.validateTransportRegistry(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (v *AdapterConfigValidator) validateTransportRegistry() error {
+	if len(v.config.Transports) > 0 && v.config.Clients.Maestro != nil {
+		return fmt.Errorf("clients.maestro cannot be configured when transports are set")
+	}
+
+	// sort for deterministic validation order
+	storeNames := utils.SortedMapKeys(v.config.Stores)
+	for _, name := range storeNames {
+		store := v.config.Stores[name]
+		path := fmt.Sprintf("%s.%s", FieldStores, name)
+		switch store.Type {
+		case StoreTypeMemory:
+		case StoreTypeRedis:
+			if strings.TrimSpace(store.URL) == "" {
+				return fmt.Errorf("%s.url is required for redis store", path)
+			}
+			options, err := redis.ParseURL(store.URL)
+			if err != nil {
+				return fmt.Errorf("%s.url is invalid for redis store", path)
+			}
+			if options.Network == "tcp" && options.TLSConfig == nil &&
+				(options.Username != "" || options.Password != "") {
+				return fmt.Errorf("%s.url must use rediss:// when credentials are configured", path)
+			}
+		default:
+			return fmt.Errorf("%s.type %q is unsupported (supported: %s, %s)",
+				path, store.Type, StoreTypeMemory, StoreTypeRedis)
+		}
+	}
+
+	referencedStores := make(map[string]struct{}, len(v.config.Stores))
+
+	// sort for deterministic validation order
+	for _, name := range utils.SortedMapKeys(v.config.Transports) {
+		transport := v.config.Transports[name]
+		path := fmt.Sprintf("%s.%s", FieldTransports, name)
+		switch transport.Type {
+		case TransportTypeKubernetes:
+		case TransportTypeRemote:
+			if strings.TrimSpace(transport.Store) == "" {
+				return fmt.Errorf("%s.%s is required for remote transport", path, FieldStore)
+			}
+			if _, ok := v.config.Stores[transport.Store]; !ok {
+				return fmt.Errorf("%s.%s references unknown store %q", path, FieldStore, transport.Store)
+			}
+			referencedStores[transport.Store] = struct{}{}
+		default:
+			return fmt.Errorf("%s.type %q is unsupported (supported: %s, %s)",
+				path, transport.Type, TransportTypeKubernetes, TransportTypeRemote)
+		}
+	}
+
+	for _, name := range storeNames {
+		if _, ok := referencedStores[name]; !ok {
+			return fmt.Errorf("%s.%s is not referenced by any remote transport", FieldStores, name)
+		}
 	}
 
 	return nil
