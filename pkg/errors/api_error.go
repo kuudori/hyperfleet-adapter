@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 )
 
@@ -23,7 +24,8 @@ type APIError struct {
 	URL string
 	// Status is the HTTP status string (e.g., "503 Service Unavailable")
 	Status string
-	// ResponseBody is the response body (may contain error details from the API)
+	// ResponseBody is the response body (may contain error details from the API).
+	// Authentication and authorization response bodies are always redacted.
 	ResponseBody []byte
 	// Duration is the total duration including retries
 	Duration time.Duration
@@ -141,15 +143,12 @@ func (e *APIError) IsConflict() bool {
 // Response Body Helpers
 // -----------------------------------------------------------------------------
 
-// ResponseBodyString returns the response body as a string
+// ResponseBodyString returns the response body as a string.
 func (e *APIError) ResponseBodyString() string {
-	if e.ResponseBody == nil {
-		return ""
-	}
 	return string(e.ResponseBody)
 }
 
-// HasResponseBody returns true if there is a response body
+// HasResponseBody returns true if there is a response body.
 func (e *APIError) HasResponseBody() bool {
 	return len(e.ResponseBody) > 0
 }
@@ -158,7 +157,10 @@ func (e *APIError) HasResponseBody() bool {
 // Constructor and Helper Functions
 // -----------------------------------------------------------------------------
 
-// NewAPIError creates a new APIError with all fields
+// NewAPIError creates a new APIError. Response bodies are retained for existing
+// non-auth diagnostics. For 401 and 403 responses, both the body and underlying
+// error are replaced so sensitive response details cannot reach logs or resource
+// status conditions through the error chain.
 func NewAPIError(
 	method, url string,
 	statusCode int,
@@ -168,6 +170,11 @@ func NewAPIError(
 	duration time.Duration,
 	err error,
 ) *APIError {
+	if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+		body = nil
+		err = errors.New("authentication or authorization request failed")
+	}
+
 	return &APIError{
 		Method:       method,
 		URL:          url,
@@ -182,15 +189,8 @@ func NewAPIError(
 
 // IsAPIError checks if an error is an APIError and returns it.
 // This function supports wrapped errors via errors.As.
-//
-// Example usage:
-//
-//	if apiErr, ok := errors.IsAPIError(err); ok {
-//	    log.Printf("API call failed: status=%d body=%s", apiErr.StatusCode, apiErr.ResponseBodyString())
-//	}
 func IsAPIError(err error) (*APIError, bool) {
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*APIError](err); ok {
 		return apiErr, true
 	}
 	return nil, false

@@ -547,10 +547,8 @@ func TestAPIError(t *testing.T) {
 		t.Error("expected IsNotFound to return false for 503")
 	}
 
-	// Test ResponseBodyString
-	bodyStr := err.ResponseBodyString()
-	assert.Contains(t, bodyStr, "backend is down",
-		"expected response body string to contain error message, got: %s", bodyStr)
+	assert.Contains(t, err.ResponseBodyString(), "backend is down",
+		"expected response body string to contain error message, got: %s", err.ResponseBodyString())
 }
 
 func TestAPIErrorStatusHelpers(t *testing.T) {

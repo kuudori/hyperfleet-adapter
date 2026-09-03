@@ -33,6 +33,36 @@ func ToConditionDefs(conditions []configloader.Condition) []criteria.ConditionDe
 	return defs
 }
 
+// apiAuthFailureStatusCode returns the status code for wrapped API authorization errors.
+func apiAuthFailureStatusCode(err error) (int, bool) {
+	apiErr, ok := apierrors.IsAPIError(err)
+	if !ok {
+		return 0, false
+	}
+
+	if !isAPIAuthFailureHTTPStatus(apiErr.StatusCode) {
+		return 0, false
+	}
+
+	return apiErr.StatusCode, true
+}
+
+func isAPIAuthFailureHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden
+}
+
+// logAPIAuthFailure records a structured log for an API authentication or
+// authorization failure. Callers add context specific to their execution phase.
+func logAPIAuthFailure(ctx context.Context, err error, attrs ...any) {
+	statusCode, ok := apiAuthFailureStatusCode(err)
+	if !ok {
+		return
+	}
+
+	attrs = append([]any{"http_status", statusCode}, attrs...)
+	slog.ErrorContext(ctx, "hyperfleet api authentication or authorization failed", attrs...)
+}
+
 // ExecuteLogAction executes a log action with the given context
 // The message is rendered as a Go template with access to all params
 // This is a shared utility function used by both PreconditionExecutor and PostActionExecutor
@@ -62,7 +92,8 @@ func ExecuteLogAction(
 
 // ExecuteAPICall executes an API call with the given configuration and returns the response and rendered URL
 // This is a shared utility function used by both PreconditionExecutor and PostActionExecutor
-// On error, it returns an APIError with full context (method, URL, status, body, attempts, duration)
+// On error, it returns an APIError with request metadata. Response bodies are
+// retained for non-auth diagnostics and redacted for 401 and 403 responses.
 // Returns: response, renderedURL, error
 func ExecuteAPICall(
 	ctx context.Context,
@@ -135,15 +166,11 @@ func ExecuteAPICall(
 			}
 		}
 		resp, err = apiClient.Post(ctx, url, body, opts...)
-		// Log error message on failure for debugging purposes
-		if err != nil || (resp != nil && !resp.IsSuccess()) {
-			var logErr error
-			if err != nil {
-				logErr = err
-			} else {
-				logErr = fmt.Errorf("POST returned non-success status: %d", resp.StatusCode)
-			}
-			slog.ErrorContext(ctx, "post request failed", "error", logErr)
+		if err != nil {
+			slog.ErrorContext(ctx, "post request failed", "error", err)
+		} else if resp != nil && !resp.IsSuccess() {
+			slog.ErrorContext(ctx, "post request returned non-success status",
+				"status_code", resp.StatusCode, "status", resp.Status)
 		}
 	case http.MethodPut:
 		body := []byte(apiCall.Body)
@@ -154,15 +181,11 @@ func ExecuteAPICall(
 			}
 		}
 		resp, err = apiClient.Put(ctx, url, body, opts...)
-		// Log error message on failure for debugging purposes
-		if err != nil || (resp != nil && !resp.IsSuccess()) {
-			var logErr error
-			if err != nil {
-				logErr = err
-			} else {
-				logErr = fmt.Errorf("PUT returned non-success status: %d", resp.StatusCode)
-			}
-			slog.ErrorContext(ctx, "put request failed", "error", logErr)
+		if err != nil {
+			slog.ErrorContext(ctx, "put request failed", "error", err)
+		} else if resp != nil && !resp.IsSuccess() {
+			slog.ErrorContext(ctx, "put request returned non-success status",
+				"status_code", resp.StatusCode, "status", resp.Status)
 		}
 	case http.MethodPatch:
 		body := []byte(apiCall.Body)
@@ -183,8 +206,15 @@ func ExecuteAPICall(
 		// Return response AND error - response may contain useful details even on error
 		// (e.g., HTTP status code, response body)
 		if resp != nil {
-			slog.WarnContext(ctx, "api call failed", "status_code", resp.StatusCode, "status", resp.Status, "error", err)
-			// Wrap as APIError with full context
+			attrs := []any{
+				"status_code", resp.StatusCode,
+				"status", resp.Status,
+			}
+			if !isAPIAuthFailureHTTPStatus(resp.StatusCode) {
+				attrs = append(attrs, "error", err)
+			}
+			slog.WarnContext(ctx, "api call failed", attrs...)
+			// Wrap as APIError with request and response metadata.
 			apiErr := apierrors.NewAPIError(
 				apiCall.Method,
 				url,
@@ -315,8 +345,8 @@ func ValidateAPIResponse(resp *hyperfleetapi.Response, err error, method, url st
 
 	if !resp.IsSuccess() {
 		errMsg := fmt.Sprintf("API returned non-success status: %d %s", resp.StatusCode, resp.Status)
-		if len(resp.Body) > 0 {
-			errMsg = fmt.Sprintf("%s, response body: %s", errMsg, string(resp.Body))
+		if len(resp.Body) > 0 && !isAPIAuthFailureHTTPStatus(resp.StatusCode) {
+			errMsg = fmt.Sprintf("%s, response body: %s", errMsg, resp.Body)
 		}
 		baseErr := fmt.Errorf("%s", errMsg)
 		return apierrors.NewAPIError(

@@ -47,7 +47,10 @@ func WithMetrics(h HandlerFunc, recorder *metrics.Recorder) HandlerFunc {
 }
 
 // AlwaysAck wraps a HandlerFunc into a broker compatible handler that always returns nil,
-// preventing infinite retry loops for non-recoverable errors.
+// preventing infinite retry loops for non-recoverable errors. This deliberately includes
+// 401 and 403 responses: redelivery cannot repair credentials, allowlists, or tenant
+// dimensions, so the auth-failure metric surfaces the issue and the HyperFleet operator
+// reconciles affected resources after remediation.
 // Errors are logged at warn level before being discarded.
 func AlwaysAck(h HandlerFunc) func(ctx context.Context, evt *event.Event) error {
 	return func(ctx context.Context, evt *event.Event) error {
@@ -79,12 +82,18 @@ func recordMetrics(recorder *metrics.Recorder, result *ExecutionResult, duration
 	if result == nil {
 		return
 	}
+	for _, statusCode := range result.APIAuthFailureStatusCodes {
+		recorder.RecordAPIAuthFailure(statusCode)
+	}
 
 	switch {
 	case result.Status == StatusFailed:
 		recorder.RecordEventProcessed("failed")
-		for phase := range result.Errors {
+		for phase, err := range result.Errors {
 			recorder.RecordError(string(phase))
+			if statusCode, ok := apiAuthFailureStatusCode(err); ok {
+				recorder.RecordAPIAuthFailure(statusCode)
+			}
 		}
 	case result.ResourcesSkipped:
 		recorder.RecordEventProcessed("skipped")

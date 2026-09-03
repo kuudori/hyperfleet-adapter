@@ -4,6 +4,8 @@ GO ?= go
 TOOL_MOD := tools/go.mod
 gotool = "$(GO)" tool -modfile="$(TOOL_MOD)" $(1)
 GOFMT ?= gofmt
+# Keep promtool out of tools/go.mod: it pulls Prometheus' large server dependency graph.
+PROMTOOL := github.com/prometheus/prometheus@v0.304.2
 
 # Binary output directory and name
 BIN_DIR := bin
@@ -68,9 +70,20 @@ clean: ## Remove build artifacts
 ##@ Testing
 
 .PHONY: test
-test: ## Run unit tests with race detection
+test: test-alerts ## Run unit tests with race detection
 	$(GO) test -v -race -coverprofile=coverage.out -timeout $(TEST_TIMEOUT) \
 		$$($(GO) list ./... | grep -v /test/)
+
+.PHONY: promtool
+promtool: ## Build the pinned promtool binary
+	@mkdir -p $(BIN_DIR)
+	$(GO) mod download $(PROMTOOL)
+	cd "$$($(GO) env GOMODCACHE)/$(PROMTOOL)" && \
+		$(GO) build -o "$(CURDIR)/$(BIN_DIR)/promtool" ./cmd/promtool
+
+.PHONY: test-alerts
+test-alerts: promtool ## Test Prometheus alert rules
+	$(BIN_DIR)/promtool test rules test/alerts/*_test.yaml
 
 .PHONY: test-coverage
 test-coverage: test ## Run tests and show coverage
@@ -85,7 +98,7 @@ image-integration-test: ## Build integration test image with envtest
 	@bash scripts/build-integration-image.sh
 
 .PHONY: test-all
-test-all: lint test test-integration test-helm ## Run all checks (lint, unit, integration, helm)
+test-all: lint test test-alerts test-integration test-helm ## Run all checks (lint, unit, alerts, integration, helm)
 
 ##@ Helm Charts
 

@@ -110,15 +110,13 @@ func TestValidateAPIResponse_NonSuccessStatusCodes(t *testing.T) {
 			status:      "401 Unauthorized",
 			body:        []byte(`{"error":"invalid token"}`),
 			expectError: true,
-			expectBody:  true,
 		},
 		{
 			name:        "403 Forbidden",
 			statusCode:  403,
 			status:      "403 Forbidden",
-			body:        nil,
+			body:        []byte(`{"error":"tenant forbidden"}`),
 			expectError: true,
-			expectBody:  false,
 		},
 		{
 			name:        "404 Not Found",
@@ -150,7 +148,6 @@ func TestValidateAPIResponse_NonSuccessStatusCodes(t *testing.T) {
 			status:      "502 Bad Gateway",
 			body:        nil,
 			expectError: true,
-			expectBody:  false,
 		},
 		{
 			name:        "503 Service Unavailable",
@@ -166,7 +163,6 @@ func TestValidateAPIResponse_NonSuccessStatusCodes(t *testing.T) {
 			status:      "504 Gateway Timeout",
 			body:        nil,
 			expectError: true,
-			expectBody:  false,
 		},
 	}
 
@@ -193,9 +189,12 @@ func TestValidateAPIResponse_NonSuccessStatusCodes(t *testing.T) {
 				assert.Equal(t, "GET", apiErr.Method)
 				assert.Equal(t, "http://example.com/api", apiErr.URL)
 
+				assert.Equal(t, tt.expectBody, apiErr.HasResponseBody())
 				if tt.expectBody {
 					assert.Equal(t, tt.body, apiErr.ResponseBody)
 					assert.Contains(t, apiErr.Error(), string(tt.body))
+				} else if len(tt.body) > 0 {
+					assert.NotContains(t, apiErr.Error(), string(tt.body))
 				}
 			} else {
 				assert.NoError(t, err)

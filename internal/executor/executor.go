@@ -107,7 +107,9 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 
 	// Phase 1: Parameter Extraction
 	slog.InfoContext(ctx, "phase running", "phase", result.CurrentPhase)
-	if paramErr := e.executeParamExtraction(execCtx); paramErr != nil {
+	paramErr := e.executeParamExtraction(execCtx)
+	result.APIAuthFailureStatusCodes = execCtx.APIAuthFailureStatusCodes
+	if paramErr != nil {
 		result.Status = StatusFailed
 		result.Errors[PhaseParamExtraction] = paramErr
 		execCtx.SetError("ParameterExtractionFailed", paramErr.Error())
@@ -146,7 +148,10 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 		precondErr := fmt.Errorf("precondition evaluation failed: error=%w", precondOutcome.Error)
 		result.Errors[result.CurrentPhase] = precondErr
 		execCtx.SetError("PreconditionFailed", precondOutcome.Error.Error())
-		slog.ErrorContext(ctx, "phase failed", "phase", result.CurrentPhase, "error", precondOutcome.Error)
+		slog.ErrorContext(ctx, "phase failed",
+			"phase", result.CurrentPhase,
+			"error", precondOutcome.Error,
+		)
 		result.ResourcesSkipped = true
 		result.SkipReason = "PreconditionFailed"
 		// Set skip metadata on adapter context without overwriting the failed execution status

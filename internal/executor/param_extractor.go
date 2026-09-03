@@ -26,10 +26,17 @@ func extractConfigParams(
 	for _, param := range config.Params {
 		value, err := extractParam(ctx, param, execCtx, configMap, apiClient)
 		if err != nil {
+			statusCode, isAuthFailure := apiAuthFailureStatusCode(err)
+			if isAuthFailure {
+				logAPIAuthFailure(ctx, err, "phase", PhaseParamExtraction, "param", param.Name)
+			}
 			if param.Required {
 				return NewExecutorError(PhaseParamExtraction, param.Name,
 					fmt.Sprintf("failed to extract required parameter '%s' from source '%s'",
 						param.Name, param.Source.Describe()), err)
+			}
+			if isAuthFailure {
+				execCtx.APIAuthFailureStatusCodes = append(execCtx.APIAuthFailureStatusCodes, statusCode)
 			}
 			if param.Default != nil {
 				execCtx.Params[param.Name] = param.Default

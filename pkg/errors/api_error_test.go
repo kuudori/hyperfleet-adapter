@@ -2,6 +2,7 @@ package errors
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,6 +18,29 @@ func resourceNotFoundBody() []byte {
 		"code": "HYPERFLEET-NTF-002",
 		"trace_id": "019ed716-f3cf-7b8e-b400-0796be4722c3"
 	}`)
+}
+
+func TestNewAPIError_RedactsAuthResponseBodies(t *testing.T) {
+	for _, statusCode := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			body := []byte(`{"detail":"sensitive authentication context"}`)
+			underlyingErr := fmt.Errorf("request rejected: %s", body)
+			err := NewAPIError(
+				http.MethodGet,
+				"/clusters/cls-123",
+				statusCode,
+				http.StatusText(statusCode),
+				body,
+				1,
+				0,
+				underlyingErr,
+			)
+
+			assert.False(t, err.HasResponseBody())
+			assert.NotContains(t, err.Error(), string(body))
+			assert.NotErrorIs(t, err, underlyingErr)
+		})
+	}
 }
 
 func brokenEndpointBody() []byte {

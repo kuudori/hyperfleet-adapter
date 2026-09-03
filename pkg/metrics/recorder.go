@@ -3,6 +3,8 @@
 package metrics
 
 import (
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,7 @@ type Recorder struct {
 	eventsProcessed    *prometheus.CounterVec
 	processingDuration prometheus.Observer
 	errorsTotal        *prometheus.CounterVec
+	apiAuthFailures    *prometheus.CounterVec
 	deletionTotal      *prometheus.CounterVec
 	deletionDuration   *prometheus.HistogramVec
 	deletionInProgress *prometheus.GaugeVec
@@ -126,6 +129,19 @@ func NewRecorder(component, version, adapterName string, reg prometheus.Register
 		[]string{"error_type"},
 	)
 
+	apiAuthFailures := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "hyperfleet_adapter_api_auth_failures_total",
+			Help: "Total number of API authentication and authorization failures",
+			ConstLabels: prometheus.Labels{
+				"component":    component,
+				"version":      version,
+				"adapter_name": adapterName,
+			},
+		},
+		[]string{"status_code"},
+	)
+
 	deletionTotal := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "hyperfleet_adapter_resources_deleted_total",
@@ -169,6 +185,7 @@ func NewRecorder(component, version, adapterName string, reg prometheus.Register
 	reg.MustRegister(eventsProcessed)
 	reg.MustRegister(processingDuration)
 	reg.MustRegister(errorsTotal)
+	reg.MustRegister(apiAuthFailures)
 	reg.MustRegister(deletionTotal)
 	reg.MustRegister(deletionDuration)
 	reg.MustRegister(deletionInProgress)
@@ -177,6 +194,7 @@ func NewRecorder(component, version, adapterName string, reg prometheus.Register
 		eventsProcessed:    eventsProcessed,
 		processingDuration: processingDuration,
 		errorsTotal:        errorsTotal,
+		apiAuthFailures:    apiAuthFailures,
 		deletionTotal:      deletionTotal,
 		deletionDuration:   deletionDuration,
 		deletionInProgress: deletionInProgress,
@@ -208,6 +226,18 @@ func (r *Recorder) RecordError(errorType string) {
 		return
 	}
 	r.errorsTotal.WithLabelValues(errorType).Inc()
+}
+
+// RecordAPIAuthFailure increments the auth-failure counter for HTTP 401 or 403.
+func (r *Recorder) RecordAPIAuthFailure(statusCode int) {
+	if r == nil {
+		return
+	}
+
+	switch statusCode {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		r.apiAuthFailures.WithLabelValues(strconv.Itoa(statusCode)).Inc()
+	}
 }
 
 // RecordDeletion increments the resources_deleted_total counter for the given resource type.
