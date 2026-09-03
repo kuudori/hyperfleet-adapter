@@ -1,0 +1,33 @@
+rule_files:
+  - hyperfleet-adapter-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'hyperfleet_adapter_api_auth_failures_total{component="hyperfleet-adapter",version="test",adapter_name="adapter-a",status_code="403"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HyperFleetAdapterAPIAuthFailures
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'hyperfleet_adapter_api_auth_failures_total{component="hyperfleet-adapter",version="test",adapter_name="adapter-a",status_code="403"}'
+        values: '0 1 2 3 3 3 3 3 3 3 3 3'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HyperFleetAdapterAPIAuthFailures
+        exp_alerts:
+          - exp_labels:
+              alertname: HyperFleetAdapterAPIAuthFailures
+              severity: critical
+              component: hyperfleet-adapter
+              version: test
+              adapter_name: adapter-a
+              status_code: "403"
+            exp_annotations:
+              summary: "HyperFleet Adapter API authentication or authorization failures"
+              description: "The HyperFleet API returned HTTP 403 to adapter-a. Check its service-account token, API gateway configuration, and subject allowlist. When tenant enforcement is enabled, verify tenant dimensions are present and non-empty and tenant headers are propagated."

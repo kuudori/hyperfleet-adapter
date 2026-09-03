@@ -547,10 +547,7 @@ func TestAPIError(t *testing.T) {
 		t.Error("expected IsNotFound to return false for 503")
 	}
 
-	// Test ResponseBodyString
-	bodyStr := err.ResponseBodyString()
-	assert.Contains(t, bodyStr, "backend is down",
-		"expected response body string to contain error message, got: %s", bodyStr)
+	assert.NotContains(t, err.Error(), "backend is down")
 }
 
 func TestAPIErrorStatusHelpers(t *testing.T) {
@@ -660,8 +657,7 @@ func TestAPIErrorInRetryExhausted(t *testing.T) {
 	if apiErr.Attempts != 2 {
 		t.Errorf("expected 2 attempts, got %d", apiErr.Attempts)
 	}
-	assert.Contains(t, apiErr.ResponseBodyString(), "backend overloaded",
-		"expected response body to contain error message, got: %s", apiErr.ResponseBodyString())
+	assert.NotContains(t, apiErr.Error(), "backend overloaded")
 	if !apiErr.IsServerError() {
 		t.Error("expected IsServerError to return true")
 	}

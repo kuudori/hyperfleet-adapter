@@ -69,7 +69,10 @@ func (pae *PostActionExecutor) ExecuteAll(
 		results = append(results, result)
 
 		if err != nil {
-			slog.ErrorContext(ctx, "post action processed: failed", "post_action", action.Name, "error", err)
+			slog.ErrorContext(ctx, "post action processed: failed",
+				"post_action", action.Name,
+				"error", err,
+			)
 
 			if execCtx.Adapter.ExecutionError == nil {
 				execCtx.Adapter.ExecutionError = &ExecutionError{
@@ -351,6 +354,14 @@ func (pae *PostActionExecutor) executeAPICall(
 	if validationErr := ValidateAPIResponse(resp, err, apiCall.Method, url); validationErr != nil {
 		result.Status = StatusFailed
 		result.Error = validationErr
+
+		attrs := []any{"post_action", result.Name}
+		if execCtx != nil {
+			if clusterID, ok := execCtx.EventData["id"].(string); ok {
+				attrs = append(attrs, "cluster_id", clusterID)
+			}
+		}
+		logAPIAuthFailure(ctx, validationErr, attrs...)
 
 		// Determine error context
 		errorContext := "API call failed"

@@ -181,14 +181,23 @@ All event failures are ACKed (not retried) to avoid infinite loops on non-transi
 
 The adapter retries on 5xx, 408 (Request Timeout), and 429 (Too Many Requests) with configurable backoff (exponential, linear, or constant).
 
+#### API Authentication and Authorization Failures
+
+**Symptoms:** `hyperfleet_adapter_api_auth_failures_total{status_code=~"401|403"}` is increasing. Error logs include `http_status` and either `phase` (parameter extraction or preconditions) or `post_action`, with the affected resource context.
+
+HTTP 401 and 403 failures are ACKed under the normal event-failure policy; they are not redelivered automatically. Redelivery cannot repair invalid credentials, subject allowlists, or tenant dimensions.
+
+**Remediation:** For HTTP 403 responses with tenant enforcement enabled, verify the gateway-injected tenant dimensions before changing the projected service-account token or subject allowlist. If they are correct, check the token and allowlist, then rely on normal upstream reconciliation.
+
 **Steps:**
-1. Check HyperFleet API health: `kubectl get pods -l app=hyperfleet-api`
-2. Check API response times from the adapter pod:
+1. With tenant enforcement enabled, verify gateway-injected tenant dimensions match the adapter's tenant.
+2. Check HyperFleet API health: `kubectl get pods -l app=hyperfleet-api`
+3. Check API response times from the adapter pod:
    ```bash
    kubectl exec <pod> -- curl -s -o /dev/null -w "%{http_code} %{time_total}s" http://hyperfleet-api:8000/healthz
    ```
-3. Check for resource exhaustion on the API service
-4. Review `retryAttempts` and `timeout` in adapter config
+4. Check for resource exhaustion on the API service
+5. Review `retryAttempts` and `timeout` in adapter config
 
 ---
 

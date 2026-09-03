@@ -31,6 +31,10 @@ func extractConfigParams(
 					fmt.Sprintf("failed to extract required parameter '%s' from source '%s'",
 						param.Name, param.Source.Describe()), err)
 			}
+			if statusCode, ok := apiAuthFailureStatusCode(err); ok {
+				execCtx.APIAuthFailureStatusCodes = append(execCtx.APIAuthFailureStatusCodes, statusCode)
+				logAPIAuthFailure(ctx, err, "phase", PhaseParamExtraction, "param", param.Name)
+			}
 			if param.Default != nil {
 				execCtx.Params[param.Name] = param.Default
 			}

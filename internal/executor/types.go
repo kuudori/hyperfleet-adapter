@@ -78,6 +78,9 @@ type Executor struct {
 
 // ExecutionResult contains the result of processing an event
 type ExecutionResult struct {
+	// APIAuthFailureStatusCodes contains authentication or authorization failures
+	// encountered by optional API-backed parameters that did not fail execution.
+	APIAuthFailureStatusCodes []int
 	// ExecutionContext contains the full execution context (for testing and debugging)
 	ExecutionContext *ExecutionContext
 	// Params contains the extracted parameters
@@ -169,6 +172,9 @@ type PostActionResult struct {
 
 // ExecutionContext holds runtime context during execution
 type ExecutionContext struct {
+	// APIAuthFailureStatusCodes tracks authentication or authorization failures
+	// from optional API-backed parameters.
+	APIAuthFailureStatusCodes []int
 	// Ctx is the Go context
 	Ctx context.Context
 	// Config is the unified adapter configuration

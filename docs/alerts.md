@@ -45,6 +45,25 @@ annotations:
   description: "More than 10% of events are failing for {{ $labels.component }}."
 ```
 
+### HyperFleet API Authentication or Authorization Failures
+
+```yaml
+alert: HyperFleetAdapterAPIAuthFailures
+expr: |
+  sum by (component, version, adapter_name, status_code) (
+    increase(hyperfleet_adapter_api_auth_failures_total[5m])
+  ) >= 3
+labels:
+  severity: critical
+annotations:
+  summary: "HyperFleet Adapter API authentication or authorization failures"
+  description: "The HyperFleet API returned HTTP {{ $labels.status_code }} to {{ $labels.adapter_name }}. Check its service-account token, API gateway configuration, and subject allowlist. When tenant enforcement is enabled, verify tenant dimensions are present and non-empty and tenant headers are propagated."
+```
+
+**Impact:** The affected adapter cannot complete API-backed parameter extraction, preconditions, or post-actions until its identity is accepted.
+
+**Response:** For HTTP 403 responses with tenant enforcement enabled, verify the gateway-injected tenant dimensions before changing the service-account token or subject allowlist. See [API Authentication and Authorization Failures](runbook.md#api-authentication-and-authorization-failures).
+
 ### No Events Processed (Dead Man's Switch)
 
 ```yaml

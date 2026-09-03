@@ -321,6 +321,10 @@ func TestNilRecorderNoPanic(t *testing.T) {
 	}, "RecordError on nil recorder")
 
 	assert.NotPanics(t, func() {
+		recorder.RecordAPIAuthFailure(401)
+	}, "RecordAPIAuthFailure on nil recorder")
+
+	assert.NotPanics(t, func() {
 		recorder.RecordDeletion("Namespace", DeletionStatusSuccess)
 	}, "RecordDeletion on nil recorder")
 

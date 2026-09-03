@@ -79,12 +79,18 @@ func recordMetrics(recorder *metrics.Recorder, result *ExecutionResult, duration
 	if result == nil {
 		return
 	}
+	for _, statusCode := range result.APIAuthFailureStatusCodes {
+		recorder.RecordAPIAuthFailure(statusCode)
+	}
 
 	switch {
 	case result.Status == StatusFailed:
 		recorder.RecordEventProcessed("failed")
-		for phase := range result.Errors {
+		for phase, err := range result.Errors {
 			recorder.RecordError(string(phase))
+			if statusCode, ok := apiAuthFailureStatusCode(err); ok {
+				recorder.RecordAPIAuthFailure(statusCode)
+			}
 		}
 	case result.ResourcesSkipped:
 		recorder.RecordEventProcessed("skipped")

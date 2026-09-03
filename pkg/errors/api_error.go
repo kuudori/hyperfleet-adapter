@@ -23,8 +23,9 @@ type APIError struct {
 	URL string
 	// Status is the HTTP status string (e.g., "503 Service Unavailable")
 	Status string
-	// ResponseBody is the response body (may contain error details from the API)
-	ResponseBody []byte
+	// brokenEndpoint reports whether a 404 response came from the API's
+	// catch-all route rather than a missing resource.
+	brokenEndpoint bool
 	// Duration is the total duration including retries
 	Duration time.Duration
 	// StatusCode is the HTTP status code (0 if request failed before getting response)
@@ -43,16 +44,15 @@ type problemDetails struct {
 	Code string `json:"code"`
 }
 
-// parseProblemDetails attempts to parse the response body as RFC 9457 Problem Details.
-func (e *APIError) parseProblemDetails() (problemDetails, bool) {
-	if !e.HasResponseBody() {
-		return problemDetails{}, false
-	}
+// isBrokenEndpointResponse reports whether an RFC 9457 response identifies the
+// API's catch-all route. The response body is inspected only while constructing
+// an APIError and is never retained on the error.
+func isBrokenEndpointResponse(body []byte) bool {
 	var pd problemDetails
-	if err := json.Unmarshal(e.ResponseBody, &pd); err != nil {
-		return problemDetails{}, false
+	if err := json.Unmarshal(body, &pd); err != nil {
+		return false
 	}
-	return pd, true
+	return pd.Code == brokenEndpointCode
 }
 
 // Error implements the error interface.
@@ -99,17 +99,13 @@ func (e *APIError) IsNotFound() bool {
 // IsResourceNotFound returns true when the 404 represents a real resource that
 // was not found, as opposed to a broken/misconfigured URL.
 // It defaults to true for any 404 (safe fallback if proxies strip the response
-// body), and only returns false when the RFC 9457 body contains the catch-all
+// body), and only returns false when the RFC 9457 response contains the catch-all
 // error code HYPERFLEET-NTF-000, which signals no route matched the request URL.
 func (e *APIError) IsResourceNotFound() bool {
 	if !e.IsNotFound() {
 		return false
 	}
-	pd, ok := e.parseProblemDetails()
-	if !ok {
-		return true
-	}
-	return pd.Code != brokenEndpointCode
+	return !e.brokenEndpoint
 }
 
 // IsUnauthorized returns true if the error was a 401 Unauthorized
@@ -138,27 +134,11 @@ func (e *APIError) IsConflict() bool {
 }
 
 // -----------------------------------------------------------------------------
-// Response Body Helpers
-// -----------------------------------------------------------------------------
-
-// ResponseBodyString returns the response body as a string
-func (e *APIError) ResponseBodyString() string {
-	if e.ResponseBody == nil {
-		return ""
-	}
-	return string(e.ResponseBody)
-}
-
-// HasResponseBody returns true if there is a response body
-func (e *APIError) HasResponseBody() bool {
-	return len(e.ResponseBody) > 0
-}
-
-// -----------------------------------------------------------------------------
 // Constructor and Helper Functions
 // -----------------------------------------------------------------------------
 
-// NewAPIError creates a new APIError with all fields
+// NewAPIError creates a new APIError. For 404 responses, body is inspected to
+// preserve resource-not-found classification, but is not retained.
 func NewAPIError(
 	method, url string,
 	statusCode int,
@@ -169,25 +149,19 @@ func NewAPIError(
 	err error,
 ) *APIError {
 	return &APIError{
-		Method:       method,
-		URL:          url,
-		StatusCode:   statusCode,
-		Status:       status,
-		ResponseBody: body,
-		Attempts:     attempts,
-		Duration:     duration,
-		Err:          err,
+		Method:         method,
+		URL:            url,
+		StatusCode:     statusCode,
+		Status:         status,
+		brokenEndpoint: statusCode == 404 && isBrokenEndpointResponse(body),
+		Attempts:       attempts,
+		Duration:       duration,
+		Err:            err,
 	}
 }
 
 // IsAPIError checks if an error is an APIError and returns it.
 // This function supports wrapped errors via errors.As.
-//
-// Example usage:
-//
-//	if apiErr, ok := errors.IsAPIError(err); ok {
-//	    log.Printf("API call failed: status=%d body=%s", apiErr.StatusCode, apiErr.ResponseBodyString())
-//	}
 func IsAPIError(err error) (*APIError, bool) {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {

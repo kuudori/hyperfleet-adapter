@@ -40,7 +40,10 @@ func (pe *PreconditionExecutor) ExecuteAll(
 
 		if err != nil {
 			// Execution error (API call failed, parse error, etc.)
-			slog.ErrorContext(ctx, "precondition evaluated: failed", "precondition", precond.Name, "error", err)
+			slog.ErrorContext(ctx, "precondition evaluated: failed",
+				"precondition", precond.Name,
+				"error", err,
+			)
 			return &PreconditionsOutcome{
 				AllMatched: false,
 				Results:    results,

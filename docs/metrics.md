@@ -26,6 +26,7 @@ All adapter metrics include `component` and `version` as constant labels. Event-
 | `hyperfleet_adapter_events_processed_total` | Counter | `component`, `version`, `adapter_name`, `status` | Total CloudEvents processed. Status: `success`, `failed`, `skipped` |
 | `hyperfleet_adapter_event_processing_duration_seconds` | Histogram | `component`, `version`, `adapter_name` | End-to-end event processing duration |
 | `hyperfleet_adapter_errors_total` | Counter | `component`, `version`, `adapter_name`, `error_type` | Total errors by execution phase |
+| `hyperfleet_adapter_api_auth_failures_total` | Counter | `component`, `version`, `adapter_name`, `status_code` | Total HyperFleet API authentication and authorization failures. `status_code` is always `401` or `403` |
 
 #### Status Values
 
@@ -101,6 +102,14 @@ Error rate by phase:
 
 ```promql
 sum by (error_type) (rate(hyperfleet_adapter_errors_total[5m]))
+```
+
+HyperFleet API authentication and authorization failures:
+
+```promql
+sum by (status_code) (
+  rate(hyperfleet_adapter_api_auth_failures_total{status_code=~"401|403"}[5m])
+)
 ```
 
 ## Broker Metrics
