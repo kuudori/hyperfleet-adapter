@@ -19,9 +19,10 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 )
 
 // newMockAPIClient creates a new mock API client for convenience
@@ -91,7 +92,6 @@ func build404TestExecutor(t *testing.T, config *configloader.Config, mockClient 
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 	return exec
@@ -113,7 +113,6 @@ func TestNewExecutor(t *testing.T) {
 			name: "missing adapter config",
 			config: &ExecutorConfig{
 				APIClient: newMockAPIClient(),
-				Logger:    logger.NewTestLogger(),
 			},
 			expectError: true,
 		},
@@ -121,12 +120,11 @@ func TestNewExecutor(t *testing.T) {
 			name: "missing API client",
 			config: &ExecutorConfig{
 				Config: &configloader.Config{},
-				Logger: logger.NewTestLogger(),
 			},
 			expectError: true,
 		},
 		{
-			name: "missing logger",
+			name: "missing transport client",
 			config: &ExecutorConfig{
 				Config:    &configloader.Config{},
 				APIClient: newMockAPIClient(),
@@ -139,7 +137,6 @@ func TestNewExecutor(t *testing.T) {
 				Config:          &configloader.Config{},
 				APIClient:       newMockAPIClient(),
 				TransportClient: k8sclient.NewMockK8sClient(),
-				Logger:          logger.NewTestLogger(),
 			},
 			expectError: false,
 		},
@@ -169,7 +166,6 @@ func TestExecutorBuilder(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 
 	require.NoError(t, err)
@@ -336,7 +332,6 @@ func TestExecute_ParamExtraction(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	if err != nil {
 		t.Fatalf("unexpected error creating executor: %v", err)
@@ -348,7 +343,7 @@ func TestExecute_ParamExtraction(t *testing.T) {
 	}
 
 	// Execute with event ID in context
-	ctx := logger.WithEventID(context.Background(), "test-event-123")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-event-123")
 	result := exec.Execute(ctx, eventData)
 
 	// Check result
@@ -433,7 +428,6 @@ func TestExecute_ParamsAPICallSource(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -566,7 +560,7 @@ func TestParamExtractor(t *testing.T) {
 			// Extract params using pure function
 			configMap, err := configToMap(config)
 			require.NoError(t, err)
-			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil, logger.NewTestLogger())
+			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -594,7 +588,7 @@ func runParamExtraction(
 	configMap, err := configToMap(config)
 	require.NoError(t, err)
 	addAdapterParams(config, execCtx, configMap)
-	err = extractConfigParams(context.Background(), config, execCtx, configMap, mockClient, logger.NewTestLogger())
+	err = extractConfigParams(context.Background(), config, execCtx, configMap, mockClient)
 	return execCtx, err
 }
 
@@ -1013,13 +1007,12 @@ func TestSequentialExecution_Preconditions(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(newMockAPIClient()).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			if err != nil {
 				t.Fatalf("unexpected error creating executor: %v", err)
 			}
 
-			ctx := logger.WithEventID(context.Background(), "test-event-seq")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-event-seq")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			// Verify number of precondition results
@@ -1086,11 +1079,10 @@ func TestPrecondition_CustomCELFunctions(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(newMockAPIClient()).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			require.NoError(t, err, "failed to create executor")
 
-			ctx := logger.WithEventID(context.Background(), "test-custom-cel")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-custom-cel")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			// Verify precondition executed
@@ -1173,13 +1165,12 @@ func TestSequentialExecution_Resources(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(newMockAPIClient()).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			if err != nil {
 				t.Fatalf("unexpected error creating executor: %v", err)
 			}
 
-			ctx := logger.WithEventID(context.Background(), "test-event-resources")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-event-resources")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			// Verify sequential stop-on-failure: number of results should match expected
@@ -1242,13 +1233,12 @@ func TestSequentialExecution_PostActions(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(mockClient).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			if err != nil {
 				t.Fatalf("unexpected error creating executor: %v", err)
 			}
 
-			ctx := logger.WithEventID(context.Background(), "test-event-post")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-event-post")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			// Verify number of post action results
@@ -1310,13 +1300,12 @@ func TestSequentialExecution_SkipReasonCapture(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(newMockAPIClient()).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			if err != nil {
 				t.Fatalf("unexpected error creating executor: %v", err)
 			}
 
-			ctx := logger.WithEventID(context.Background(), "test-event-skip")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-event-skip")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			// Verify execution status is success (adapter executed successfully)
@@ -1373,11 +1362,10 @@ func TestCreateHandler_MetricsRecording(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(newMockAPIClient()).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			require.NoError(t, err)
 
-			handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder, logger.NewTestLogger()), logger.NewTestLogger())
+			handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder))
 
 			evt := event.New()
 			evt.SetID("test-event-1")
@@ -1422,11 +1410,10 @@ func TestCreateHandler_MetricsRecording_Failed(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
-	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder, logger.NewTestLogger()), logger.NewTestLogger())
+	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder))
 
 	evt := event.New()
 	evt.SetID("test-event-fail")
@@ -1461,11 +1448,10 @@ func TestCreateHandler_NilMetricsRecorder(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
-	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), nil, logger.NewTestLogger()), logger.NewTestLogger())
+	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), nil))
 
 	evt := event.New()
 	evt.SetID("test-event-nil")
@@ -1520,7 +1506,7 @@ func TestWithMetrics_RecordsMetrics(t *testing.T) {
 			inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*ExecutionResult, error) {
 				return tt.result, nil
 			})
-			handler := WithMetrics(inner, recorder, logger.NewTestLogger())
+			handler := WithMetrics(inner, recorder)
 
 			evt := event.New()
 			evt.SetID("test-metrics-" + tt.name)
@@ -1561,7 +1547,7 @@ func TestWithMetrics_HandlerPanicPropagates(t *testing.T) {
 
 	registry := prometheus.NewRegistry()
 	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-	handler := WithMetrics(inner, recorder, logger.NewTestLogger())
+	handler := WithMetrics(inner, recorder)
 
 	evt := event.New()
 	evt.SetID("test-handler-panic")
@@ -1583,7 +1569,7 @@ func TestWithMetrics_MetricsPanicRecovered(t *testing.T) {
 	// new(metrics.Recorder) bypasses the nil receiver guard but has nil internal
 	// fields, causing panic inside recordMetrics
 	panicRecorder := new(metrics.Recorder)
-	handler := WithMetrics(inner, panicRecorder, logger.NewTestLogger())
+	handler := WithMetrics(inner, panicRecorder)
 
 	evt := event.New()
 	evt.SetID("test-metrics-panic")
@@ -1624,7 +1610,7 @@ func TestAlwaysAck_AlwaysReturnsNil(t *testing.T) {
 				return tt.result, tt.err
 			})
 
-			handler := AlwaysAck(inner, logger.NewTestLogger())
+			handler := AlwaysAck(inner)
 
 			evt := event.New()
 			evt.SetID("test-ack")
@@ -1679,11 +1665,10 @@ func TestPreconditionAPIFailure_ExecutionStatusRemainsFailed(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
-	ctx := logger.WithEventID(context.Background(), "test-precond-fail")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-precond-fail")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cluster-123"})
 
 	// Verify overall result status is failed
@@ -1793,11 +1778,10 @@ func TestPreconditionCapture_NamedMapVariable(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(mockClient).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			require.NoError(t, err)
 
-			ctx := logger.WithEventID(context.Background(), "test-named-map")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-named-map")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			require.Equal(t, StatusSuccess, result.Status)
@@ -1906,11 +1890,10 @@ func TestPreconditionCapture_FieldDefault(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(mockClient).
 				WithTransportClient(k8sclient.NewMockK8sClient()).
-				WithLogger(logger.NewTestLogger()).
 				Build()
 			require.NoError(t, err)
 
-			ctx := logger.WithEventID(context.Background(), "test-field-default")
+			ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-field-default")
 			result := exec.Execute(ctx, map[string]interface{}{})
 
 			require.Equal(t, StatusSuccess, result.Status)
@@ -1920,6 +1903,62 @@ func TestPreconditionCapture_FieldDefault(t *testing.T) {
 				"captured %s should be %v", tt.capture.Name, tt.wantValue)
 		})
 	}
+}
+
+func TestPreconditionCapture_ExtractErrorFailsPhase(t *testing.T) {
+	mockClient := newMockAPIClient()
+	mockClient.GetResponse = &hyperfleetapi.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Body:       []byte(`{"name":"cluster-1"}`),
+	}
+
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+		Clients: configloader.ClientsConfig{
+			HyperfleetAPI: configloader.HyperfleetAPIConfig{
+				BaseURL: "http://mock-api:8000",
+				Version: "v1",
+			},
+		},
+		Preconditions: []configloader.Precondition{
+			{
+				ActionBase: configloader.ActionBase{
+					Name: "fetchCluster",
+					APICall: &configloader.APICall{
+						Method:  "GET",
+						URL:     "/clusters/test",
+						Timeout: "2s",
+					},
+				},
+				Capture: []configloader.CaptureField{
+					{
+						Name: "bad",
+						FieldExpressionDef: configloader.FieldExpressionDef{
+							Field:      "name",
+							Expression: "true",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithAPIClient(mockClient).
+		WithTransportClient(k8sclient.NewMockK8sClient()).
+		Build()
+	require.NoError(t, err)
+
+	result := exec.Execute(context.Background(), map[string]interface{}{})
+
+	require.Equal(t, StatusFailed, result.Status)
+	require.Error(t, result.Errors[PhasePreconditions])
+	assert.Contains(t, result.Errors[PhasePreconditions].Error(), "mutually exclusive")
+	require.NotNil(t, result.ExecutionContext)
+	require.NotNil(t, result.ExecutionContext.Adapter.ExecutionError)
+	assert.Equal(t, "PreconditionFailed", result.ExecutionContext.Adapter.ExecutionError.Phase)
 }
 
 // helper functions for metrics assertions
@@ -1993,7 +2032,7 @@ func TestPrecondition404_GracefulStop(t *testing.T) {
 	config := new404PreconditionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-precond-404")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-precond-404")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cluster-gone"})
 
 	assert.Equal(t, StatusSuccess, result.Status,
@@ -2025,7 +2064,7 @@ func TestPostAction404_GracefulHandling(t *testing.T) {
 	config := new404PostActionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-postaction-404")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-postaction-404")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cluster-gone"})
 
 	// Status should be success; 404 in post-actions is gracefully handled
@@ -2057,7 +2096,7 @@ func TestPrecondition404_SkipsPostActions(t *testing.T) {
 	config := new404PostActionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-precond-404-skips-post")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-precond-404-skips-post")
 	_ = exec.Execute(ctx, map[string]interface{}{"id": "cluster-gone"})
 
 	// Only the precondition GET should have been made; no PUT for post-actions
@@ -2087,7 +2126,7 @@ func TestPreconditionFail_PostAction404(t *testing.T) {
 	config := new404PostActionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-precond-fail-post-404")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-precond-fail-post-404")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cluster-gone"})
 
 	// Status stays failed (precondition error is the primary failure)
@@ -2108,6 +2147,38 @@ func TestPreconditionFail_PostAction404(t *testing.T) {
 		"post-action 404 should not add an error")
 }
 
+// TestPreconditionFail_PostActionFail_KeepsFirstExecutionError verifies that when
+// a precondition fails and a later post-action also fails, adapter.executionError
+// (and therefore CEL) keeps the original precondition failure.
+func TestPreconditionFail_PostActionFail_KeepsFirstExecutionError(t *testing.T) {
+	mockClient := newMockAPIClient()
+	mockClient.GetResponse, mockClient.GetError = mockErrorResponse(500)
+	mockClient.PutResponse, mockClient.PutError = mockErrorResponse(500)
+
+	config := new404PostActionConfig()
+	exec := build404TestExecutor(t, config, mockClient)
+
+	result := exec.Execute(context.Background(), map[string]interface{}{"id": "cluster-1"})
+
+	require.Equal(t, StatusFailed, result.Status)
+	require.Error(t, result.Errors[PhasePreconditions])
+	require.Error(t, result.Errors[PhasePostActions])
+
+	execErr := result.ExecutionContext.Adapter.ExecutionError
+	require.NotNil(t, execErr)
+	assert.Equal(t, string(PhasePreconditions), execErr.Phase)
+	assert.Equal(t, "clusterStatus", execErr.Step)
+
+	vars := result.ExecutionContext.GetCELVariables()
+	adapter, ok := vars["adapter"].(map[string]interface{})
+	require.True(t, ok)
+	celExecErr, ok := adapter["executionError"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, string(PhasePreconditions), celExecErr["phase"])
+	assert.Equal(t, "clusterStatus", celExecErr["step"])
+	assert.Equal(t, execErr.Message, celExecErr["message"])
+}
+
 // TestPreconditionBrokenURL404_ReportsError verifies that when a
 // precondition API call returns 404 due to a misconfigured URL (error
 // code HYPERFLEET-NTF-000), the adapter treats it as an error rather than a graceful stop.
@@ -2118,7 +2189,7 @@ func TestPreconditionBrokenURL404_ReportsError(t *testing.T) {
 	config := new404PreconditionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-broken-url-404")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-broken-url-404")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cls-123"})
 
 	assert.Equal(t, StatusFailed, result.Status,
@@ -2148,7 +2219,7 @@ func TestPostActionBrokenURL404_ReportsError(t *testing.T) {
 	config := new404PostActionConfig()
 	exec := build404TestExecutor(t, config, mockClient)
 
-	ctx := logger.WithEventID(context.Background(), "test-post-broken-url-404")
+	ctx := hfl.Set(context.Background(), logctx.EventIDKey, "test-post-broken-url-404")
 	result := exec.Execute(ctx, map[string]interface{}{"id": "cls-123"})
 
 	assert.Equal(t, StatusFailed, result.Status,
@@ -2208,7 +2279,6 @@ func TestCELExpression_EnvVariable(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2235,7 +2305,6 @@ func TestCELExpression_EventVariable(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2280,7 +2349,6 @@ func TestCELExpression_EnvInPostActionWhen(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2321,7 +2389,6 @@ func TestCELExpression_EventInPostActionWhen(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2353,7 +2420,6 @@ func TestCELExpression_EnvInParamExpression(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2376,7 +2442,6 @@ func TestCELExpression_EventInParamExpression(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2412,7 +2477,6 @@ func TestGoTemplate_EnvInManifest(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(mockClient).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 
@@ -2449,7 +2513,6 @@ func TestGoTemplate_EventInManifest(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportClient(mockClient).
-		WithLogger(logger.NewTestLogger()).
 		Build()
 	require.NoError(t, err)
 

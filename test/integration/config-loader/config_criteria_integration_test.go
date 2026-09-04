@@ -13,7 +13,6 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // TestMain sets up environment variables required by the adapter config template
@@ -94,7 +93,7 @@ func TestConfigLoadAndCriteriaEvaluation(t *testing.T) {
 		},
 	})
 
-	evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("evaluate precondition conditions from config", func(t *testing.T) {
@@ -154,7 +153,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx := criteria.NewEvaluationContext()
 		ctx.Set("reconciledConditionStatus", "True")
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 		conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 		for i, cond := range precond.Conditions {
@@ -175,7 +174,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx := criteria.NewEvaluationContext()
 		ctx.Set("reconciledConditionStatus", "Unknown") // Not matching expected "True"
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 		conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 		for i, cond := range precond.Conditions {
@@ -195,7 +194,7 @@ func TestConfigWithFailingPreconditions(t *testing.T) {
 		ctx := criteria.NewEvaluationContext()
 		// vpcId not set - should fail exists check
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 		// Just check the vpcId exists condition (this is a general test, not tied to template)
 		result, err := evaluator.EvaluateCondition("vpcId", criteria.OperatorExists, true)
@@ -279,7 +278,7 @@ func TestConfigPostProcessingEvaluation(t *testing.T) {
 			},
 		})
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 		// Test accessing nested K8s resource data
 		t.Run("access namespace status", func(t *testing.T) {
@@ -342,7 +341,7 @@ func TestConfigNullSafetyWithMissingResources(t *testing.T) {
 			"clusterController": nil, // Not created yet
 		})
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 
 		// ExtractValue returns nil value (not error) for null path - allows default to be used
@@ -367,7 +366,7 @@ func TestConfigNullSafetyWithMissingResources(t *testing.T) {
 			},
 		})
 
-		evaluator, err := criteria.NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+		evaluator, err := criteria.NewEvaluator(context.Background(), ctx)
 		require.NoError(t, err)
 
 		// Should return nil value (not error) for null status path

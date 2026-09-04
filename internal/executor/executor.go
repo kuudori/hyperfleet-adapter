@@ -4,17 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
 	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	pkgotel "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/telemetry"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -33,7 +35,6 @@ func NewExecutor(config *ExecutorConfig) (*Executor, error) {
 		precondExecutor:    newPreconditionExecutor(config),
 		resourceExecutor:   newResourceExecutor(config),
 		postActionExecutor: newPostActionExecutor(config),
-		log:                config.Logger,
 	}, nil
 }
 
@@ -48,7 +49,6 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 
 	requiredFields := []string{
 		"APIClient",
-		"Logger",
 		"TransportClient"}
 
 	for _, field := range requiredFields {
@@ -62,7 +62,7 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 
 // Execute processes event data according to the adapter configuration
 // The caller is responsible for:
-// - Adding event ID to context for logging correlation using logger.WithEventID()
+// - Adding event ID to context for logging correlation using hfl.Set(ctx, logctx.EventIDKey, id)
 func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResult {
 	// Start OTel span and add trace context to logs
 	ctx, span := e.startTracedExecution(ctx)
@@ -72,8 +72,7 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	eventData, rawData, err := ParseEventData(data)
 	if err != nil {
 		parseErr := fmt.Errorf("failed to parse event data: %w", err)
-		errCtx := logger.WithErrorField(ctx, parseErr)
-		e.log.Errorf(errCtx, "Failed to parse event data")
+		slog.ErrorContext(ctx, "failed to parse event data", "error", parseErr)
 		return &ExecutionResult{
 			Status:       StatusFailed,
 			CurrentPhase: PhaseParamExtraction,
@@ -86,11 +85,12 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	// the logger will set the cluster_id=owner_id, nodepool_id=resource_id, resource_type=nodepool
 	// but when a resource is cluster type, it will just record cluster_id=resource_id
 	if eventData.OwnerReferences != nil {
-		ctx = logger.WithResourceType(ctx, eventData.Kind)
-		ctx = logger.WithDynamicResourceID(ctx, eventData.Kind, eventData.ID)
-		ctx = logger.WithDynamicResourceID(ctx, eventData.OwnerReferences.Kind, eventData.OwnerReferences.ID)
+		ctx = hfl.WithResourceType(ctx, eventData.Kind)
+		ctx = hfl.WithResourceID(ctx, eventData.ID)
+		ctx = hfl.Set(ctx, logctx.OwnerResourceTypeKey, eventData.OwnerReferences.Kind)
+		ctx = hfl.Set(ctx, logctx.OwnerResourceIDKey, eventData.OwnerReferences.ID)
 	} else {
-		ctx = logger.WithDynamicResourceID(ctx, eventData.Kind, eventData.ID)
+		ctx = hfl.WithResourceID(ctx, eventData.ID)
 	}
 
 	execCtx := NewExecutionContext(ctx, rawData, e.config.Config)
@@ -103,28 +103,27 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 		CurrentPhase: PhaseParamExtraction,
 	}
 
-	e.log.Info(ctx, "Processing event")
+	slog.InfoContext(ctx, "processing event")
 
 	// Phase 1: Parameter Extraction
-	e.log.Infof(ctx, "Phase %s: RUNNING", result.CurrentPhase)
+	slog.InfoContext(ctx, "phase running", "phase", result.CurrentPhase)
 	if paramErr := e.executeParamExtraction(execCtx); paramErr != nil {
 		result.Status = StatusFailed
 		result.Errors[PhaseParamExtraction] = paramErr
 		execCtx.SetError("ParameterExtractionFailed", paramErr.Error())
 		resErr := fmt.Errorf("parameter extraction failed: %w", paramErr)
-		errCtx := logger.WithErrorField(ctx, resErr)
-		e.log.Errorf(errCtx, "Phase %s: FAILED", PhaseParamExtraction)
+		slog.ErrorContext(ctx, "phase failed", "phase", PhaseParamExtraction, "error", resErr)
 		result.ExecutionContext = execCtx
 		result.Params = execCtx.Params
 		return result
 	}
 	result.Params = execCtx.Params
-	e.log.Debugf(ctx, "Parameter extraction completed: extracted %d params", len(execCtx.Params))
+	slog.DebugContext(ctx, "parameter extraction completed", "param_count", len(execCtx.Params))
 
 	// Phase 2: Preconditions
 	result.CurrentPhase = PhasePreconditions
 	preconditions := e.config.Config.Preconditions
-	e.log.Infof(ctx, "Phase %s: RUNNING - %d configured", result.CurrentPhase, len(preconditions))
+	slog.InfoContext(ctx, "phase running", "phase", result.CurrentPhase, "configured_count", len(preconditions))
 	precondOutcome := e.precondExecutor.ExecuteAll(ctx, preconditions, execCtx)
 	result.PreconditionResults = precondOutcome.Results
 
@@ -132,8 +131,8 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	case precondOutcome.Error != nil && apierrors.IsResourceNotFoundError(precondOutcome.Error):
 		// Resource no longer exists (e.g. deleted externally, wrong ID in event).
 		// Stop processing gracefully.
-		e.log.Infof(ctx, "Phase %s: resource not found, stopping processing gracefully",
-			result.CurrentPhase)
+		slog.InfoContext(ctx, "phase: resource not found, stopping processing gracefully",
+			"phase", result.CurrentPhase)
 		result.ResourcesSkipped = true
 		result.SkipReason = ResourceNotFoundReason
 		execCtx.SetSkipped(ResourceNotFoundReason, "")
@@ -147,8 +146,7 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 		precondErr := fmt.Errorf("precondition evaluation failed: error=%w", precondOutcome.Error)
 		result.Errors[result.CurrentPhase] = precondErr
 		execCtx.SetError("PreconditionFailed", precondOutcome.Error.Error())
-		errCtx := logger.WithErrorField(ctx, precondOutcome.Error)
-		e.log.Errorf(errCtx, "Phase %s: FAILED", result.CurrentPhase)
+		slog.ErrorContext(ctx, "phase failed", "phase", result.CurrentPhase, "error", precondOutcome.Error)
 		result.ResourcesSkipped = true
 		result.SkipReason = "PreconditionFailed"
 		// Set skip metadata on adapter context without overwriting the failed execution status
@@ -162,16 +160,16 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 		result.ResourcesSkipped = true
 		result.SkipReason = precondOutcome.NotMetReason
 		execCtx.SetSkipped("PreconditionNotMet", precondOutcome.NotMetReason)
-		e.log.Infof(ctx, "Phase %s: SUCCESS - NOT_MET - %s", result.CurrentPhase, precondOutcome.NotMetReason)
+		slog.InfoContext(ctx, "phase success: not met", "phase", result.CurrentPhase, "reason", precondOutcome.NotMetReason)
 	default:
 		// All preconditions matched
-		e.log.Infof(ctx, "Phase %s: SUCCESS - MET - %d passed", result.CurrentPhase, len(precondOutcome.Results))
+		slog.InfoContext(ctx, "phase success: met", "phase", result.CurrentPhase, "passed_count", len(precondOutcome.Results))
 	}
 
 	// Phase 3: Resources (skip if preconditions not met or previous error)
 	result.CurrentPhase = PhaseResources
 	resources := e.config.Config.Resources
-	e.log.Infof(ctx, "Phase %s: RUNNING - %d configured", result.CurrentPhase, len(resources))
+	slog.InfoContext(ctx, "phase running", "phase", result.CurrentPhase, "configured_count", len(resources))
 	if !result.ResourcesSkipped {
 		resourceResults, resourceErr := e.resourceExecutor.ExecuteAll(ctx, resources, execCtx)
 		result.ResourceResults = resourceResults
@@ -181,14 +179,13 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 			resErr := fmt.Errorf("resource execution failed: %w", resourceErr)
 			result.Errors[result.CurrentPhase] = resErr
 			execCtx.SetError("ResourceFailed", resourceErr.Error())
-			errCtx := logger.WithErrorField(ctx, resourceErr)
-			e.log.Errorf(errCtx, "Phase %s: FAILED", result.CurrentPhase)
+			slog.ErrorContext(ctx, "phase failed", "phase", result.CurrentPhase, "error", resourceErr)
 			// Continue to post actions for error reporting
 		} else {
-			e.log.Infof(ctx, "Phase %s: SUCCESS - %d processed", result.CurrentPhase, len(resourceResults))
+			slog.InfoContext(ctx, "phase success", "phase", result.CurrentPhase, "processed_count", len(resourceResults))
 		}
 	} else {
-		e.log.Infof(ctx, "Phase %s: SKIPPED - %s", result.CurrentPhase, result.SkipReason)
+		slog.InfoContext(ctx, "phase skipped", "phase", result.CurrentPhase, "reason", result.SkipReason)
 	}
 
 	// Phase 4: Post Actions (always execute for error reporting)
@@ -198,15 +195,15 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	if postConfig != nil {
 		postActionCount = len(postConfig.PostActions)
 	}
-	e.log.Infof(ctx, "Phase %s: RUNNING - %d configured", result.CurrentPhase, postActionCount)
+	slog.InfoContext(ctx, "phase running", "phase", result.CurrentPhase, "configured_count", postActionCount)
 	postResults, err := e.postActionExecutor.ExecuteAll(ctx, postConfig, execCtx)
 	result.PostActionResults = postResults
 
 	if err != nil {
 		if apierrors.IsResourceNotFoundError(err) {
 			// Resource no longer exists. Log and continue, don't fail.
-			e.log.Infof(ctx, "Phase %s: resource not found, skipping remaining post-actions",
-				result.CurrentPhase)
+			slog.InfoContext(ctx, "phase: resource not found, skipping remaining post-actions",
+				"phase", result.CurrentPhase)
 			result.ResourcesSkipped = true
 			// ResourceNotFound takes precedence: the resource no longer exists,
 			// making the original skip reason moot.
@@ -229,20 +226,18 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 			result.Status = StatusFailed
 			postErr := fmt.Errorf("post action execution failed: %w", err)
 			result.Errors[result.CurrentPhase] = postErr
-			errCtx := logger.WithErrorField(ctx, err)
-			e.log.Errorf(errCtx, "Phase %s: FAILED", result.CurrentPhase)
+			slog.ErrorContext(ctx, "phase failed", "phase", result.CurrentPhase, "error", err)
 		}
 	} else {
-		e.log.Infof(ctx, "Phase %s: SUCCESS - %d executed", result.CurrentPhase, len(postResults))
+		slog.InfoContext(ctx, "phase success", "phase", result.CurrentPhase, "executed_count", len(postResults))
 	}
 
 	// Finalize
 	result.ExecutionContext = execCtx
 
 	if result.Status == StatusSuccess {
-		e.log.Infof(ctx,
-			"Event execution finished: event_execution_status=success resources_skipped=%t reason=%s",
-			result.ResourcesSkipped, result.SkipReason)
+		slog.InfoContext(ctx, "event execution finished",
+			"execution_status", "success", "resources_skipped", result.ResourcesSkipped, "reason", result.SkipReason)
 	} else {
 		// Combine all errors into a single error for logging
 		var errMsgs []string
@@ -250,8 +245,7 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 			errMsgs = append(errMsgs, fmt.Sprintf("%s: %v", phase, err))
 		}
 		combinedErr := fmt.Errorf("execution failed: %s", strings.Join(errMsgs, "; "))
-		errCtx := logger.WithErrorField(ctx, combinedErr)
-		e.log.Errorf(errCtx, "Event execution finished: event_execution_status=failed")
+		slog.ErrorContext(ctx, "event execution finished", "execution_status", "failed", "error", combinedErr)
 	}
 	return result
 }
@@ -274,7 +268,7 @@ func (e *Executor) executeParamExtraction(execCtx *ExecutionContext) error {
 
 	// config.* param sources resolve against the real (unredacted) config so that
 	// sensitive fields like cert paths can still be explicitly extracted when needed.
-	return extractConfigParams(execCtx.Ctx, e.config.Config, execCtx, configMap, e.config.APIClient, e.log)
+	return extractConfigParams(execCtx.Ctx, e.config.Config, execCtx, configMap, e.config.APIClient)
 }
 
 // startTracedExecution creates an OTel span and adds trace context to logs.
@@ -289,7 +283,7 @@ func (e *Executor) startTracedExecution(ctx context.Context) (context.Context, t
 	ctx, span := otel.Tracer(componentName).Start(ctx, "Execute")
 
 	// Add trace_id and span_id to logger context for log correlation
-	ctx = logger.WithOTelTraceContext(ctx)
+	ctx = logctx.WithOTelTraceContext(ctx)
 
 	return ctx, span
 }
@@ -298,21 +292,20 @@ func (e *Executor) startTracedExecution(ctx context.Context) (context.Context, t
 func (e *Executor) CreateHandler() HandlerFunc {
 	return func(ctx context.Context, evt *event.Event) (*ExecutionResult, error) {
 		// Add event ID to context for logging correlation
-		ctx = logger.WithEventID(ctx, evt.ID())
+		ctx = hfl.Set(ctx, logctx.EventIDKey, evt.ID())
 
 		// Extract W3C trace context from CloudEvent extensions (if present)
 		// This enables distributed tracing when upstream services (e.g., Sentinel)
 		// include traceparent/tracestate in the CloudEvent
 		ctx = pkgotel.ExtractTraceContextFromCloudEvent(ctx, evt)
 
-		// Log event metadata
-		e.log.Infof(ctx, "Event received: id=%s type=%s source=%s time=%s",
-			evt.ID(), evt.Type(), evt.Source(), evt.Time())
+		slog.InfoContext(ctx, "event received",
+			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
 
 		result := e.Execute(ctx, evt.Data())
 
-		e.log.Infof(ctx, "Event processed: type=%s source=%s time=%s",
-			evt.Type(), evt.Source(), evt.Time())
+		slog.InfoContext(ctx, "event processed",
+			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
 
 		return result, nil
 	}
@@ -391,12 +384,6 @@ func (b *ExecutorBuilder) WithAPIClient(client hyperfleetapi.Client) *ExecutorBu
 // WithTransportClient sets the transport client for resource application (kubernetes or maestro)
 func (b *ExecutorBuilder) WithTransportClient(client transportclient.TransportClient) *ExecutorBuilder {
 	b.config.TransportClient = client
-	return b
-}
-
-// WithLogger sets the logger
-func (b *ExecutorBuilder) WithLogger(log logger.Logger) *ExecutorBuilder {
-	b.config.Logger = log
 	return b
 }
 

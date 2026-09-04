@@ -11,9 +11,26 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-broker/broker"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMetricsServer_MarkShuttingDown(t *testing.T) {
+	g := prometheus.NewGauge(prometheus.GaugeOpts{Name: "test_adapter_up"})
+	g.Set(1)
+	s := &MetricsServer{upGauge: g}
+
+	var before dto.Metric
+	require.NoError(t, g.Write(&before))
+	assert.Equal(t, 1.0, before.GetGauge().GetValue())
+
+	s.MarkShuttingDown()
+
+	var after dto.Metric
+	require.NoError(t, g.Write(&after))
+	assert.Equal(t, 0.0, after.GetGauge().GetValue())
+}
 
 func TestBrokerMetricsExposedOnMetricsEndpoint(t *testing.T) {
 	// Use an isolated registry to avoid polluting the global one

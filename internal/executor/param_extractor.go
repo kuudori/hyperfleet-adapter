@@ -12,7 +12,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 )
 
@@ -23,10 +22,9 @@ func extractConfigParams(
 	execCtx *ExecutionContext,
 	configMap map[string]interface{},
 	apiClient hyperfleetapi.Client,
-	log logger.Logger,
 ) error {
 	for _, param := range config.Params {
-		value, err := extractParam(ctx, param, execCtx, configMap, apiClient, log)
+		value, err := extractParam(ctx, param, execCtx, configMap, apiClient)
 		if err != nil {
 			if param.Required {
 				return NewExecutorError(PhaseParamExtraction, param.Name,
@@ -78,13 +76,12 @@ func extractParam(
 	execCtx *ExecutionContext,
 	configMap map[string]interface{},
 	apiClient hyperfleetapi.Client,
-	log logger.Logger,
 ) (interface{}, error) {
 	switch {
 	case param.Source.IsAPICall():
-		return extractFromAPICall(ctx, param, execCtx, apiClient, log)
+		return extractFromAPICall(ctx, param, execCtx, apiClient)
 	case param.Source.IsExpression():
-		return extractFromCELExpression(ctx, param, execCtx, log)
+		return extractFromCELExpression(ctx, param, execCtx)
 	case param.Source.IsFile():
 		return extractFromFile(param)
 	case param.Source.IsString():
@@ -136,13 +133,12 @@ func extractFromAPICall(
 	param configloader.Parameter,
 	execCtx *ExecutionContext,
 	apiClient hyperfleetapi.Client,
-	log logger.Logger,
 ) (interface{}, error) {
 	ac := param.Source.APICall
 	if ac == nil {
 		return nil, fmt.Errorf("param %q: api_call source has nil configuration", param.Name)
 	}
-	resp, renderedURL, err := ExecuteAPICall(ctx, ac, execCtx, apiClient, log)
+	resp, renderedURL, err := ExecuteAPICall(ctx, ac, execCtx, apiClient)
 	if validationErr := ValidateAPIResponse(resp, err, ac.Method, renderedURL); validationErr != nil {
 		return nil, validationErr
 	}
@@ -158,11 +154,10 @@ func extractFromCELExpression(
 	ctx context.Context,
 	param configloader.Parameter,
 	execCtx *ExecutionContext,
-	log logger.Logger,
 ) (interface{}, error) {
 	evalCtx := criteria.NewEvaluationContext()
 	evalCtx.SetVariablesFromMap(execCtx.GetCELVariables())
-	evaluator, err := criteria.NewEvaluator(ctx, evalCtx, log)
+	evaluator, err := criteria.NewEvaluator(ctx, evalCtx)
 	if err != nil {
 		return nil, fmt.Errorf("param %q: failed to create CEL evaluator: %w", param.Name, err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -524,7 +523,7 @@ func TestEvaluatorEvaluateCondition(t *testing.T) {
 		"phase": "Active",
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -612,7 +611,7 @@ func TestEvaluatorEvaluateConditions(t *testing.T) {
 	ctx.Set("cloudProvider", "aws")
 	ctx.Set("vpcId", "vpc-12345")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -902,19 +901,14 @@ func TestEvaluationError(t *testing.T) {
 func TestNewEvaluatorErrorsWithNilParams(t *testing.T) {
 	t.Run("errors with nil ctx", func(t *testing.T) {
 		//nolint:staticcheck // intentionally testing nil ctx
-		_, err := NewEvaluator(nil, NewEvaluationContext(), logger.NewTestLogger())
+		_, err := NewEvaluator(nil, NewEvaluationContext())
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "ctx is required")
 	})
 	t.Run("errors with nil evalCtx", func(t *testing.T) {
-		_, err := NewEvaluator(context.Background(), nil, logger.NewTestLogger())
+		_, err := NewEvaluator(context.Background(), nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "evalCtx is required")
-	})
-	t.Run("errors with nil log", func(t *testing.T) {
-		_, err := NewEvaluator(context.Background(), NewEvaluationContext(), nil)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "log is required")
 	})
 }
 
@@ -929,7 +923,7 @@ func TestExtractValue(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// Get existing field
@@ -955,7 +949,7 @@ func TestEvaluateCondition(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// Test equals - matched
@@ -992,7 +986,7 @@ func TestEvaluateConditions(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// All conditions pass
@@ -1061,7 +1055,7 @@ func TestNullHandling(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("access field on null parent returns nil value", func(t *testing.T) {
@@ -1092,7 +1086,7 @@ func TestDeepNullPath(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// a.b.c is null, so a.b.c.d.e.f should return nil value (not error)

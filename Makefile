@@ -323,6 +323,49 @@ test-helm: verify-helm-docs ## Test Helm charts (lint, template, validate, kubec
 		echo "ERROR: expected helm template to fail when broker.rabbitmq.exchange is missing"; exit 1; \
 	fi
 	@echo "RabbitMQ missing exchange validation OK"
+	@echo ""
+	@echo "Testing Pub/Sub messageRetentionDuration=31d (max) is accepted..."
+	@helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set broker.googlepubsub.messageRetentionDuration=31d > /dev/null \
+		|| { echo "ERROR: helm template failed for messageRetentionDuration=31d"; exit 1; }
+	@echo "Pub/Sub 31d retention validation OK"
+	@echo ""
+	@echo "Testing Pub/Sub expirationTTL=86400s (1d) is accepted..."
+	@helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set broker.googlepubsub.expirationTTL=86400s > /dev/null \
+		|| { echo "ERROR: helm template failed for expirationTTL=86400s"; exit 1; }
+	@echo "Pub/Sub 86400s TTL validation OK"
+	@echo ""
+	@echo "Testing Pub/Sub numeric-zero messageRetentionDuration is rejected..."
+	@if helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set broker.googlepubsub.messageRetentionDuration=0 > /dev/null 2>&1; then \
+		echo "ERROR: expected helm template to fail when messageRetentionDuration=0"; exit 1; \
+	fi
+	@echo "Pub/Sub zero retention validation OK"
 
 ##@ Code Quality
 

@@ -189,6 +189,14 @@
             "createSubscriptionIfMissing": {
               "type": "boolean",
               "description": "Auto-create subscription if missing"
+            },
+            "messageRetentionDuration": {
+              "type": "string",
+              "description": "Length to retain unacknowledged messages (e.g. 1d, 12h, 604800s). Min 10m, max 31d."
+            },
+            "expirationTTL": {
+              "type": "string",
+              "description": "Inactivity period before subscription is auto-deleted. Must be 0 (never expire) or at least 1d."
             }
           }
         },

@@ -4,11 +4,11 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -61,7 +61,7 @@ const (
 // createExporter creates a SpanExporter based on OTLP environment variables.
 // When no endpoint is configured, returns a stdout exporter for local development.
 // The protocol defaults to grpc (per HyperFleet tracing standard), configurable via OTEL_EXPORTER_OTLP_PROTOCOL.
-func createExporter(ctx context.Context, log logger.Logger) (sdktrace.SpanExporter, error) {
+func createExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 	// Check if an OTLP endpoint is configured (presence check only).
 	// The actual endpoint value is read by the OTel SDK from env vars directly,
 	// so we don't pass otlpEndpoint to the exporter constructors.
@@ -70,8 +70,9 @@ func createExporter(ctx context.Context, log logger.Logger) (sdktrace.SpanExport
 		otlpEndpoint = os.Getenv(envOtelExporterOtlpEndpoint)
 	}
 	if otlpEndpoint == "" {
-		log.Infof(ctx, "No %s or %s configured, using stdout exporter",
-			envOtelExporterOtlpTracesEndpoint, envOtelExporterOtlpEndpoint)
+		slog.InfoContext(ctx, "no otlp endpoint configured, using stdout exporter",
+			"traces_endpoint_var", envOtelExporterOtlpTracesEndpoint,
+			"endpoint_var", envOtelExporterOtlpEndpoint)
 		return stdouttrace.New()
 	}
 
@@ -91,8 +92,8 @@ func createExporter(ctx context.Context, log logger.Logger) (sdktrace.SpanExport
 		protocol = defaultOtlpProtocol
 		exporter, err = otlptracegrpc.New(ctx)
 	default:
-		log.Warnf(ctx, "Unrecognized %s value %q, using default %s",
-			protocolSource, protocol, defaultOtlpProtocol)
+		slog.WarnContext(ctx, "unrecognized protocol value, using default",
+			"var", protocolSource, "value", protocol, "default", defaultOtlpProtocol)
 		protocol = defaultOtlpProtocol
 		exporter, err = otlptracegrpc.New(ctx)
 	}
@@ -100,7 +101,7 @@ func createExporter(ctx context.Context, log logger.Logger) (sdktrace.SpanExport
 		return nil, fmt.Errorf("failed to create OTLP exporter (protocol=%s): %w", protocol, err)
 	}
 
-	log.Infof(ctx, "OTLP trace exporter configured: protocol=%s", protocol)
+	slog.InfoContext(ctx, "otlp trace exporter configured", "protocol", protocol)
 	return exporter, nil
 }
 
@@ -113,10 +114,10 @@ func createExporter(ctx context.Context, log logger.Logger) (sdktrace.SpanExport
 //   - OTEL_TRACES_SAMPLER_ARG: sampling rate 0.0-1.0 (default: 1.0)
 //   - OTEL_PROPAGATORS: list of propagators to use (default: "tracecontext,baggage")
 func InitTraceProvider(
-	ctx context.Context, log logger.Logger, serviceName, serviceVersion string,
+	ctx context.Context, serviceName, serviceVersion string,
 ) (*sdktrace.TracerProvider, error) {
 	// Create exporter (nil when no OTLP endpoint configured)
-	exporter, err := createExporter(ctx, log)
+	exporter, err := createExporter(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create trace exporter: %w", err)
 	}
@@ -135,7 +136,7 @@ func InitTraceProvider(
 
 	if err != nil {
 		if shutdownErr := exporter.Shutdown(ctx); shutdownErr != nil {
-			log.Warnf(ctx, "Failed to shutdown exporter during cleanup: %v", shutdownErr)
+			slog.WarnContext(ctx, "failed to shutdown exporter during cleanup", "error", shutdownErr)
 		}
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
@@ -144,7 +145,7 @@ func InitTraceProvider(
 	// - If parent span exists: inherit parent's sampling decision
 	// - If no parent (root span): apply probabilistic sampling based on trace ID
 	// This enables proper sampling propagation across service boundaries
-	sampler := selectSampler(ctx, log)
+	sampler := selectSampler(ctx)
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
@@ -162,7 +163,7 @@ func InitTraceProvider(
 	return tp, nil
 }
 
-func selectSampler(ctx context.Context, log logger.Logger) sdktrace.Sampler {
+func selectSampler(ctx context.Context) sdktrace.Sampler {
 	samplerType := strings.ToLower(os.Getenv(envOtelTracesSampler))
 	switch samplerType {
 	case samplerAlwaysOn:
@@ -170,29 +171,29 @@ func selectSampler(ctx context.Context, log logger.Logger) sdktrace.Sampler {
 	case samplerAlwaysOff:
 		return sdktrace.NeverSample()
 	case samplerTraceIDRatio:
-		return sdktrace.TraceIDRatioBased(parseSamplingRate(ctx, log))
+		return sdktrace.TraceIDRatioBased(parseSamplingRate(ctx))
 	case parentBasedTraceIDRatio, "":
-		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(parseSamplingRate(ctx, log)))
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(parseSamplingRate(ctx)))
 	case parentBasedAlwaysOn:
 		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	case parentBasedAlwaysOff:
 		return sdktrace.ParentBased(sdktrace.NeverSample())
 	default:
-		log.Warnf(ctx, "Unrecognized %s value %q, using default parentbased_traceidratio",
-			envOtelTracesSampler, samplerType)
-		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(parseSamplingRate(ctx, log)))
+		slog.WarnContext(ctx, "unrecognized sampler value, using default parentbased_traceidratio",
+			"var", envOtelTracesSampler, "value", samplerType)
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(parseSamplingRate(ctx)))
 	}
 }
 
-func parseSamplingRate(ctx context.Context, log logger.Logger) float64 {
+func parseSamplingRate(ctx context.Context) float64 {
 	rate := defaultSamplingRate
 	if arg := os.Getenv(envOtelTracesSamplerArg); arg != "" {
 		if parsedRate, err := strconv.ParseFloat(arg, 64); err == nil &&
 			parsedRate >= 0.0 && parsedRate <= 1.0 {
 			rate = parsedRate
 		} else {
-			log.Warnf(ctx, "Invalid %s value %q, using default %.1f",
-				envOtelTracesSamplerArg, arg, defaultSamplingRate)
+			slog.WarnContext(ctx, "invalid sampler arg value, using default",
+				"var", envOtelTracesSamplerArg, "value", arg, "default", defaultSamplingRate)
 		}
 	}
 	return rate

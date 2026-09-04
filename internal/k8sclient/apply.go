@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -97,9 +100,11 @@ func (c *Client) ApplyManifest(
 
 	gvk := newManifest.GroupVersionKind()
 	name := newManifest.GetName()
+	ctx = hfl.Set(ctx, logctx.K8sKindKey, gvk.Kind)
+	ctx = hfl.Set(ctx, logctx.K8sNameKey, name)
+	ctx = hfl.Set(ctx, logctx.K8sNamespaceKey, newManifest.GetNamespace())
 
-	c.log.Debugf(ctx, "ApplyManifest %s/%s: operation=%s reason=%s",
-		gvk.Kind, name, result.Operation, result.Reason)
+	slog.DebugContext(ctx, "apply manifest", "operation", result.Operation, "reason", result.Reason)
 
 	// Execute the operation
 	var applyErr error
@@ -109,7 +114,7 @@ func (c *Client) ApplyManifest(
 		if applyErr != nil && apierrors.IsAlreadyExists(applyErr) {
 			// Resource was created by a concurrent process between our Get and Create.
 			// Treat as a successful no-op rather than an error.
-			c.log.Debugf(ctx, "Resource %s/%s already exists (concurrent create), treating as skip", gvk.Kind, name)
+			slog.DebugContext(ctx, "resource already exists (concurrent create), treating as skip")
 			result.Operation = manifest.OperationSkip
 			result.Reason = "already exists (concurrent create)"
 			applyErr = nil
@@ -150,21 +155,24 @@ func (c *Client) recreateResource(
 	gvk := existing.GroupVersionKind()
 	namespace := existing.GetNamespace()
 	name := existing.GetName()
+	ctx = hfl.Set(ctx, logctx.K8sKindKey, gvk.Kind)
+	ctx = hfl.Set(ctx, logctx.K8sNameKey, name)
+	ctx = hfl.Set(ctx, logctx.K8sNamespaceKey, namespace)
 
 	// Delete the existing resource
-	c.log.Debugf(ctx, "Deleting resource for recreation: %s/%s", gvk.Kind, name)
+	slog.DebugContext(ctx, "deleting resource for recreation")
 	if err := c.deleteResource(ctx, gvk, namespace, name); err != nil {
 		return nil, fmt.Errorf("failed to delete resource for recreation: %w", err)
 	}
 
 	// Wait for the resource to be fully deleted
-	c.log.Debugf(ctx, "Waiting for resource deletion to complete: %s/%s", gvk.Kind, name)
+	slog.DebugContext(ctx, "waiting for resource deletion to complete")
 	if err := c.waitForDeletion(ctx, gvk, namespace, name); err != nil {
 		return nil, fmt.Errorf("failed waiting for resource deletion: %w", err)
 	}
 
 	// Create the new resource
-	c.log.Debugf(ctx, "Creating new resource after deletion confirmed: %s/%s", gvk.Kind, name)
+	slog.DebugContext(ctx, "creating new resource after deletion confirmed")
 	return c.CreateResource(ctx, newManifest)
 }
 
@@ -183,22 +191,22 @@ func (c *Client) waitForDeletion(
 	for {
 		select {
 		case <-ctx.Done():
-			c.log.Warnf(ctx, "Context canceled/timed out while waiting for deletion of %s/%s", gvk.Kind, name)
+			slog.WarnContext(ctx, "context canceled/timed out while waiting for deletion")
 			return fmt.Errorf("context canceled while waiting for resource deletion: %w", ctx.Err())
 		case <-ticker.C:
 			_, err := c.GetResource(ctx, gvk, namespace, name, nil)
 			if err != nil {
 				// NotFound means the resource is deleted - this is success
 				if apierrors.IsNotFound(err) {
-					c.log.Debugf(ctx, "Resource deletion confirmed: %s/%s", gvk.Kind, name)
+					slog.DebugContext(ctx, "resource deletion confirmed")
 					return nil
 				}
 				// Any other error is unexpected
-				c.log.Errorf(ctx, "Error checking deletion status for %s/%s: %v", gvk.Kind, name, err)
+				slog.ErrorContext(ctx, "error checking deletion status", "error", err)
 				return fmt.Errorf("error checking deletion status: %w", err)
 			}
 			// Resource still exists, continue polling
-			c.log.Debugf(ctx, "Resource %s/%s still exists, waiting for deletion...", gvk.Kind, name)
+			slog.DebugContext(ctx, "resource still exists, waiting for deletion")
 		}
 	}
 }

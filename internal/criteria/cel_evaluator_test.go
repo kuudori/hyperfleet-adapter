@@ -7,7 +7,6 @@ import (
 
 	"cel.dev/cel-go/common/types"
 	"cel.dev/cel-go/common/types/ref"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -291,7 +290,7 @@ func TestEvaluatorCELIntegration(t *testing.T) {
 	ctx.Set("replicas", 3)
 	ctx.Set("provider", "aws")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 	// Test EvaluateCEL
 	result, err := evaluator.EvaluateCEL(`status == "Ready" && replicas > 1`)

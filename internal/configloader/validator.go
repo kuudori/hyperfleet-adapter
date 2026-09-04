@@ -3,6 +3,7 @@ package configloader
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // templateVarRegex matches Go template variables like {{ .varName }} or {{ .nested.var }}
@@ -816,7 +816,7 @@ func isSliceOrArray(value interface{}) bool {
 // patch version differences are allowed (patch releases are bug fixes only).
 // For example, config "1.2.0" is compatible with adapter "1.2.3".
 func ValidateAdapterVersion(
-	ctx context.Context, log logger.Logger, config *AdapterConfig, expectedVersion string,
+	ctx context.Context, config *AdapterConfig, expectedVersion string,
 ) error {
 	if expectedVersion == "" {
 		return nil
@@ -829,17 +829,15 @@ func ValidateAdapterVersion(
 
 	configSemver, err := semver.NewVersion(configVersion)
 	if err != nil {
-		ctx = logger.WithLogField(ctx, "version", configVersion)
-		ctx = logger.WithErrorField(ctx, err)
-		log.Warn(ctx, "Skipping adapter version validation: config version is not valid semver")
+		slog.WarnContext(ctx, "skipping adapter version validation: config version is not valid semver",
+			"config_version", configVersion, "error", err)
 		return nil
 	}
 
 	expectedSemver, err := semver.NewVersion(expectedVersion)
 	if err != nil {
-		ctx = logger.WithLogField(ctx, "version", expectedVersion)
-		ctx = logger.WithErrorField(ctx, err)
-		log.Warn(ctx, "Skipping adapter version validation: binary version is not valid semver")
+		slog.WarnContext(ctx, "skipping adapter version validation: binary version is not valid semver",
+			"binary_version", expectedVersion, "error", err)
 		return nil
 	}
 

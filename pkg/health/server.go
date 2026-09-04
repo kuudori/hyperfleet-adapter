@@ -3,12 +3,11 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 )
 
 // CheckStatus represents the status of a single health check.
@@ -36,7 +35,6 @@ type ReadyResponse struct {
 
 // Server provides HTTP health check endpoints.
 type Server struct {
-	log        logger.Logger
 	server     *http.Server
 	checks     map[string]CheckStatus
 	port       string
@@ -50,9 +48,8 @@ type Server struct {
 }
 
 // NewServer creates a new health check server.
-func NewServer(log logger.Logger, port string, component string) *Server {
+func NewServer(port string, component string) *Server {
 	s := &Server{
-		log:       log,
 		port:      port,
 		component: component,
 		checks: map[string]CheckStatus{
@@ -77,12 +74,11 @@ func NewServer(log logger.Logger, port string, component string) *Server {
 
 // Start starts the health server in a goroutine.
 func (s *Server) Start(ctx context.Context) error {
-	s.log.Infof(ctx, "Starting health server on port %s", s.port)
+	slog.InfoContext(ctx, "starting health server", "port", s.port)
 
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCtx := logger.WithErrorField(ctx, err)
-			s.log.Errorf(errCtx, "Health server error")
+			slog.ErrorContext(ctx, "health server error", "error", err)
 		}
 	}()
 
@@ -91,7 +87,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // Shutdown gracefully shuts down the health server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.log.Info(ctx, "Shutting down health server...")
+	slog.InfoContext(ctx, "shutting down health server...")
 	return s.server.Shutdown(ctx)
 }
 

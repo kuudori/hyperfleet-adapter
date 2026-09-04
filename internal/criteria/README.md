@@ -42,7 +42,7 @@ ctx.Set("provider", "aws")
 ctx.Set("nodeCount", 5)
 
 // Create evaluator
-evaluator, _ := criteria.NewEvaluator(context.Background(), ctx, log)
+evaluator, _ := criteria.NewEvaluator(context.Background(), ctx)
 
 // Evaluate a single condition
 result, err := evaluator.EvaluateCondition(
@@ -226,7 +226,7 @@ ctx.Set("cloudProvider", "aws")
 ctx.Set("vpcId", "vpc-12345")
 
 // Evaluate precondition conditions
-evaluator, _ := criteria.NewEvaluator(context.Background(), ctx, log)
+evaluator, _ := criteria.NewEvaluator(context.Background(), ctx)
 conditions := make([]criteria.ConditionDef, len(precond.Conditions))
 for i, cond := range precond.Conditions {
     conditions[i] = criteria.ConditionDef{
@@ -256,7 +256,7 @@ The package provides descriptive error messages:
 ctx := criteria.NewEvaluationContext()
 ctx.Set("count", "not a number")
 
-evaluator, _ := criteria.NewEvaluator(context.Background(), ctx, log)
+evaluator, _ := criteria.NewEvaluator(context.Background(), ctx)
 result, err := evaluator.EvaluateCondition(
     "count",
     criteria.OperatorGreaterThan,

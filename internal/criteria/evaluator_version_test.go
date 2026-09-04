@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +14,7 @@ func TestContextVersionTracking(t *testing.T) {
 	ctx := NewEvaluationContext()
 	ctx.Set("status", "Ready")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// First CEL evaluation - creates CEL env with only "status"
@@ -51,7 +50,7 @@ func TestSetVariablesFromMapVersionTracking(t *testing.T) {
 		"env": "production",
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// First evaluation
@@ -79,7 +78,7 @@ func TestMergeVersionTracking(t *testing.T) {
 	ctx1 := NewEvaluationContext()
 	ctx1.Set("a", 1)
 
-	evaluator, err := NewEvaluator(context.Background(), ctx1, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx1)
 	require.NoError(t, err)
 
 	// First evaluation
@@ -147,7 +146,7 @@ func TestNoVersionChangeNoRecreate(t *testing.T) {
 	ctx := NewEvaluationContext()
 	ctx.Set("status", "Ready")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// First evaluation

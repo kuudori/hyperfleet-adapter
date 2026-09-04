@@ -2,22 +2,24 @@ package executor
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/cloudevents/sdk-go/v2/event"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
+	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 )
 
 // HandlerFunc is a composable event handler. Build a broker-compatible handler with:
 //
-//	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), metricsRecorder, log), log)
+//	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), metricsRecorder))
 type HandlerFunc func(ctx context.Context, evt *event.Event) (*ExecutionResult, error)
 
 // WithMetrics wraps a HandlerFunc to record Prometheus metrics after execution.
 // A panic in metrics recording is recovered to prevent crashing the handler.
 // If recorder is nil, the handler is returned unwrapped.
-func WithMetrics(h HandlerFunc, recorder *metrics.Recorder, log logger.Logger) HandlerFunc {
+func WithMetrics(h HandlerFunc, recorder *metrics.Recorder) HandlerFunc {
 	if recorder == nil {
 		return h
 	}
@@ -34,7 +36,7 @@ func WithMetrics(h HandlerFunc, recorder *metrics.Recorder, log logger.Logger) H
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					log.Errorf(ctx, "panic in metrics recording (recovered): %v", r)
+					slog.ErrorContext(ctx, "panic in metrics recording (recovered)", "panic", r)
 				}
 			}()
 			recordMetrics(recorder, resultForMetrics, duration)
@@ -47,23 +49,20 @@ func WithMetrics(h HandlerFunc, recorder *metrics.Recorder, log logger.Logger) H
 // AlwaysAck wraps a HandlerFunc into a broker compatible handler that always returns nil,
 // preventing infinite retry loops for non-recoverable errors.
 // Errors are logged at warn level before being discarded.
-func AlwaysAck(h HandlerFunc, log logger.Logger) func(ctx context.Context, evt *event.Event) error {
+func AlwaysAck(h HandlerFunc) func(ctx context.Context, evt *event.Event) error {
 	return func(ctx context.Context, evt *event.Event) error {
+		ctx = hfl.Set(ctx, logctx.EventIDKey, evt.ID())
 		result, err := h(ctx, evt)
-		errCtx := logger.WithLogFields(ctx, logger.LogFields{
-			"event_id":   evt.ID(),
-			"event_type": evt.Type(),
-		})
 		if err != nil {
-			errCtx = logger.WithErrorField(errCtx, err)
-			log.Warn(errCtx, "event handler error (acked)")
+			slog.WarnContext(ctx, "event handler error (acked)",
+				"event_type", evt.Type(), "error", err)
 		} else if result != nil && result.Status == StatusFailed {
 			phases := make([]string, 0, len(result.Errors))
 			for phase := range result.Errors {
 				phases = append(phases, string(phase))
 			}
-			errCtx = logger.WithLogField(errCtx, "failed_phases", phases)
-			log.Warn(errCtx, "event handler failed (acked)")
+			slog.WarnContext(ctx, "event handler failed (acked)",
+				"event_type", evt.Type(), "failed_phases", phases)
 		}
 		return nil
 	}

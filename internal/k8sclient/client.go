@@ -3,10 +3,10 @@ package k8sclient
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -20,7 +20,6 @@ import (
 // Client is the Kubernetes client for managing resources using controller-runtime
 type Client struct {
 	client client.Client
-	log    logger.Logger
 }
 
 // ClientConfig holds configuration for creating a Kubernetes client
@@ -48,12 +47,12 @@ type ClientConfig struct {
 //
 //	// For production deployment in K8s cluster (uses ServiceAccount)
 //	config := ClientConfig{QPS: 100.0, Burst: 200}
-//	client, err := NewClient(ctx, config, log)
+//	client, err := NewClient(ctx, config)
 //
 //	// For local development (uses explicit kubeconfig path)
 //	config := ClientConfig{KubeConfigPath: "/home/user/.kube/config"}
-//	client, err := NewClient(ctx, config, log)
-func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Client, error) {
+//	client, err := NewClient(ctx, config)
+func NewClient(ctx context.Context, config ClientConfig) (*Client, error) {
 	var restConfig *rest.Config
 	var err error
 
@@ -65,14 +64,14 @@ func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Cl
 		if err != nil {
 			return nil, apperrors.KubernetesError("failed to load kubeconfig from %s: %v", kubeConfigPath, err)
 		}
-		log.Infof(ctx, "Using kubeconfig from: %s", kubeConfigPath)
+		slog.InfoContext(ctx, "using kubeconfig", "path", kubeConfigPath)
 	} else {
 		// Use in-cluster config with ServiceAccount
 		restConfig, err = rest.InClusterConfig()
 		if err != nil {
 			return nil, apperrors.KubernetesError("failed to create in-cluster config: %v", err)
 		}
-		log.Info(ctx, "Using in-cluster Kubernetes configuration (ServiceAccount)")
+		slog.InfoContext(ctx, "using in-cluster kubernetes configuration (service account)")
 	}
 
 	// Set rate limits
@@ -96,13 +95,12 @@ func NewClient(ctx context.Context, config ClientConfig, log logger.Logger) (*Cl
 
 	return &Client{
 		client: k8sClient,
-		log:    log,
 	}, nil
 }
 
 // NewClientFromConfig creates a client from an existing rest.Config
 // This is useful for testing with envtest
-func NewClientFromConfig(ctx context.Context, restConfig *rest.Config, log logger.Logger) (*Client, error) {
+func NewClientFromConfig(ctx context.Context, restConfig *rest.Config) (*Client, error) {
 	k8sClient, err := client.New(restConfig, client.Options{})
 	if err != nil {
 		return nil, apperrors.KubernetesError("failed to create kubernetes client: %v", err)
@@ -110,7 +108,6 @@ func NewClientFromConfig(ctx context.Context, restConfig *rest.Config, log logge
 
 	return &Client{
 		client: k8sClient,
-		log:    log,
 	}, nil
 }
 

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/test/integration/testutil"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -104,7 +103,6 @@ func TestMain(m *testing.M) {
 // setupSharedK8sEnvtestEnv creates the shared envtest environment for executor tests
 func setupSharedK8sEnvtestEnv() (*K8sTestEnv, error) {
 	ctx := context.Background()
-	log := logger.NewTestLogger()
 
 	imageName := os.Getenv("INTEGRATION_ENVTEST_IMAGE")
 
@@ -148,7 +146,7 @@ func setupSharedK8sEnvtestEnv() (*K8sTestEnv, error) {
 	println("   ✅ API server is ready!")
 
 	// Create K8s client
-	client, err := k8sclient.NewClientFromConfig(ctx, restConfig, log)
+	client, err := k8sclient.NewClientFromConfig(ctx, restConfig)
 	if err != nil {
 		sharedContainer.Cleanup()
 		return nil, fmt.Errorf("failed to create K8s client: %w", err)
@@ -175,7 +173,6 @@ func setupSharedK8sEnvtestEnv() (*K8sTestEnv, error) {
 		Client: client,
 		Config: restConfig,
 		Ctx:    ctx,
-		Log:    log,
 		cleanup: func() {
 			sharedContainer.Cleanup()
 		},

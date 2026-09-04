@@ -8,29 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockLogger implements logger.Logger for testing
-type mockLogger struct{}
-
-func (m *mockLogger) Debug(ctx context.Context, msg string)                          {}
-func (m *mockLogger) Debugf(ctx context.Context, format string, args ...interface{}) {}
-func (m *mockLogger) Info(ctx context.Context, msg string)                           {}
-func (m *mockLogger) Infof(ctx context.Context, format string, args ...interface{})  {}
-func (m *mockLogger) Warn(ctx context.Context, msg string)                           {}
-func (m *mockLogger) Warnf(ctx context.Context, format string, args ...interface{})  {}
-func (m *mockLogger) Error(ctx context.Context, msg string)                          {}
-func (m *mockLogger) Errorf(ctx context.Context, format string, args ...interface{}) {}
-func (m *mockLogger) Fatal(ctx context.Context, msg string)                          {}
-func (m *mockLogger) With(key string, value interface{}) logger.Logger               { return m }
-func (m *mockLogger) WithFields(fields map[string]interface{}) logger.Logger         { return m }
-func (m *mockLogger) Without(key string) logger.Logger                               { return m }
-
 func TestHealthzHandler(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -51,7 +34,7 @@ func TestHealthzHandler(t *testing.T) {
 }
 
 func TestReadyzHandler_NotReady(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 	// By default, checks are in error state
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -76,7 +59,7 @@ func TestReadyzHandler_NotReady(t *testing.T) {
 }
 
 func TestReadyzHandler_Ready(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 	server.SetConfigLoaded()
 	server.SetBrokerReady(true)
 
@@ -102,7 +85,7 @@ func TestReadyzHandler_Ready(t *testing.T) {
 }
 
 func TestSetBrokerReady(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Initially not ready (both checks are error)
 	assert.False(t, server.IsReady())
@@ -121,7 +104,7 @@ func TestSetBrokerReady(t *testing.T) {
 }
 
 func TestSetCheck(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Set a custom check
 	server.SetCheck("custom", CheckOK)
@@ -145,7 +128,7 @@ func TestSetCheck(t *testing.T) {
 }
 
 func TestReadyzHandler_PartialReady(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Only config is loaded, broker is not ready
 	server.SetConfigLoaded()
@@ -168,7 +151,7 @@ func TestReadyzHandler_PartialReady(t *testing.T) {
 }
 
 func TestReadyzHandler_ReadyToNotReady(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Set all checks to ok
 	server.SetConfigLoaded()
@@ -199,7 +182,7 @@ func TestReadyzHandler_ReadyToNotReady(t *testing.T) {
 }
 
 func TestSetShuttingDown(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Initially not shutting down
 	assert.False(t, server.IsShuttingDown())
@@ -214,7 +197,7 @@ func TestSetShuttingDown(t *testing.T) {
 }
 
 func TestReadyzHandler_ShuttingDown(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Set all checks to ok (server is ready)
 	server.SetConfigLoaded()
@@ -248,7 +231,7 @@ func TestReadyzHandler_ShuttingDown(t *testing.T) {
 }
 
 func TestIsReady_ShuttingDown(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Set all checks to ok
 	server.SetConfigLoaded()
@@ -261,7 +244,7 @@ func TestIsReady_ShuttingDown(t *testing.T) {
 }
 
 func TestReadyzHandler_ShuttingDownPriority(t *testing.T) {
-	server := NewServer(&mockLogger{}, "8080", "test-adapter")
+	server := NewServer("8080", "test-adapter")
 
 	// Set all checks to ok
 	server.SetConfigLoaded()
@@ -287,7 +270,7 @@ func TestReadyzHandler_ShuttingDownPriority(t *testing.T) {
 func TestServerLifecycle_StartAndShutdown(t *testing.T) {
 	// Use a unique port to avoid conflicts
 	port := "18080"
-	server := NewServer(&mockLogger{}, port, "test-adapter")
+	server := NewServer(port, "test-adapter")
 
 	ctx := context.Background()
 
@@ -326,7 +309,7 @@ func TestServerLifecycle_StartAndShutdown(t *testing.T) {
 
 func TestServerLifecycle_ReadyzWhileRunning(t *testing.T) {
 	port := "18081"
-	server := NewServer(&mockLogger{}, port, "test-adapter")
+	server := NewServer(port, "test-adapter")
 
 	ctx := context.Background()
 
@@ -363,7 +346,7 @@ func TestServerLifecycle_ReadyzWhileRunning(t *testing.T) {
 
 func TestServerLifecycle_GracefulShutdownStateTransitions(t *testing.T) {
 	port := "18082"
-	server := NewServer(&mockLogger{}, port, "test-adapter")
+	server := NewServer(port, "test-adapter")
 
 	ctx := context.Background()
 
@@ -421,7 +404,7 @@ func TestServerLifecycle_GracefulShutdownStateTransitions(t *testing.T) {
 
 func TestServerLifecycle_ShutdownTimeout(t *testing.T) {
 	port := "18083"
-	server := NewServer(&mockLogger{}, port, "test-adapter")
+	server := NewServer(port, "test-adapter")
 
 	ctx := context.Background()
 

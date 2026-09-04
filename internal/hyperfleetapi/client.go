@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/big"
 	"net/http"
@@ -14,8 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/version"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -36,7 +37,6 @@ const (
 type httpClient struct {
 	client      *http.Client
 	config      *ClientConfig
-	log         logger.Logger
 	tokenSource *fileTokenSource
 }
 
@@ -128,10 +128,9 @@ func WithAuth(auth *AuthConfig) ClientOption {
 // This function owns the environment variable fallback logic; callers should
 // pass the configured value via WithBaseURL if available, otherwise NewClient
 // reads the env var as a last resort.
-func NewClient(log logger.Logger, opts ...ClientOption) (Client, error) {
+func NewClient(opts ...ClientOption) (Client, error) {
 	c := &httpClient{
 		config: DefaultClientConfig(),
-		log:    log,
 	}
 
 	// Apply options (including WithBaseURL if provided by caller)
@@ -219,7 +218,8 @@ func (c *httpClient) Do(ctx context.Context, req *Request) (*Response, error) {
 		resp, err := c.doRequest(ctx, req)
 		if err != nil {
 			lastErr = err
-			c.log.Warnf(ctx, "HyperFleet API request failed (attempt %d/%d): %v", attempt, retryAttempts, err)
+			slog.WarnContext(ctx, "hyperfleet api request failed",
+				"attempt", attempt, "max_attempts", retryAttempts, "error", err)
 		} else {
 			resp.Attempts = attempt
 			resp.Duration = time.Since(startTime)
@@ -231,14 +231,14 @@ func (c *httpClient) Do(ctx context.Context, req *Request) (*Response, error) {
 
 			lastResp = resp
 			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
-			c.log.Warnf(ctx, "HyperFleet API request returned retryable status %d (attempt %d/%d)",
-				resp.StatusCode, attempt, retryAttempts)
+			slog.WarnContext(ctx, "hyperfleet api request returned retryable status",
+				"status_code", resp.StatusCode, "attempt", attempt, "max_attempts", retryAttempts)
 		}
 
 		// Don't sleep after the last attempt
 		if attempt < retryAttempts {
 			delay := c.calculateBackoff(attempt, backoffStrategy)
-			c.log.Infof(ctx, "Retrying in %v...", delay)
+			slog.InfoContext(ctx, "retrying request", "delay", delay)
 
 			select {
 			case <-ctx.Done():
@@ -301,7 +301,7 @@ func (c *httpClient) doRequest(ctx context.Context, req *Request) (*Response, er
 	defer span.End()
 
 	// Update logger context with new span_id for this request
-	ctx = logger.WithOTelTraceContext(ctx)
+	ctx = logctx.WithOTelTraceContext(ctx)
 
 	// Determine timeout
 	timeout := c.config.Timeout
@@ -358,14 +358,14 @@ func (c *httpClient) doRequest(ctx context.Context, req *Request) (*Response, er
 	otel.GetTextMapPropagator().Inject(reqCtx, propagation.HeaderCarrier(httpReq.Header))
 
 	// Execute request
-	c.log.Debugf(ctx, "HyperFleet API request: %s %s", req.Method, req.URL)
+	slog.DebugContext(ctx, "hyperfleet api request", "method", req.Method)
 	httpResp, err := c.client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
 	defer func() {
 		if closeErr := httpResp.Body.Close(); closeErr != nil {
-			c.log.Warnf(ctx, "Failed to close response body: %v", closeErr)
+			slog.WarnContext(ctx, "failed to close response body", "error", closeErr)
 		}
 	}()
 
@@ -382,7 +382,7 @@ func (c *httpClient) doRequest(ctx context.Context, req *Request) (*Response, er
 		Body:       respBody,
 	}
 
-	c.log.Debugf(ctx, "HyperFleet API response: %d %s", response.StatusCode, response.Status)
+	slog.DebugContext(ctx, "hyperfleet api response", "status_code", response.StatusCode, "status", response.Status)
 
 	return response, nil
 }

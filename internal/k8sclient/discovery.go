@@ -2,6 +2,7 @@ package k8sclient
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
@@ -44,8 +45,8 @@ func (c *Client) DiscoverResources(
 
 	if discovery.IsSingleResource() {
 		// Single resource by name
-		c.log.Infof(ctx, "Discovering single resource: %s/%s (namespace: %s)",
-			gvk.Kind, discovery.GetName(), discovery.GetNamespace())
+		slog.InfoContext(ctx, "discovering single resource",
+			"kind", gvk.Kind, "name", discovery.GetName(), "namespace", discovery.GetNamespace())
 
 		obj, err := c.GetResource(ctx, gvk, discovery.GetNamespace(), discovery.GetName(), nil)
 		if err != nil {

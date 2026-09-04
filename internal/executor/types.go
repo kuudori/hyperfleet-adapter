@@ -10,7 +10,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -65,8 +64,6 @@ type ExecutorConfig struct {
 	APIClient hyperfleetapi.Client
 	// TransportClient is the transport client for applying resources (kubernetes or maestro)
 	TransportClient transportclient.TransportClient
-	// Logger is the logger instance
-	Logger logger.Logger
 	// MetricsRecorder is the optional Prometheus metrics recorder
 	MetricsRecorder *metrics.Recorder
 }
@@ -77,7 +74,6 @@ type Executor struct {
 	precondExecutor    *PreconditionExecutor
 	resourceExecutor   *ResourceExecutor
 	postActionExecutor *PostActionExecutor
-	log                logger.Logger
 }
 
 // ExecutionResult contains the result of processing an event
@@ -345,6 +341,20 @@ func (ec *ExecutionContext) SetError(reason, message string) {
 			Message: message,
 		}
 	}
+}
+
+// failPhase records Adapter.ExecutionError with phase and step when none is set
+// yet (first failure wins), then returns an ExecutorError. Unlike
+// recordResourceError, this does not populate ResourceErrors.
+func (ec *ExecutionContext) failPhase(phase ExecutionPhase, step, message string, err error) *ExecutorError {
+	if ec.Adapter.ExecutionError == nil {
+		ec.Adapter.ExecutionError = &ExecutionError{
+			Phase:   string(phase),
+			Step:    step,
+			Message: err.Error(),
+		}
+	}
+	return NewExecutorError(phase, step, message, err)
 }
 
 // SetSkipped sets the status to indicate execution was skipped (not an error)

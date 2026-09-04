@@ -284,6 +284,12 @@ Per Helm Chart Conventions Standard section 9 (Deprecation and Migration Pattern
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if hasKey .Values "serviceMonitor" }}
+{{- fail "serviceMonitor has moved to monitoring.serviceMonitor. Please update your values (e.g. monitoring.serviceMonitor.enabled)." }}
+{{- end -}}
+{{- if hasKey .Values "tracing" }}
+{{- fail "tracing has moved to monitoring.tracing. Please update your values (e.g. monitoring.tracing.enabled)." }}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -304,6 +310,32 @@ broker.type must be set explicitly — inference from sub-keys is not supported.
 {{- end }}
 
 {{/*
+Convert a validated "<digits><unit>" duration string (unit one of s/m/h/d) to seconds.
+Callers must validate the format (via regexMatch) before calling this.
+Digit length is bounded so Sprig mul cannot wrap int64 (CWE-190).
+*/}}
+{{- define "hyperfleet-adapter.durationToSeconds" -}}
+{{- $d := . -}}
+{{- $length := len $d -}}
+{{- $lastIdx := sub $length 1 | int -}}
+{{- $unit := substr $lastIdx $length $d -}}
+{{- $numStr := substr 0 $lastIdx $d -}}
+{{- if gt (len $numStr) 10 -}}
+{{- fail (printf "duration %s overflows int64 when converted to seconds" $d) -}}
+{{- end -}}
+{{- $num := $numStr | int64 -}}
+{{- if eq $unit "s" -}}
+{{- $num -}}
+{{- else if eq $unit "m" -}}
+{{- mul $num 60 -}}
+{{- else if eq $unit "h" -}}
+{{- mul $num 3600 -}}
+{{- else if eq $unit "d" -}}
+{{- mul $num 86400 -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate that required fields are set for the resolved broker type.
 */}}
 {{- define "hyperfleet-adapter.validateBrokerConfig" -}}
@@ -311,13 +343,24 @@ Validate that required fields are set for the resolved broker type.
 {{- if eq $brokerType "googlepubsub" -}}
   {{- $ttl := .Values.broker.googlepubsub.expirationTTL | toString -}}
   {{- if ne $ttl "" -}}
-    {{- if not (regexMatch "^(0|[1-9][0-9]*[smhd])$" $ttl) -}}
+    {{- if not (regexMatch "^(0|[1-9][0-9]{0,9}[smhd])$" $ttl) -}}
       {{- fail "broker.googlepubsub.expirationTTL must be \"0\" (never expire) or a duration like \"1d\", \"12h\", \"30m\", \"604800s\"" -}}
     {{- end -}}
+    {{- if ne $ttl "0" -}}
+      {{- $ttlSeconds := include "hyperfleet-adapter.durationToSeconds" $ttl | int64 -}}
+      {{- if lt $ttlSeconds 86400 -}}
+        {{- fail "broker.googlepubsub.expirationTTL must be \"0\" (never expire) or at least \"1d\" (Google Pub/Sub minimum)" -}}
+      {{- end -}}
+    {{- end -}}
   {{- end -}}
-  {{- if .Values.broker.googlepubsub.messageRetentionDuration -}}
-    {{- if not (regexMatch "^[1-9][0-9]*[smhd]$" (.Values.broker.googlepubsub.messageRetentionDuration | toString)) -}}
+  {{- $retention := .Values.broker.googlepubsub.messageRetentionDuration | toString -}}
+  {{- if ne $retention "" -}}
+    {{- if not (regexMatch "^[1-9][0-9]{0,9}[smhd]$" $retention) -}}
       {{- fail "broker.googlepubsub.messageRetentionDuration must be a duration like \"1d\", \"12h\", \"30m\", \"604800s\"" -}}
+    {{- end -}}
+    {{- $retentionSeconds := include "hyperfleet-adapter.durationToSeconds" $retention | int64 -}}
+    {{- if or (lt $retentionSeconds 600) (gt $retentionSeconds 2678400) -}}
+      {{- fail "broker.googlepubsub.messageRetentionDuration must be between \"10m\" and \"31d\" (Google Pub/Sub limits)" -}}
     {{- end -}}
   {{- end -}}
 {{- else if eq $brokerType "rabbitmq" -}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
@@ -12,7 +13,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,7 +23,6 @@ import (
 // ResourceExecutor creates and updates Kubernetes resources
 type ResourceExecutor struct {
 	client  transportclient.TransportClient
-	log     logger.Logger
 	metrics *metrics.Recorder
 }
 
@@ -32,7 +31,6 @@ type ResourceExecutor struct {
 func newResourceExecutor(config *ExecutorConfig) *ResourceExecutor {
 	return &ResourceExecutor{
 		client:  config.TransportClient,
-		log:     config.Logger,
 		metrics: config.MetricsRecorder,
 	}
 }
@@ -158,12 +156,14 @@ func (re *ResourceExecutor) executeResource(
 					execCtx.Adapter.SkipReason = fmt.Sprintf("%s: %s", resource.Name, result.OperationReason)
 				}
 
-				re.log.Infof(ctx, "Resource[%s] skipped: create.when condition is false", resource.Name)
+				slog.InfoContext(ctx, "resource skipped: create.when condition is false", "resource", resource.Name)
 				return result, nil
 			}
-			re.log.Debugf(ctx, "Resource[%s] lifecycle.create.when evaluated to true, creating resource", resource.Name)
+			slog.DebugContext(ctx, "resource lifecycle.create.when evaluated to true, creating resource",
+				"resource", resource.Name)
 		} else {
-			re.log.Debugf(ctx, "Resource[%s] already exists: ignoring lifecycle.create.when, applying normally", resource.Name)
+			slog.DebugContext(ctx, "resource already exists: ignoring lifecycle.create.when, applying normally",
+				"resource", resource.Name)
 		}
 	}
 
@@ -184,11 +184,12 @@ func (re *ResourceExecutor) executeResource(
 			return re.executeResourceDelete(ctx, resource, execCtx, transportTarget)
 		}
 		// when-expression is false → fall through to normal apply flow
-		re.log.Debugf(ctx, "Resource[%s] lifecycle.delete.when evaluated to false, applying normally", resource.Name)
+		slog.DebugContext(ctx, "resource lifecycle.delete.when evaluated to false, applying normally",
+			"resource", resource.Name)
 	}
 
 	// Step 3: Render the manifest/manifestWork to bytes
-	re.log.Debugf(ctx, "Rendering manifest template for resource %s", resource.Name)
+	slog.DebugContext(ctx, "rendering manifest template", "resource", resource.Name)
 	renderedBytes, err := re.renderToBytes(resource, execCtx)
 	if err != nil {
 		result.Status = StatusFailed
@@ -215,24 +216,17 @@ func (re *ResourceExecutor) executeResource(
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = err
-		execCtx.Adapter.ExecutionError = &ExecutionError{
-			Phase:   string(PhaseResources),
-			Step:    resource.Name,
-			Message: err.Error(),
-		}
-		errCtx := logger.WithK8sResult(ctx, "FAILED")
-		errCtx = logger.WithErrorField(errCtx, err)
-		re.log.Errorf(errCtx, "Resource[%s] processed: FAILED", resource.Name)
-		return result, NewExecutorError(PhaseResources, resource.Name, "failed to apply resource", err)
+		slog.ErrorContext(ctx, "resource processed: failed",
+			"resource", resource.Name, "k8s_result", "FAILED", "error", err)
+		return result, execCtx.failPhase(PhaseResources, resource.Name, "failed to apply resource", err)
 	}
 
 	// Step 7: Extract result
 	result.Operation = applyResult.Operation
 	result.OperationReason = applyResult.Reason
 
-	successCtx := logger.WithK8sResult(ctx, "SUCCESS")
-	re.log.Infof(successCtx, "Resource[%s] processed: operation=%s reason=%s",
-		resource.Name, result.Operation, result.OperationReason)
+	slog.InfoContext(ctx, "resource processed",
+		"resource", resource.Name, "k8s_result", "SUCCESS", "operation", result.Operation, "reason", result.OperationReason)
 
 	// Step 7: Post-apply discovery — find the applied resource and store in execCtx for CEL evaluation
 	if resource.Discovery != nil {
@@ -240,31 +234,25 @@ func (re *ResourceExecutor) executeResource(
 		if discoverErr != nil {
 			result.Status = StatusFailed
 			result.Error = discoverErr
-			execCtx.Adapter.ExecutionError = &ExecutionError{
-				Phase:   string(PhaseResources),
-				Step:    resource.Name,
-				Message: discoverErr.Error(),
-			}
-			errCtx := logger.WithK8sResult(ctx, "FAILED")
-			errCtx = logger.WithErrorField(errCtx, discoverErr)
-			re.log.Errorf(errCtx, "Resource[%s] discovery after apply failed: %v", resource.Name, discoverErr)
-			return result, NewExecutorError(
+			slog.ErrorContext(ctx, "resource discovery after apply failed",
+				"resource", resource.Name, "k8s_result", "FAILED", "error", discoverErr)
+			return result, execCtx.failPhase(
 				PhaseResources, resource.Name, "failed to discover resource after apply", discoverErr)
 		}
 		if discovered != nil {
 			// Always store the discovered top-level resource by resource name.
 			// Nested discoveries are added as independent entries keyed by nested name.
 			execCtx.Resources[resource.Name] = discovered
-			re.log.Debugf(ctx, "Resource[%s] discovered and stored in context", resource.Name)
+			slog.DebugContext(ctx, "resource discovered and stored in context", "resource", resource.Name)
 
 			// Step 8: Nested discoveries — find sub-resources within the discovered parent (e.g., ManifestWork)
 			if len(resource.NestedDiscoveries) > 0 {
 				nestedResults := re.discoverNestedResources(ctx, resource, execCtx, discovered)
 				for nestedName, nestedObj := range nestedResults {
 					if nestedName == resource.Name {
-						re.log.Warnf(ctx,
-							"Nested discovery %q has the same name as parent resource; skipping to avoid overwriting parent",
-							nestedName)
+						slog.WarnContext(ctx,
+							"nested discovery has same name as parent resource; skipping to avoid overwriting parent",
+							"nested_discovery", nestedName)
 						continue
 					}
 					if nestedObj == nil {
@@ -277,21 +265,13 @@ func (re *ResourceExecutor) executeResource(
 						)
 						result.Status = StatusFailed
 						result.Error = collisionErr
-						execCtx.Adapter.ExecutionError = &ExecutionError{
-							Phase:   string(PhaseResources),
-							Step:    resource.Name,
-							Message: collisionErr.Error(),
-						}
-						return result, NewExecutorError(
-							PhaseResources, resource.Name,
-							"duplicate resource context key",
-							collisionErr,
-						)
+						return result, execCtx.failPhase(
+							PhaseResources, resource.Name, "duplicate resource context key", collisionErr)
 					}
 					execCtx.Resources[nestedName] = nestedObj
 				}
-				re.log.Debugf(ctx, "Resource[%s] discovered with %d nested resources added to context",
-					resource.Name, len(nestedResults))
+				slog.DebugContext(ctx, "resource discovered with nested resources added to context",
+					"resource", resource.Name, "nested_count", len(nestedResults))
 			}
 		}
 	}
@@ -410,22 +390,23 @@ func (re *ResourceExecutor) discoverNestedResources(
 		// Build discovery config with rendered templates
 		discoveryConfig, err := re.buildNestedDiscoveryConfig(nd.Discovery, execCtx.Params)
 		if err != nil {
-			re.log.Warnf(ctx, "Resource[%s] nested discovery[%s] failed to build config: %v",
-				resource.Name, nd.Name, err)
+			slog.WarnContext(ctx, "resource nested discovery failed to build config",
+				"resource", resource.Name, "nested_discovery", nd.Name, "error", err)
 			continue
 		}
 
 		// Search within the parent resource
 		list, err := manifest.DiscoverNestedManifest(parent, discoveryConfig)
 		if err != nil {
-			re.log.Warnf(ctx, "Resource[%s] nested discovery[%s] failed: %v",
-				resource.Name, nd.Name, err)
+			slog.WarnContext(ctx, "resource nested discovery failed",
+				"resource", resource.Name, "nested_discovery", nd.Name, "error", err)
 			continue
 		}
 
+		// No match is expected under eventual consistency; omit the nested key.
 		if len(list.Items) == 0 {
-			re.log.Debugf(ctx, "Resource[%s] nested discovery[%s] found no matches",
-				resource.Name, nd.Name)
+			slog.DebugContext(ctx, "resource nested discovery found no matches",
+				"resource", resource.Name, "nested_discovery", nd.Name)
 			continue
 		}
 
@@ -434,8 +415,8 @@ func (re *ResourceExecutor) discoverNestedResources(
 		if best != nil {
 			manifest.EnrichWithResourceStatus(parent, best)
 			nestedResults[nd.Name] = best
-			re.log.Debugf(ctx, "Resource[%s] nested discovery[%s] found: %s/%s",
-				resource.Name, nd.Name, best.GetKind(), best.GetName())
+			slog.DebugContext(ctx, "resource nested discovery found",
+				"resource", resource.Name, "nested_discovery", nd.Name, "kind", best.GetKind(), "name", best.GetName())
 		}
 	}
 
@@ -553,8 +534,8 @@ func (re *ResourceExecutor) preDiscoverAll(
 		if resource.IsMaestroTransport() && resource.Transport.Maestro != nil {
 			targetCluster, err := utils.RenderTemplate(resource.Transport.Maestro.TargetCluster, execCtx.Params)
 			if err != nil {
-				re.log.Warnf(ctx, "Resource[%s] pre-discovery: failed to render targetCluster: %v",
-					resource.Name, err)
+				slog.WarnContext(ctx, "resource pre-discovery: failed to render targetCluster",
+					"resource", resource.Name, "error", err)
 				return NewExecutorError(PhaseResources, resource.Name, "failed to render targetCluster", err)
 			}
 			transportTarget = &maestroclient.TransportContext{ConsumerName: targetCluster}
@@ -568,12 +549,12 @@ func (re *ResourceExecutor) preDiscoverAll(
 			}
 			// Transient error (RBAC, network, API server): propagate so the reconciliation
 			// fails visibly rather than treating the resource as absent.
-			re.log.Warnf(ctx, "Resource[%s] pre-discovery failed: %v", resource.Name, err)
+			slog.WarnContext(ctx, "resource pre-discovery failed", "resource", resource.Name, "error", err)
 			return NewExecutorError(PhaseResources, resource.Name, "pre-discovery failed", err)
 		}
 		if discovered != nil {
 			execCtx.Resources[resource.Name] = discovered
-			re.log.Debugf(ctx, "Resource[%s] pre-discovered and stored in context", resource.Name)
+			slog.DebugContext(ctx, "resource pre-discovered and stored in context", "resource", resource.Name)
 		}
 	}
 	return nil
@@ -595,7 +576,7 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 	evalCtx := criteria.NewEvaluationContext()
 	evalCtx.SetVariablesFromMap(execCtx.GetCELVariables())
 
-	evaluator, err := criteria.NewEvaluator(ctx, evalCtx, re.log)
+	evaluator, err := criteria.NewEvaluator(ctx, evalCtx)
 	if err != nil {
 		return false, fmt.Errorf("failed to create CEL evaluator: %w", err)
 	}
@@ -607,7 +588,8 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 	}
 
 	execCtx.AddCELEvaluation(PhaseResources, resource.Name+"/"+kind, expression, celResult.Matched)
-	re.log.Debugf(ctx, "Resource[%s] %s=%q → matched=%v", resource.Name, kind, expression, celResult.Matched)
+	slog.DebugContext(ctx, "resource lifecycle when evaluated",
+		"resource", resource.Name, "kind", kind, "expression", expression, "matched", celResult.Matched)
 
 	return celResult.Matched, nil
 }
@@ -670,7 +652,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 		// !resources.?X.hasValue() evaluates to true in this reconciliation.
 		execCtx.Resources[resource.Name] = nil
 		result.OperationReason = "resource already deleted or never existed"
-		re.log.Infof(ctx, "Resource[%s] delete: already deleted or never existed", resource.Name)
+		slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
 		re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusSuccess)
 		re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
 		return result, nil
@@ -704,9 +686,8 @@ func (re *ResourceExecutor) executeResourceDelete(
 		result.Status = StatusFailed
 		result.Error = err
 		re.recordResourceError(execCtx, resource, err)
-		errCtx := logger.WithK8sResult(ctx, "FAILED")
-		errCtx = logger.WithErrorField(errCtx, err)
-		re.log.Errorf(errCtx, "Resource[%s] delete: FAILED", resource.Name)
+		slog.ErrorContext(ctx, "resource delete: failed",
+			"resource", resource.Name, "k8s_result", "FAILED", "error", err)
 		re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusError)
 		re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
 		return result, NewExecutorError(PhaseResources, resource.Name, "failed to delete resource", err)
@@ -722,23 +703,24 @@ func (re *ResourceExecutor) executeResourceDelete(
 	switch {
 	case postDiscoverErr != nil && !postIsNotFound:
 		// Non-fatal: log the error but don't fail the delete — the delete itself succeeded.
-		re.log.Debugf(ctx, "Resource[%s] post-delete discovery error (non-fatal): %v", resource.Name, postDiscoverErr)
+		slog.WarnContext(ctx, "resource post-delete discovery error (non-fatal)",
+			"resource", resource.Name, "error", postDiscoverErr)
 		execCtx.Resources[resource.Name] = discovered
 	case postDeleteDiscovered == nil || postIsNotFound:
 		// Resource is confirmed gone: dependent resources can proceed in this reconciliation.
 		execCtx.Resources[resource.Name] = nil
-		re.log.Debugf(ctx, "Resource[%s] confirmed deleted (post-delete discovery: not found)", resource.Name)
+		slog.DebugContext(ctx, "resource confirmed deleted (post-delete discovery: not found)", "resource", resource.Name)
 	default:
 		// Resource still present (finalizers or async deletion): dependents wait for next reconciliation.
 		execCtx.Resources[resource.Name] = postDeleteDiscovered
-		re.log.Debugf(ctx, "Resource[%s] still present after delete (finalizers or async): dependents wait", resource.Name)
+		slog.DebugContext(ctx, "resource still present after delete (finalizers or async): dependents wait",
+			"resource", resource.Name)
 	}
 
 	result.OperationReason = "lifecycle.delete.when evaluated to true"
 
-	re.log.Infof(logger.WithK8sResult(ctx, "SUCCESS"),
-		"Resource[%s] delete: operation=delete propagationPolicy=%s",
-		resource.Name, propagationPolicy)
+	slog.InfoContext(ctx, "resource delete",
+		"resource", resource.Name, "k8s_result", "SUCCESS", "operation", "delete", "propagation_policy", propagationPolicy)
 
 	re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusSuccess)
 	re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))

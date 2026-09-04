@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +43,7 @@ func TestRealWorldScenario(t *testing.T) {
 	ctx.Set("vpcId", "vpc-12345")
 	ctx.Set("nodeCount", 5)
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	// Test precondition conditions from the template
@@ -119,7 +118,7 @@ func TestResourceStatusEvaluation(t *testing.T) {
 
 	ctx.Set("resources", resources)
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("namespace is active", func(t *testing.T) {
@@ -137,7 +136,7 @@ func TestResourceStatusEvaluation(t *testing.T) {
 		localCtx := NewEvaluationContext()
 		localCtx.Set("replicas", 3)
 		localCtx.Set("readyReplicas", 3)
-		localEvaluator, err := NewEvaluator(context.Background(), localCtx, logger.NewTestLogger())
+		localEvaluator, err := NewEvaluator(context.Background(), localCtx)
 		require.NoError(t, err)
 		result, err := localEvaluator.EvaluateCondition(
 			"replicas",
@@ -170,7 +169,7 @@ func TestComplexNestedConditions(t *testing.T) {
 		},
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("adapter execution successful", func(t *testing.T) {
@@ -211,7 +210,7 @@ func TestMapKeyContainment(t *testing.T) {
 		"owner":       "team-a",
 	})
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("map contains key - found", func(t *testing.T) {
@@ -275,7 +274,7 @@ func TestContainsOperatorEdgeCases(t *testing.T) {
 	// Nil value
 	ctx.Set("nilField", nil)
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("string contains substring - found", func(t *testing.T) {
@@ -351,7 +350,7 @@ func TestTerminatingClusterScenario(t *testing.T) {
 	ctx.Set("cloudProvider", "aws")
 	ctx.Set("vpcId", "vpc-12345")
 
-	evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+	evaluator, err := NewEvaluator(context.Background(), ctx)
 	require.NoError(t, err)
 
 	t.Run("terminating cluster fails preconditions", func(t *testing.T) {
@@ -432,7 +431,7 @@ func TestNodeCountValidation(t *testing.T) {
 			ctx.Set("minNodes", tt.minNodes)
 			ctx.Set("maxNodes", tt.maxNodes)
 
-			evaluator, err := NewEvaluator(context.Background(), ctx, logger.NewTestLogger())
+			evaluator, err := NewEvaluator(context.Background(), ctx)
 			require.NoError(t, err)
 
 			// Check if nodeCount >= minNodes

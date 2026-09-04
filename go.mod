@@ -9,7 +9,8 @@ require (
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/mitchellh/copystructure v1.2.0
-	github.com/openshift-hyperfleet/hyperfleet-broker v1.1.1
+	github.com/openshift-hyperfleet/hyperfleet-broker v1.1.2-0.20260805201321-4ebbef72d0d2
+	github.com/openshift-hyperfleet/hyperfleet-logger v0.0.0-20260811173525-c9f9e282d029
 	github.com/openshift-online/maestro v0.0.0-20260202062555-48b47506a254
 	github.com/openshift-online/ocm-sdk-go v0.1.510
 	github.com/prometheus/client_golang v1.24.1
