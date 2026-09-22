@@ -63,13 +63,64 @@ func (v *AdapterConfigValidator) ValidateStructure() error {
 	return nil
 }
 
+// ValidateStoreNameCollisions rejects declared store names that normalise to
+// the same canonical key. NormalizeRegistryName collapses case and surrounding
+// whitespace, so two distinct map keys can resolve to one entry; the later
+// assignment would silently overwrite the earlier one and a remote transport
+// could bind to the wrong store. Viper lowercases deployment config map keys,
+// so a file-loaded config can lose the duplicate before AdapterConfigValidator
+// sees it; loadAdapterConfigWithViper calls this on the case-preserving decode
+// before the merge.
+func ValidateStoreNameCollisions(stores map[string]StoreDefinition) error {
+	return validateRegistryNameCollisions(FieldStores, stores)
+}
+
+// ValidateTransportNameCollisions rejects declared transport names that
+// normalise to the same canonical key. Build registers clients under the
+// canonical name, so two distinct declarations would silently overwrite one
+// another and a task resource could bind to the wrong transport. Direct callers
+// that build a *Config without LoadConfig are covered too.
+func ValidateTransportNameCollisions(transports map[string]TransportDefinition) error {
+	return validateRegistryNameCollisions(FieldTransports, transports)
+}
+
+// validateRegistryNameCollisions rejects map keys that normalise to the same
+// canonical registry name.
+func validateRegistryNameCollisions[V any](field string, entries map[string]V) error {
+	seen := make(map[string]string, len(entries))
+	for _, name := range utils.SortedMapKeys(entries) {
+		canonical := NormalizeRegistryName(name)
+		if previous, ok := seen[canonical]; ok {
+			return fmt.Errorf(
+				"%s.%s and %s.%s resolve to the same name %q",
+				field, previous, field, name, canonical,
+			)
+		}
+		seen[canonical] = name
+	}
+	return nil
+}
+
 func (v *AdapterConfigValidator) validateTransportRegistry() error {
 	if len(v.config.Transports) > 0 && v.config.Clients.Maestro != nil {
 		return fmt.Errorf("clients.maestro cannot be configured when transports are set")
 	}
+	if err := ValidateStoreNameCollisions(v.config.Stores); err != nil {
+		return err
+	}
+	if err := ValidateTransportNameCollisions(v.config.Transports); err != nil {
+		return err
+	}
 
-	// sort for deterministic validation order
+	// Viper lowercases deployment config map keys but leaves values untouched.
+	// Normalise both the declared names and the references so a mixed-case
+	// declaration and reference resolve to the same entry.
 	storeNames := utils.SortedMapKeys(v.config.Stores)
+	normalizedStores := make(map[string]string, len(v.config.Stores))
+	for _, name := range storeNames {
+		normalizedStores[NormalizeRegistryName(name)] = name
+	}
+
 	for _, name := range storeNames {
 		store := v.config.Stores[name]
 		path := fmt.Sprintf("%s.%s", FieldStores, name)
@@ -102,13 +153,14 @@ func (v *AdapterConfigValidator) validateTransportRegistry() error {
 		switch transport.Type {
 		case TransportTypeKubernetes:
 		case TransportTypeRemote:
-			if strings.TrimSpace(transport.Store) == "" {
+			storeName := NormalizeRegistryName(transport.Store)
+			if storeName == "" {
 				return fmt.Errorf("%s.%s is required for remote transport", path, FieldStore)
 			}
-			if _, ok := v.config.Stores[transport.Store]; !ok {
+			if _, ok := normalizedStores[storeName]; !ok {
 				return fmt.Errorf("%s.%s references unknown store %q", path, FieldStore, transport.Store)
 			}
-			referencedStores[transport.Store] = struct{}{}
+			referencedStores[storeName] = struct{}{}
 		default:
 			return fmt.Errorf("%s.type %q is unsupported (supported: %s, %s)",
 				path, transport.Type, TransportTypeKubernetes, TransportTypeRemote)
@@ -116,7 +168,7 @@ func (v *AdapterConfigValidator) validateTransportRegistry() error {
 	}
 
 	for _, name := range storeNames {
-		if _, ok := referencedStores[name]; !ok {
+		if _, ok := referencedStores[NormalizeRegistryName(name)]; !ok {
 			return fmt.Errorf("%s.%s is not referenced by any remote transport", FieldStores, name)
 		}
 	}

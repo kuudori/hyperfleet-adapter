@@ -34,6 +34,9 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 	if config == nil {
 		return nil, fmt.Errorf("transport registry config is required")
 	}
+	if err := validateNamedTransportConfig(config); err != nil {
+		return nil, fmt.Errorf("validate named transport configuration: %w", err)
+	}
 
 	runtime := &Runtime{Registry: make(transportclient.Registry)}
 	if len(config.Transports) == 0 {
@@ -57,7 +60,7 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 			closeAfterBuildFailure(ctx, runtime)
 			return nil, fmt.Errorf("build transport %q: %w", name, err)
 		}
-		runtime.Registry[name] = client
+		runtime.Registry[configloader.NormalizeRegistryName(name)] = client
 	}
 	if err := runtime.registerCompatibilityAlias(config, nil); err != nil {
 		closeAfterBuildFailure(ctx, runtime)
@@ -73,6 +76,22 @@ func closeAfterBuildFailure(ctx context.Context, runtime *Runtime) {
 	}
 }
 
+// validateNamedTransportConfig mirrors the config validator's registry
+// invariants so callers that build a registry from a config which did not pass
+// through LoadConfig still get the same guardrails.
+func validateNamedTransportConfig(config *configloader.Config) error {
+	if err := configloader.ValidateStoreNameCollisions(config.Stores); err != nil {
+		return err
+	}
+	if err := configloader.ValidateTransportNameCollisions(config.Transports); err != nil {
+		return err
+	}
+	if len(config.Transports) > 0 && config.Clients.Maestro != nil {
+		return fmt.Errorf("clients.maestro cannot be configured when transports are set")
+	}
+	return nil
+}
+
 // BuildRecording builds a registry for dry-run execution without creating any
 // network clients. Each configured name uses client directly.
 func BuildRecording(
@@ -85,10 +104,13 @@ func BuildRecording(
 	if client == nil {
 		return nil, fmt.Errorf("recording transport client is required")
 	}
+	if err := validateNamedTransportConfig(config); err != nil {
+		return nil, fmt.Errorf("validate named transport configuration: %w", err)
+	}
 
 	runtime := &Runtime{Registry: make(transportclient.Registry)}
 	for name := range config.Transports {
-		runtime.Registry[name] = client
+		runtime.Registry[configloader.NormalizeRegistryName(name)] = client
 	}
 	if err := runtime.registerCompatibilityAlias(config, client); err != nil {
 		return nil, err
@@ -125,7 +147,7 @@ func (r *Runtime) registerCompatibilityAlias(
 	case 0:
 		return nil
 	case 1:
-		r.Registry[key] = r.Registry[names[0]]
+		r.Registry[key] = r.Registry[configloader.NormalizeRegistryName(names[0])]
 		return nil
 	default:
 		return fmt.Errorf(
@@ -177,12 +199,18 @@ func (r *Runtime) buildStores(
 	ctx context.Context,
 	definitions map[string]configloader.StoreDefinition,
 ) (map[string]desire.SpecStore, error) {
+	// Guard locally as well as in validateNamedTransportConfig: buildStores
+	// overwrites on the normalised key, so a duplicate must never reach it.
+	if err := configloader.ValidateStoreNameCollisions(definitions); err != nil {
+		return nil, err
+	}
+
 	stores := make(map[string]desire.SpecStore, len(definitions))
 	for _, name := range utils.SortedMapKeys(definitions) {
 		definition := definitions[name]
 		switch definition.Type {
 		case configloader.StoreTypeMemory:
-			stores[name] = memory.New()
+			stores[configloader.NormalizeRegistryName(name)] = memory.New()
 		case configloader.StoreTypeRedis:
 			options, err := redis.ParseURL(definition.URL)
 			if err != nil {
@@ -199,7 +227,7 @@ func (r *Runtime) buildStores(
 				return nil, fmt.Errorf("build store %q: ping Redis: %w", name, err)
 			}
 			r.closers = append(r.closers, client)
-			stores[name] = redisstore.New(client)
+			stores[configloader.NormalizeRegistryName(name)] = redisstore.New(client)
 		default:
 			return nil, fmt.Errorf("build store %q: unsupported type %q", name, definition.Type)
 		}
@@ -217,7 +245,7 @@ func buildTransport(
 	case configloader.TransportTypeKubernetes:
 		return buildKubernetes(ctx, config.Clients.Kubernetes)
 	case configloader.TransportTypeRemote:
-		store, ok := stores[definition.Store]
+		store, ok := stores[configloader.NormalizeRegistryName(definition.Store)]
 		if !ok {
 			return nil, fmt.Errorf("store %q is not configured", definition.Store)
 		}

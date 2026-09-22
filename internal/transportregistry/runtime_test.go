@@ -95,53 +95,209 @@ transports:
 }
 
 func TestBuildRejectsAmbiguousCompatibilityDefault(t *testing.T) {
-	tests := []struct {
-		name    string
-		wantKey string
-		maestro bool
-	}{
-		{
-			name:    "Kubernetes default",
-			wantKey: configloader.TransportClientKubernetes,
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"desired-memory": {Type: configloader.StoreTypeMemory},
 		},
-		{
-			name:    "Maestro override",
-			wantKey: configloader.TransportClientMaestro,
-			maestro: true,
+		Transports: map[string]configloader.TransportDefinition{
+			"remote-primary": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
+			"remote-secondary": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var clients configloader.ClientsConfig
-			if tt.maestro {
-				clients.Maestro = new(configloader.MaestroClientConfig)
-			}
-			config := &configloader.Config{
-				Adapter: configloader.AdapterInfo{Name: "test-adapter"},
-				Clients: clients,
-				Stores: map[string]configloader.StoreDefinition{
-					"desired-memory": {Type: configloader.StoreTypeMemory},
-				},
-				Transports: map[string]configloader.TransportDefinition{
-					"remote-primary": {
-						Type:  configloader.TransportTypeRemote,
-						Store: "desired-memory",
-					},
-					"remote-secondary": {
-						Type:  configloader.TransportTypeRemote,
-						Store: "desired-memory",
-					},
-				},
-			}
+	runtime, err := Build(t.Context(), config)
 
-			runtime, err := Build(t.Context(), config)
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, `compatibility transport "kubernetes" is ambiguous`)
+}
 
-			require.Error(t, err)
-			assert.Nil(t, runtime)
-			assert.ErrorContains(t, err, "compatibility transport \""+tt.wantKey+"\" is ambiguous")
-		})
+func TestBuildRejectsMaestroWithNamedTransports(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Clients: configloader.ClientsConfig{Maestro: new(configloader.MaestroClientConfig)},
+		Stores: map[string]configloader.StoreDefinition{
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"remote": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
+		},
 	}
+
+	runtime, err := Build(t.Context(), config)
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "clients.maestro cannot be configured when transports are set")
+}
+
+func TestBuildRecordingRejectsMaestroWithNamedTransports(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Clients: configloader.ClientsConfig{Maestro: new(configloader.MaestroClientConfig)},
+		Stores: map[string]configloader.StoreDefinition{
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"remote": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
+		},
+	}
+
+	runtime, err := BuildRecording(config, dryrun.NewDryrunTransportClient())
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "clients.maestro cannot be configured when transports are set")
+}
+
+func TestBuildRejectsCanonicalStoreNameCollisions(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"Desired-Memory": {Type: configloader.StoreTypeMemory},
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"remote": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
+		},
+	}
+
+	runtime, err := Build(t.Context(), config)
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "validate named transport configuration")
+	assert.ErrorContains(t, err, `resolve to the same name "desired-memory"`)
+}
+
+func TestBuildRecordingRejectsCanonicalStoreNameCollisions(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"Desired-Memory": {Type: configloader.StoreTypeMemory},
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"remote": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "desired-memory",
+			},
+		},
+	}
+
+	runtime, err := BuildRecording(config, dryrun.NewDryrunTransportClient())
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "validate named transport configuration")
+	assert.ErrorContains(t, err, `resolve to the same name "desired-memory"`)
+}
+
+func TestBuildMatchesStoreReferencesCaseInsensitively(t *testing.T) {
+	config := loadRuntimeConfig(t, `
+adapter:
+  name: test-adapter
+stores:
+  Desired-Memory:
+    type: memory
+transports:
+  Remote-Primary:
+    type: remote
+    store: Desired-Memory
+`)
+
+	runtime, err := Build(t.Context(), config)
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
+
+	client, err := runtime.Registry.Get("remote-primary")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestBuildRejectsCanonicalTransportNameCollisions(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"Remote-Primary": {Type: configloader.TransportTypeRemote, Store: "desired-memory"},
+			"remote-primary": {Type: configloader.TransportTypeRemote, Store: "desired-memory"},
+		},
+	}
+
+	runtime, err := Build(t.Context(), config)
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "validate named transport configuration")
+	assert.ErrorContains(t, err, `resolve to the same name "remote-primary"`)
+}
+
+func TestBuildRecordingRejectsCanonicalTransportNameCollisions(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"desired-memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"Remote-Primary": {Type: configloader.TransportTypeRemote, Store: "desired-memory"},
+			"remote-primary": {Type: configloader.TransportTypeRemote, Store: "desired-memory"},
+		},
+	}
+
+	runtime, err := BuildRecording(config, dryrun.NewDryrunTransportClient())
+
+	require.Error(t, err)
+	assert.Nil(t, runtime)
+	assert.ErrorContains(t, err, "validate named transport configuration")
+	assert.ErrorContains(t, err, `resolve to the same name "remote-primary"`)
+}
+
+func TestBuildNormalizesConfiguredTransportNames(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]configloader.StoreDefinition{
+			"Desired-Memory": {Type: configloader.StoreTypeMemory},
+		},
+		Transports: map[string]configloader.TransportDefinition{
+			"Remote-Primary": {
+				Type:  configloader.TransportTypeRemote,
+				Store: "Desired-Memory",
+			},
+		},
+	}
+
+	runtime, err := Build(t.Context(), config)
+	require.NoError(t, err)
+	require.NotNil(t, runtime)
+	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
+
+	client, err := runtime.Registry.Get("remote-primary")
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+
+	compatibilityClient, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
+	require.NoError(t, err)
+	assert.Same(t, client, compatibilityClient)
 }
 
 func TestCompatibilityKey(t *testing.T) {

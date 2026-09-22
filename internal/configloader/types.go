@@ -707,6 +707,37 @@ type StoreDefinition struct {
 	URL  string `yaml:"url,omitempty" mapstructure:"url"`
 }
 
+// NormalizeRegistryName returns the canonical lookup form of a transport or
+// store name. Viper lowercases deployment config map keys but leaves values
+// untouched, so store names and the references that point at them are
+// normalised before lookup. A mixed-case declaration and reference therefore
+// resolve to the same entry instead of failing as an unknown store.
+func NormalizeRegistryName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// TransportDefinitionByName returns the declared transport definition for name,
+// matching the name case-insensitively the same way NormalizeRegistryName
+// matches store references. Task configs reference transports by a value
+// (resource.transport.client) that Viper does not lowercase, so a mixed-case
+// reference must resolve to the declared transport instead of failing as an
+// unknown transport. The bool is false when no transport is declared under name.
+func TransportDefinitionByName(
+	transports map[string]TransportDefinition,
+	name string,
+) (TransportDefinition, bool) {
+	if definition, ok := transports[name]; ok {
+		return definition, true
+	}
+	canonical := NormalizeRegistryName(name)
+	for declared, definition := range transports {
+		if NormalizeRegistryName(declared) == canonical {
+			return definition, true
+		}
+	}
+	return TransportDefinition{}, false
+}
+
 // ClientsConfig contains configuration for all external clients
 type ClientsConfig struct {
 	Maestro       *MaestroClientConfig `yaml:"maestro,omitempty" mapstructure:"maestro"`

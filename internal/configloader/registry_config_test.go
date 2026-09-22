@@ -55,6 +55,40 @@ transports:
 	)
 }
 
+func TestLoadConfigAcceptsMixedCaseStoreReferences(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, `
+adapter:
+  name: test-adapter
+  version: "1.0.0"
+stores:
+  Desired-Memory:
+    type: memory
+transports:
+  remote-primary:
+    type: remote
+    store: Desired-Memory
+`, `{}`)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	// Viper lowercases the declared store name; the mixed-case reference must
+	// still resolve to it instead of failing as an unknown store.
+	assert.Equal(t, StoreDefinition{Type: StoreTypeMemory}, config.Stores["desired-memory"])
+	assert.Equal(
+		t,
+		TransportDefinition{Type: TransportTypeRemote, Store: "Desired-Memory"},
+		config.Transports["remote-primary"],
+	)
+}
+
 func TestConfigRedactedRedactsRedisPasswordWithoutMutatingOriginal(t *testing.T) {
 	config := &Config{
 		Stores: map[string]StoreDefinition{
@@ -249,6 +283,119 @@ func TestAdapterConfigValidationRequiresTLSForRedisCredentials(t *testing.T) {
 			assert.NotContains(t, err.Error(), "super-secret")
 		})
 	}
+}
+
+func TestAdapterConfigValidationRejectsCanonicalStoreNameCollisions(t *testing.T) {
+	config := &AdapterConfig{
+		Adapter: AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]StoreDefinition{
+			"Desired-Memory": {Type: StoreTypeMemory},
+			"desired-memory": {Type: StoreTypeMemory},
+		},
+		Transports: map[string]TransportDefinition{
+			"remote": {Type: TransportTypeRemote, Store: "desired-memory"},
+		},
+	}
+
+	err := NewAdapterConfigValidator(config, "").ValidateStructure()
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `resolve to the same name "desired-memory"`)
+}
+
+func TestLoadConfigRejectsFileStoreNameCollisions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, `
+adapter:
+  name: test-adapter
+  version: "1.0.0"
+stores:
+  Desired-Memory:
+    type: memory
+  desired-memory:
+    type: memory
+transports:
+  remote-primary:
+    type: remote
+    store: desired-memory
+`, `{}`)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.ErrorContains(t, err, `resolve to the same name "desired-memory"`)
+}
+
+func TestAdapterConfigValidationRejectsCanonicalTransportNameCollisions(t *testing.T) {
+	config := &AdapterConfig{
+		Adapter: AdapterInfo{Name: "test-adapter"},
+		Stores: map[string]StoreDefinition{
+			"desired-memory": {Type: StoreTypeMemory},
+		},
+		Transports: map[string]TransportDefinition{
+			"Remote-Primary": {Type: TransportTypeRemote, Store: "desired-memory"},
+			"remote-primary": {Type: TransportTypeRemote, Store: "desired-memory"},
+		},
+	}
+
+	err := NewAdapterConfigValidator(config, "").ValidateStructure()
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `resolve to the same name "remote-primary"`)
+}
+
+func TestLoadConfigRejectsFileTransportNameCollisions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, `
+adapter:
+  name: test-adapter
+  version: "1.0.0"
+stores:
+  desired-memory:
+    type: memory
+transports:
+  Remote-Primary:
+    type: remote
+    store: desired-memory
+  remote-primary:
+    type: remote
+    store: desired-memory
+`, `{}`)
+
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
+
+	require.Error(t, err)
+	assert.Nil(t, config)
+	assert.ErrorContains(t, err, `resolve to the same name "remote-primary"`)
+}
+
+func TestTransportDefinitionByNameMatchesCaseInsensitively(t *testing.T) {
+	transports := map[string]TransportDefinition{
+		"remote-primary": {Type: TransportTypeRemote, Store: "desired-memory"},
+	}
+
+	definition, ok := TransportDefinitionByName(transports, "Remote-Primary")
+	require.True(t, ok)
+	assert.Equal(t, TransportTypeRemote, definition.Type)
+	assert.Equal(t, "desired-memory", definition.Store)
+
+	definition, ok = TransportDefinitionByName(transports, "remote-primary")
+	require.True(t, ok)
+	assert.Equal(t, TransportTypeRemote, definition.Type)
+
+	_, ok = TransportDefinitionByName(transports, "missing")
+	assert.False(t, ok)
 }
 
 func TestAdapterConfigValidationRejectsLegacyMaestroWithNamedTransports(t *testing.T) {

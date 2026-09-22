@@ -145,6 +145,16 @@ func loadAdapterConfigWithViper(
 		return "", nil, fmt.Errorf("failed to parse adapter config YAML: %w", err)
 	}
 
+	// Reject transport and store names that normalise to the same canonical key
+	// here, before Viper lowercases and merges the map keys and the collision is
+	// lost.
+	if err := ValidateStoreNameCollisions(validateConfig.Stores); err != nil {
+		return "", nil, fmt.Errorf("invalid store names: %w", err)
+	}
+	if err := ValidateTransportNameCollisions(validateConfig.Transports); err != nil {
+		return "", nil, fmt.Errorf("invalid transport names: %w", err)
+	}
+
 	// Parse YAML into a map for Viper (env/CLI overrides are applied next)
 	var configMap map[string]interface{}
 	if err := yaml.Unmarshal(data, &configMap); err != nil {
