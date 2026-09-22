@@ -73,6 +73,21 @@ func TestResourceExecutor_ResolveTransport(t *testing.T) {
 			},
 		},
 		{
+			name: "resolves mixed-case transport reference",
+			resource: &configloader.Resource{Transport: &configloader.TransportConfig{
+				Client: "Remote-Primary",
+				Desire: &configloader.DesireTransportConfig{
+					TargetCluster: "{{ .clusterName }}",
+					Resource:      "nodepools",
+				},
+			}},
+			wantClient: remoteClient,
+			wantTarget: &desireclient.TransportContext{
+				ManagementCluster: "cluster-1",
+				Resource:          "nodepools",
+			},
+		},
+		{
 			name: "rejects unknown transport",
 			resource: &configloader.Resource{Transport: &configloader.TransportConfig{
 				Client: "missing-transport",

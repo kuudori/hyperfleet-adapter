@@ -548,11 +548,11 @@ func (re *ResourceExecutor) resolveTransport(
 	resource configloader.Resource,
 	execCtx *ExecutionContext,
 ) (transportclient.TransportClient, transportclient.TransportContext, error) {
-	transportName := resource.GetTransportClient()
+	transportName := configloader.NormalizeRegistryName(resource.GetTransportClient())
 	var definition configloader.TransportDefinition
 	configured := false
 	if re.config != nil {
-		definition, configured = re.config.Transports[transportName]
+		definition, configured = configloader.TransportDefinitionByName(re.config.Transports, transportName)
 	}
 	if transportName == configloader.TransportClientMaestro && configured {
 		return nil, nil, fmt.Errorf("transport name %q is reserved for the built-in maestro transport", transportName)

@@ -39,6 +39,11 @@ debug_config: false
 # A Kubernetes entry needs no store. A remote entry writes desires through a
 # named memory or Redis store. Names are stable registry keys, so multiple
 # entries can use the same transport or store type.
+#
+# Name rule: transport and store names are registry keys and should be
+# lowercase (a-z, 0-9, hyphen). Viper lowercases deployment map keys, and both
+# transport and store references are normalised to lowercase before lookup, so
+# a mixed-case reference still resolves to its declared transport or store.
 transports:
   kubernetes:
     type: kubernetes
