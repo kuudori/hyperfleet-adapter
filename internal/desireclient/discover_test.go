@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/stretchr/testify/assert"
@@ -25,7 +26,7 @@ func TestDiscoverResources_ReturnsSyncedResourceByName(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{ByName: testName}, testTransportContext())
 	require.NoError(t, err)
@@ -38,7 +39,7 @@ func TestDiscoverResources_ByNameExcludesNonMatchingName(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	discovery := &manifest.DiscoveryConfig{ByName: "other-name"}
 	list, err := c.DiscoverResources(ctx, testGVK(), discovery, testTransportContext())
@@ -59,8 +60,10 @@ func TestDiscoverResources_LabelSelectorMatchesSubset(t *testing.T) {
 		"apiVersion": "v1", "kind": "ConfigMap",
 		"metadata": {"name": "unlabeled", "namespace": "default"}
 	}`)
-	putSyncedReadDesire(t, ctx, store, "labeled", "labeled", labeledManifest)
-	putSyncedReadDesire(t, ctx, store, "unlabeled", "unlabeled", unlabeledManifest)
+	desiretest.PutSyncedReadDesire(t, ctx, store,
+		testID.WithNamespace("labeled").WithName("labeled").Read(), testOwner, labeledManifest)
+	desiretest.PutSyncedReadDesire(t, ctx, store,
+		testID.WithNamespace("unlabeled").WithName("unlabeled").Read(), testOwner, unlabeledManifest)
 
 	list, err := c.DiscoverResources(ctx, testGVK(),
 		&manifest.DiscoveryConfig{LabelSelector: "app=myapp"}, testTransportContext())
@@ -91,7 +94,7 @@ func TestDiscoverResources_SurfacesRetainedMirrorOnFailedRead(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putKubeAPIErrorReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutKubeAPIErrorReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err)
@@ -105,7 +108,7 @@ func TestDiscoverResources_SkipsFailedReadWithNoRetainedMirror(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putKubeAPIErrorReadDesire(t, ctx, store, testNamespace, testName, nil)
+	desiretest.PutKubeAPIErrorReadDesire(t, ctx, store, testID.Read(), testOwner, nil)
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err)
@@ -117,7 +120,7 @@ func TestDiscoverResources_SkipsNotFoundFalseDesire(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putNotFoundReadDesire(t, ctx, store, testNamespace, testName)
+	desiretest.PutNotFoundReadDesire(t, ctx, store, testID.Read(), testOwner)
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err)
@@ -129,8 +132,8 @@ func TestDiscoverResources_SkipsUndecodableContentButKeepsOthers(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, "bad", []byte("not-json"))
-	putSyncedReadDesire(t, ctx, store, testNamespace, "good", configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.WithName("bad").Read(), testOwner, []byte("not-json"))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.WithName("good").Read(), testOwner, configMapManifest(1))
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err, "a single bad record must not fail discovery for the whole partition")
@@ -143,7 +146,7 @@ func TestDiscoverResources_FiltersOutOtherResourceType(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	otherContext := &TransportContext{ManagementCluster: testManagementCluster, Resource: "secrets"}
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, otherContext)
@@ -182,7 +185,7 @@ func TestDiscoverResources_ScopedToPartition(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	otherPartition := &TransportContext{ManagementCluster: "other-cluster", Resource: testResource}
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, otherPartition)
@@ -197,8 +200,8 @@ func TestDiscoverResources_MultipleMatches(t *testing.T) {
 
 	first := []byte(`{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "first", "namespace": "default"}}`)
 	second := []byte(`{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "second", "namespace": "default"}}`)
-	putSyncedReadDesire(t, ctx, store, testNamespace, "first", first)
-	putSyncedReadDesire(t, ctx, store, testNamespace, "second", second)
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.WithName("first").Read(), testOwner, first)
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.WithName("second").Read(), testOwner, second)
 
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err)

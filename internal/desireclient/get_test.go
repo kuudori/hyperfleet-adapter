@@ -5,19 +5,13 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-func readIdentity() desire.Identity {
-	return desire.Identity{
-		ManagementCluster: testManagementCluster, Type: desire.TypeRead,
-		Resource: testResource, Namespace: testNamespace, Name: testName,
-	}
-}
 
 func TestGetResource_ReadDesireNotFoundIsNotSyncedYet(t *testing.T) {
 	ctx := context.Background()
@@ -35,7 +29,7 @@ func TestGetResource_ReadDesireExistsNoResourceObservedIsNotSyncedYet(t *testing
 	c := newTestClient(store)
 
 	_, err := store.CreateReadDesire(ctx, desire.ReadDesire{
-		Identity: readIdentity(), Owner: testOwner, TargetVersion: "v1",
+		Identity: testID.Read(), Owner: testOwner, TargetVersion: "v1",
 	})
 	require.NoError(t, err)
 
@@ -49,7 +43,7 @@ func TestGetResource_SyncedReturnsMirroredObject(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putSyncedReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	obj, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.NoError(t, err)
@@ -62,7 +56,7 @@ func TestGetResource_ConfirmedNotFound(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putConfirmedAbsentReadDesire(t, ctx, store, testNamespace, testName)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
@@ -75,7 +69,7 @@ func TestGetResource_InvalidReadDesire(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putInvalidReadDesire(t, ctx, store, testNamespace, testName)
+	desiretest.PutInvalidReadDesire(t, ctx, store, testID.Read(), testOwner)
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
@@ -90,7 +84,7 @@ func TestGetResource_K8sAPIErrorWithRetainedMirrorReturnsStaleContent(t *testing
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putKubeAPIErrorReadDesire(t, ctx, store, testNamespace, testName, configMapManifest(1))
+	desiretest.PutKubeAPIErrorReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
 	obj, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.NoError(t, err,
@@ -104,7 +98,7 @@ func TestGetResource_K8sAPIErrorWithNoMirrorYetIsNotSyncedYet(t *testing.T) {
 	store := newMemoryStore()
 	c := newTestClient(store)
 
-	putKubeAPIErrorReadDesire(t, ctx, store, testNamespace, testName, nil)
+	desiretest.PutKubeAPIErrorReadDesire(t, ctx, store, testID.Read(), testOwner, nil)
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
@@ -159,30 +153,30 @@ func TestDecodeReadDesire(t *testing.T) {
 		},
 		{
 			name:        "successful true decodes content",
-			condition:   successfulCondition(metav1.ConditionTrue, desire.ReasonSynced),
+			condition:   desiretest.SuccessfulCondition(metav1.ConditionTrue, desire.ReasonSynced),
 			content:     configMapManifest(1),
 			wantContent: true,
 		},
 		{
 			// ConditionTrue/ReasonNotFound is a shape the applier never reports; with no content it reads as not-synced-yet.
 			name:          "successful true with empty content is not synced yet",
-			condition:     successfulCondition(metav1.ConditionTrue, desire.ReasonNotFound),
+			condition:     desiretest.SuccessfulCondition(metav1.ConditionTrue, desire.ReasonNotFound),
 			wantNotSynced: true,
 		},
 		{
 			name:         "false with notfound reason is confirmed absent",
-			condition:    successfulCondition(metav1.ConditionFalse, desire.ReasonNotFound),
+			condition:    desiretest.SuccessfulCondition(metav1.ConditionFalse, desire.ReasonNotFound),
 			wantNotFound: true,
 		},
 		{
 			name:        "false with other reason decodes the retained mirror when present",
-			condition:   successfulCondition(metav1.ConditionFalse, desire.ReasonKubeAPIError),
+			condition:   desiretest.SuccessfulCondition(metav1.ConditionFalse, desire.ReasonKubeAPIError),
 			content:     configMapManifest(1),
 			wantContent: true,
 		},
 		{
 			name:          "false with other reason and no retained mirror is not synced yet",
-			condition:     successfulCondition(metav1.ConditionFalse, desire.ReasonKubeAPIError),
+			condition:     desiretest.SuccessfulCondition(metav1.ConditionFalse, desire.ReasonKubeAPIError),
 			wantNotSynced: true,
 		},
 	}
@@ -190,7 +184,7 @@ func TestDecodeReadDesire(t *testing.T) {
 	c := newTestClient(newMemoryStore())
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			rd := desire.ReadDesire{Identity: readIdentity()}
+			rd := desire.ReadDesire{Identity: testID.Read()}
 			if tt.condition != nil {
 				rd.Status = desire.ReadStatus{
 					Status:      desire.Status{Conditions: []metav1.Condition{*tt.condition}},

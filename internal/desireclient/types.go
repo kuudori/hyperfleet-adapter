@@ -37,6 +37,13 @@ type TransportContext struct {
 // errors.Is to check for it.
 var ErrNotSyncedYet = errors.New("desireclient: resource not synced yet")
 
+// ErrDeletionPending indicates that the desire transport has not yet
+// confirmed resource deletion — either the apply desire still exists
+// (applier may not have processed it) or the delete desire exists but
+// the applier has not confirmed deletion. This is an expected transient
+// state during the deletion lifecycle, not a hard failure.
+var ErrDeletionPending = errors.New("desireclient: deletion pending")
+
 // resolveTransportContext type-asserts the generic TransportContext and
 // validates both fields are set.
 func resolveTransportContext(target transportclient.TransportContext) (*TransportContext, error) {

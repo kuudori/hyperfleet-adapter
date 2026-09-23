@@ -71,3 +71,17 @@ type TransportClient interface {
 		target TransportContext,
 	) error
 }
+
+// DesireCleaner is an optional interface that transport clients may
+// implement to remove transport-layer bookkeeping after a resource has been
+// confirmed deleted. The executor calls this when pre-delete discovery
+// confirms the resource is already gone, and when post-delete re-discovery
+// confirms it was removed.
+type DesireCleaner interface {
+	CleanupAfterDeletion(
+		ctx context.Context,
+		gvk schema.GroupVersionKind,
+		namespace, name string,
+		target TransportContext,
+	) error
+}
