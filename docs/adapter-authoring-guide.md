@@ -770,6 +770,8 @@ Treat every remote read as **potentially stale**. Do not assume a change you jus
 
 The `hyperfleet.io/generation` annotation is written once on the manifest and **round-trips through the mirror** into the mirrored live object. This is the staleness signal:
 
+For desire transport, the adapter validates this annotation and compares it with the stored apply desire before writing. An unchanged generation causes no store write when the paired read desire exists, even if the mirror still shows an older generation. The mirror may veto an older incoming generation; when it is ahead of the stored apply desire, an incoming generation equal to the mirror can repair that desire. A missing read pair is recreated on an equal-generation pass.
+
 - When the generation on the mirrored object **matches** the generation you applied, the mirror is current — the applier has caught up with your intent.
 - When they **differ**, the mirror is stale — the applier has not yet reconciled your latest apply desire.
 

@@ -85,19 +85,14 @@ func (c *Client) cleanupReadWithoutDelete(
 	gvk schema.GroupVersionKind,
 	namespace, name string,
 ) error {
-	applyID, err := buildIdentity(tc, desire.TypeApply, gvk, namespace, name)
+	active, err := c.hasActiveApplyDesire(ctx, tc, gvk, namespace, name)
 	if err != nil {
 		return err
 	}
-	_, err = c.store.GetApplyDesire(ctx, applyID)
-	switch {
-	case err == nil:
+	if active {
 		return fmt.Errorf(
 			"desireclient: cleanup: apply desire still exists for %s/%s, resource may not have been created yet: %w",
 			namespace, name, ErrDeletionPending)
-	case !errors.Is(err, desire.ErrNotFound):
-		return fmt.Errorf("desireclient: cleanup: failed to get apply desire for %s/%s: %w",
-			namespace, name, err)
 	}
 
 	readID, err := buildIdentity(tc, desire.TypeRead, gvk, namespace, name)

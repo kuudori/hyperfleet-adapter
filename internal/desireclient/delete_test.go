@@ -109,6 +109,11 @@ func TestDeleteResource_ReadFailure_LeavesApplyIntact(t *testing.T) {
 	}
 	deleteID := applyID
 	deleteID.Type = desire.TypeDelete
+	readID := applyID
+	readID.Type = desire.TypeRead
+	read, err := inner.GetReadDesire(ctx, readID)
+	require.NoError(t, err)
+	require.NoError(t, inner.DeleteReadDesire(ctx, readID, testOwner, read.Version))
 
 	failingClient := newTestClient(&failingReadDesireStore{SpecStore: inner})
 	err = failingClient.DeleteResource(ctx, testGVK(), testNamespace, testName, nil, testTransportContext())

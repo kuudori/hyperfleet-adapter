@@ -53,30 +53,20 @@ func (c *Client) GetResource(
 	}
 	// A missing or NotFound mirror cannot confirm absence while a delete or
 	// apply is still in flight: a NotFound mirror can predate either write.
-	deleteID, err := buildIdentity(tc, desire.TypeDelete, gvk, namespace, name)
+	deletionState, err := c.ProbeDeletion(ctx, gvk, namespace, name, target)
 	if err != nil {
 		return nil, err
 	}
-	dd, err := c.store.GetDeleteDesire(ctx, deleteID)
-	switch {
-	case err == nil && !desire.IsDeleted(dd.Status):
+	if deletionState == transportclient.DeletionPending {
 		return nil, ErrNotSyncedYet
-	case err != nil && !errors.Is(err, desire.ErrNotFound):
-		return nil, fmt.Errorf("desireclient: failed to get delete desire for %s/%s: %w",
-			namespace, name, err)
 	}
 
-	applyID, err := buildIdentity(tc, desire.TypeApply, gvk, namespace, name)
+	active, err := c.hasActiveApplyDesire(ctx, tc, gvk, namespace, name)
 	if err != nil {
 		return nil, err
 	}
-	_, err = c.store.GetApplyDesire(ctx, applyID)
-	switch {
-	case err == nil:
+	if active {
 		return nil, ErrNotSyncedYet
-	case !errors.Is(err, desire.ErrNotFound):
-		return nil, fmt.Errorf("desireclient: failed to get apply desire for %s/%s: %w",
-			namespace, name, err)
 	}
 	return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: tc.Resource}, name)
 }
@@ -119,10 +109,10 @@ func (c *Client) decodeReadDesire(
 func decodeKubeContent(
 	kubeContent []byte, namespace, name string,
 ) (*unstructured.Unstructured, error) {
-	var object map[string]any
-	if err := json.Unmarshal(kubeContent, &object); err != nil {
+	obj := &unstructured.Unstructured{}
+	if err := json.Unmarshal(kubeContent, &obj.Object); err != nil {
 		return nil, fmt.Errorf("desireclient: failed to decode mirrored content for %s/%s: %w", namespace, name, err)
 	}
 	// return the possibly stale mirror, even in the case of a KubeAPIError or PreCheckFailed
-	return &unstructured.Unstructured{Object: object}, nil
+	return obj, nil
 }

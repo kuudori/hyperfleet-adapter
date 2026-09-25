@@ -1,6 +1,7 @@
 package desireclient
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +79,26 @@ func buildIdentity(
 		return desire.Identity{}, fmt.Errorf("desireclient: invalid identity: %w", err)
 	}
 	return id, nil
+}
+
+// hasActiveApplyDesire reports whether an apply desire currently exists for
+// the target, treating desire.ErrNotFound as "no active apply".
+func (c *Client) hasActiveApplyDesire(
+	ctx context.Context, tc *TransportContext, gvk schema.GroupVersionKind, namespace, name string,
+) (bool, error) {
+	applyID, err := buildIdentity(tc, desire.TypeApply, gvk, namespace, name)
+	if err != nil {
+		return false, err
+	}
+	_, err = c.store.GetApplyDesire(ctx, applyID)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, desire.ErrNotFound):
+		return false, nil
+	default:
+		return false, fmt.Errorf("desireclient: failed to get apply desire for %s/%s: %w", namespace, name, err)
+	}
 }
 
 // generationFromKubeContent extracts the hyperfleet.io/generation annotation

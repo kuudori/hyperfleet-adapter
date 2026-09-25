@@ -77,7 +77,7 @@ func TestAlreadyCleanedResourceAllowsDependentDeleteAndFinalizationCEL(t *testin
 	}
 	desiretest.PutSyncedReadDesire(t, ctx, store, dependentIdentity.Read(), "hyperfleet-adapter", []byte(`{
 		"apiVersion":"v1","kind":"ConfigMap",
-		"metadata":{"name":"dependent-config","namespace":"default"}
+		"metadata":{"name":"dependent-config","namespace":"default","annotations":{"hyperfleet.io/generation":"1"}}
 	}`))
 
 	config := desireDiscoveryConfig()
@@ -89,6 +89,9 @@ func TestAlreadyCleanedResourceAllowsDependentDeleteAndFinalizationCEL(t *testin
 			"metadata": map[string]any{
 				"name":      dependentIdentity.Name,
 				"namespace": dependentIdentity.Namespace,
+				"annotations": map[string]any{
+					"hyperfleet.io/generation": "1",
+				},
 			},
 		},
 		Transport: &configloader.TransportConfig{
@@ -301,7 +304,13 @@ func deletionChainManifest(name string) map[string]any {
 	return map[string]any{
 		"apiVersion": "v1",
 		"kind":       "ConfigMap",
-		"metadata":   map[string]any{"name": name, "namespace": desireDiscoveryIdentity.Namespace},
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": desireDiscoveryIdentity.Namespace,
+			"annotations": map[string]any{
+				"hyperfleet.io/generation": "1",
+			},
+		},
 	}
 }
 

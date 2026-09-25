@@ -13,9 +13,12 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -213,6 +216,59 @@ func TestDesireDiscoveryMatchesLocalCELShape(t *testing.T) {
 	}
 }
 
+func TestDesireGenerationMirrorLagVisibleToCEL(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	withGeneration := func(generation string) []byte {
+		return []byte(strings.Replace(mirroredStatusObject,
+			`"namespace":"default"`, `"namespace":"default","annotations":{"hyperfleet.io/generation":"`+generation+`"}`, 1))
+	}
+	desiretest.PutSyncedReadDesire(
+		t, ctx, store, desireDiscoveryIdentity.Read(), "hyperfleet-adapter", withGeneration("1"))
+	config := desireDiscoveryConfig()
+	manifest := config.Resources[0].Manifest.(map[string]interface{})
+	metadata := manifest["metadata"].(map[string]interface{})
+	metadata["annotations"] = map[string]interface{}{constants.AnnotationGeneration: "2"}
+	config.Post.PostActions[0].When.Expression =
+		`resources.remoteConfig.metadata.annotations["hyperfleet.io/generation"] == "2"`
+	client := desireclient.NewClient(store, "hyperfleet-adapter")
+	adapterExecutor, err := executor.NewBuilder().WithConfig(config).
+		WithAPIClient(hyperfleetapi.NewMockClient()).
+		WithTransportRegistry(transportclient.Registry{desireDiscoveryTransport: client}).Build()
+	require.NoError(t, err)
+
+	check := func(want string) {
+		t.Helper()
+		result := adapterExecutor.Execute(ctx, nil)
+		require.Equal(t, executor.StatusSuccess, result.Status, "errors=%v", result.Errors)
+		resources := result.ExecutionContext.GetCELVariables()[configloader.FieldResources].(map[string]any)
+		remote := resources["remoteConfig"].(map[string]any)
+		metadata := remote["metadata"].(map[string]any)
+		annotations := metadata["annotations"].(map[string]any)
+		require.Equal(t, want, annotations[constants.AnnotationGeneration])
+		require.Equal(t, want == "2", result.PostActionResults[0].APICallMade)
+	}
+	check("1")
+	applyID := desire.Identity{
+		ManagementCluster: desireDiscoveryIdentity.ManagementCluster, Type: desire.TypeApply,
+		Resource: desireDiscoveryIdentity.Resource, Namespace: desireDiscoveryIdentity.Namespace,
+		Name: desireDiscoveryIdentity.Name,
+	}
+	first, err := store.GetApplyDesire(ctx, applyID)
+	require.NoError(t, err)
+	check("1")
+	second, err := store.GetApplyDesire(ctx, applyID)
+	require.NoError(t, err)
+	require.Equal(t, first.Version, second.Version)
+
+	_, err = store.UpdateReadDesireStatus(ctx, desireDiscoveryIdentity.Read(), desire.ReadStatus{
+		Status: desire.Status{Conditions: []metav1.Condition{{Type: desire.TypeSuccessful,
+			Status: metav1.ConditionTrue, Reason: desire.ReasonSynced}}}, KubeContent: withGeneration("2"),
+	})
+	require.NoError(t, err)
+	check("2")
+}
+
 func desireDiscoveryConfig() *configloader.Config {
 	return &configloader.Config{
 		Adapter: configloader.AdapterInfo{Name: "desire-discovery-test"},
@@ -225,8 +281,9 @@ func desireDiscoveryConfig() *configloader.Config {
 				"apiVersion": "v1",
 				"kind":       "ConfigMap",
 				"metadata": map[string]interface{}{
-					"name":      desireDiscoveryIdentity.Name,
-					"namespace": desireDiscoveryIdentity.Namespace,
+					"name":        desireDiscoveryIdentity.Name,
+					"namespace":   desireDiscoveryIdentity.Namespace,
+					"annotations": map[string]interface{}{constants.AnnotationGeneration: "1"},
 				},
 			},
 			Transport: &configloader.TransportConfig{

@@ -1,7 +1,7 @@
 // Package maestroclient tests
 //
 // Note: Tests for manifest.ValidateGeneration, manifest.ValidateGenerationFromUnstructured,
-// and manifest.ValidateManifestWorkGeneration are in internal/generation/generation_test.go.
+// and manifest.ValidateManifestWorkGeneration are in internal/manifest/generation_test.go.
 // This file contains tests specific to maestroclient functionality.
 package maestroclient
 

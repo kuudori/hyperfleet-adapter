@@ -379,10 +379,7 @@ func (re *ResourceExecutor) discoverResource(
 
 	// Discover by name
 	if discovery.ByName != "" {
-		gvk := re.resolveGVK(resource)
-		discovered, discoverErr := transportClient.GetResource(ctx, gvk, dt.Namespace, dt.Name, transportTarget)
-		re.recordDiscoveryState(resource, execCtx, discovered, discoverErr)
-		return discovered, discoverErr
+		return re.discoverResourceByName(ctx, resource, execCtx, transportClient, transportTarget, dt)
 	}
 
 	// Discover by label selector
@@ -408,24 +405,40 @@ func (re *ResourceExecutor) discoverResource(
 
 		gvk := re.resolveGVK(resource)
 
+		var discovered *unstructured.Unstructured
 		list, err := transportClient.DiscoverResources(ctx, gvk, discoveryConfig, transportTarget)
-		if err != nil {
-			re.recordDiscoveryState(resource, execCtx, nil, err)
-			return nil, err
+		switch {
+		case err != nil:
+			// discovered stays nil; err is recorded below.
+		case len(list.Items) == 0:
+			err = apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: gvk.Kind}, "")
+		default:
+			discovered = manifest.GetLatestGenerationFromList(list)
 		}
-
-		if len(list.Items) == 0 {
-			notFoundErr := apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: gvk.Kind}, "")
-			re.recordDiscoveryState(resource, execCtx, nil, notFoundErr)
-			return nil, notFoundErr
-		}
-
-		discovered := manifest.GetLatestGenerationFromList(list)
-		re.recordDiscoveryState(resource, execCtx, discovered, nil)
-		return discovered, nil
+		re.recordDiscoveryState(resource, execCtx, discovered, err)
+		return discovered, err
 	}
 
 	return nil, fmt.Errorf("discovery config must specify byName or bySelectors")
+}
+
+// discoverResourceByName discovers a single resource by its rendered
+// namespace/name target, recording the outcome for CEL's resource_states.
+// Callers that have already rendered the discovery target (e.g. desire
+// deletion, which needs it for the delete request too) call this directly
+// instead of discoverResource to avoid re-rendering the same templates.
+func (re *ResourceExecutor) discoverResourceByName(
+	ctx context.Context,
+	resource configloader.Resource,
+	execCtx *ExecutionContext,
+	transportClient transportclient.TransportClient,
+	transportTarget transportclient.TransportContext,
+	dt *discoveryTarget,
+) (*unstructured.Unstructured, error) {
+	gvk := re.resolveGVK(resource)
+	discovered, discoverErr := transportClient.GetResource(ctx, gvk, dt.Namespace, dt.Name, transportTarget)
+	re.recordDiscoveryState(resource, execCtx, discovered, discoverErr)
+	return discovered, discoverErr
 }
 
 func (re *ResourceExecutor) tryCleanupDesires(
@@ -959,7 +972,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 		return fail("failed to probe deletion", err)
 	}
 	if state == transportclient.DeletionNone {
-		discovered, discoverErr := re.discoverResource(ctx, resource, execCtx, client, target)
+		discovered, discoverErr := re.discoverResourceByName(ctx, resource, execCtx, client, target, dt)
 		switch {
 		case apierrors.IsNotFound(discoverErr):
 			cleanupErr := lifecycle.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, target)
