@@ -76,7 +76,8 @@ type TransportClient interface {
 // implement to remove transport-layer bookkeeping after a resource has been
 // confirmed deleted. The executor calls this when pre-delete discovery
 // confirms the resource is already gone, and when post-delete re-discovery
-// confirms it was removed.
+// confirms it was removed. Transports that also implement DeletionLifecycle
+// are confirmed through ProbeDeletion instead of re-discovery.
 type DesireCleaner interface {
 	CleanupAfterDeletion(
 		ctx context.Context,
@@ -84,4 +85,28 @@ type DesireCleaner interface {
 		namespace, name string,
 		target TransportContext,
 	) error
+}
+
+// DeletionState is the progress of a transport's delete request for one
+// by-name target. It says nothing about the object itself: discovery reports
+// that, and an asynchronous transport's mirror may lag a confirmed delete.
+type DeletionState uint8
+
+const (
+	// DeletionNone means no delete request exists for the target.
+	DeletionNone DeletionState = iota
+	// DeletionPending means a delete request exists but is not confirmed yet.
+	DeletionPending
+	// DeletionConfirmed means the transport confirmed the target is gone.
+	DeletionConfirmed
+)
+
+// DeletionLifecycle is an optional capability for transports that delete
+// asynchronously. The executor confirms deletion with the read-only
+// ProbeDeletion instead of re-discovering the object, then calls
+// CleanupAfterDeletion to remove the transport's bookkeeping.
+type DeletionLifecycle interface {
+	DesireCleaner
+	ProbeDeletion(ctx context.Context, gvk schema.GroupVersionKind,
+		namespace, name string, target TransportContext) (DeletionState, error)
 }

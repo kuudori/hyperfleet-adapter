@@ -29,12 +29,11 @@ type TransportContext struct {
 	Resource string
 }
 
-// ErrNotSyncedYet indicates the read desire's mirror has not yet been
-// populated by the applier — a transient, non-terminal outcome distinct from
-// a confirmed-absent resource (reported via apierrors.NewNotFound). Per the
-// eventual-consistency contract (docs/adapter-authoring-guide.md), callers
-// should treat this as "not converged yet" rather than a failure. Use
-// errors.Is to check for it.
+// ErrNotSyncedYet indicates the read mirror cannot establish current state,
+// or active apply/delete work prevents absence from being conclusive. It is a
+// transient, non-terminal outcome distinct from confirmed absence (reported
+// via apierrors.NewNotFound). Callers should treat it as "not converged yet"
+// rather than a failure. Use errors.Is to check for it.
 var ErrNotSyncedYet = errors.New("desireclient: resource not synced yet")
 
 // ErrDeletionPending indicates that the desire transport has not yet

@@ -12,8 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestCleanupAfterDeletion_ConfirmedDelete_RemovesBoth(t *testing.T) {
-	ctx := context.Background()
+func TestCleanupAfterDeletion_ConfirmedDelete_RemovesBothDespiteStaleRead(t *testing.T) {
+	ctx := t.Context()
 	store := newMemoryStore()
 	c := newTestClient(store)
 
@@ -27,20 +27,17 @@ func TestCleanupAfterDeletion_ConfirmedDelete_RemovesBoth(t *testing.T) {
 	}
 
 	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testID.Delete(), testOwner)
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
 
-	_, err := store.CreateReadDesire(ctx, desire.ReadDesire{
-		Identity: readID, Owner: testOwner, TargetVersion: "v1",
-	})
-	require.NoError(t, err)
-
-	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.NoError(t, err)
 
 	_, err = store.GetDeleteDesire(ctx, deleteID)
 	assert.True(t, errors.Is(err, desire.ErrNotFound), "delete desire must be removed")
 
 	_, err = store.GetReadDesire(ctx, readID)
-	assert.True(t, errors.Is(err, desire.ErrNotFound), "read desire must be removed")
+	assert.ErrorIs(t, err, desire.ErrNotFound, "confirmed cleanup must remove the stale read mirror")
+	require.NoError(t, c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext()))
 }
 
 func TestCleanupAfterDeletion_PendingDelete_SkipsCleanup(t *testing.T) {
@@ -77,8 +74,8 @@ func TestCleanupAfterDeletion_PendingDelete_SkipsCleanup(t *testing.T) {
 	assert.NoError(t, err, "read desire must still exist")
 }
 
-func TestCleanupAfterDeletion_NoDeleteDesire_RemovesReadDesire(t *testing.T) {
-	ctx := context.Background()
+func TestCleanupAfterDeletion_NoDeleteDesire_RemovesConfirmedAbsentRead(t *testing.T) {
+	ctx := t.Context()
 	store := newMemoryStore()
 	c := newTestClient(store)
 
@@ -86,16 +83,29 @@ func TestCleanupAfterDeletion_NoDeleteDesire_RemovesReadDesire(t *testing.T) {
 		ManagementCluster: testManagementCluster, Type: desire.TypeRead,
 		Resource: testResource, Namespace: testNamespace, Name: testName,
 	}
-	_, err := store.CreateReadDesire(ctx, desire.ReadDesire{
-		Identity: readID, Owner: testOwner, TargetVersion: "v1",
-	})
-	require.NoError(t, err)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
 
-	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.NoError(t, err)
 
 	_, err = store.GetReadDesire(ctx, readID)
 	assert.True(t, errors.Is(err, desire.ErrNotFound), "read desire must be removed")
+}
+
+func TestCleanupAfterDeletion_NoDeleteDesire_UnconfirmedReadRemainsPending(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+
+	_, err := store.CreateReadDesire(ctx, desire.ReadDesire{
+		Identity: testID.Read(), Owner: testOwner, TargetVersion: "v1",
+	})
+	require.NoError(t, err)
+
+	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.ErrorIs(t, err, ErrDeletionPending)
+	_, err = store.GetReadDesire(ctx, testID.Read())
+	require.NoError(t, err, "an unsynced read desire cannot be removed as confirmed absence")
 }
 
 func TestCleanupAfterDeletion_NoDesires_NoError(t *testing.T) {
@@ -159,7 +169,9 @@ func TestCleanupAfterDeletion_DeleteDesireOnly_NoReadDesire(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = store.GetDeleteDesire(ctx, deleteID)
-	assert.True(t, errors.Is(err, desire.ErrNotFound), "delete desire must be removed")
+	require.ErrorIs(t, err, desire.ErrNotFound, "confirmed delete desire must be removed without a read mirror")
+	_, err = store.GetReadDesire(ctx, testID.Read())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "cleanup must not recreate a missing read desire")
 }
 
 func TestCleanupAfterDeletion_RequiresTransportContext(t *testing.T) {
@@ -185,6 +197,7 @@ func TestCleanupAfterDeletion_DeleteDeleteDesireError(t *testing.T) {
 	inner := newMemoryStore()
 
 	desiretest.PutConfirmedDeleteDesire(t, ctx, inner, testID.Delete(), testOwner)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, inner, testID.Read(), testOwner)
 
 	store := &failingDeleteDeleteDesireStore{SpecStore: inner}
 	c := newTestClient(store)
@@ -206,6 +219,7 @@ func TestCleanupAfterDeletion_DeleteReadDesireError(t *testing.T) {
 		Identity: readID, Owner: testOwner, TargetVersion: "v1",
 	})
 	require.NoError(t, err)
+	desiretest.MarkReadDesireNotFound(t, ctx, inner, testID.Read())
 
 	store := &failingDeleteReadDesireStore{SpecStore: inner}
 	c := newTestClient(store)

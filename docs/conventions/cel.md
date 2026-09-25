@@ -12,7 +12,8 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 |---|---|---|---|
 | _(param names)_ | any | all contexts[¹](#footnotes) | Extracted params injected as **top-level names** (eg. `clusterID`). Includes api_call result maps, event-derived values, env-derived values, and expression results. |
 | _(capture names)_ | any | resources, post payloads, post_action when, payload when | Named captures from `precondition.capture` are stored in params and promoted to top-level names in all downstream contexts. |
-| `resources.*` | map | resources (pre-discovery state), post payloads, post_action when, payload when | Discovered resources by alias. Empty during precondition phase. Deleted resources are absent (use optional access: `resources.?name.hasValue()`). |
+| `resources.*` | map | resources (pre-discovery state), post payloads, post_action when, payload when | Discovered objects by alias. `present` resources expose their object; `unsynced` resources expose their last known object, or an empty placeholder when there is none; confirmed-deleted and unprocessed resources are absent. Use `resource_states` to distinguish these outcomes. |
+| `resource_states.*` | string | resources (pre-discovery state), post payloads, post_action when, payload when | Discovery outcome by resource alias: `present`, `confirmed_deleted`, or `unsynced`. Use `confirmed_deleted` when a lifecycle condition must distinguish confirmed absence from an unavailable mirror. |
 | `adapter.*` | map | all contexts[¹](#footnotes) | Adapter execution metadata. See fields below. Values are only meaningful in post-phase expressions - during params and preconditions `executionStatus` is always `"success"` and error fields are empty. |
 | `env.*` | map | all contexts[¹](#footnotes) | All OS environment variables accessible to the process (`env.MY_VAR`). No declaration needed. |
 | `event.*` | map | all contexts[¹](#footnotes) | Full triggering event payload (`event.id`, `event.kind`, etc.). No declaration needed. |
@@ -36,7 +37,7 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 
 #### Reserved names
 
-`adapter`, `resources`, `env`, and `event` are **reserved** — they are overwritten by the runtime at evaluation time regardless of any param with the same name. `config` is also set by the runtime but a param named `config` would take precedence in earlier phases.
+`adapter`, `resources`, `resource_states`, `env`, and `event` are **reserved** — they are overwritten by the runtime at evaluation time regardless of any param with the same name. `config` is also set by the runtime but a param named `config` would take precedence in earlier phases.
 
 ## Custom Functions
 

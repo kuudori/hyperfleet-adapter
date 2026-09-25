@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,14 +14,26 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestGetResource_ReadDesireNotFoundIsNotSyncedYet(t *testing.T) {
-	ctx := context.Background()
+func TestGetResource_NoDesiresIsNotFound(t *testing.T) {
+	ctx := t.Context()
 	c := newTestClient(newMemoryStore())
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrNotSyncedYet))
-	assert.False(t, apierrors.IsNotFound(err), "absent mirror must not collapse into NotFound")
+	require.True(t, apierrors.IsNotFound(err),
+		"no desire records and nothing in flight: never created or already cleaned up, got %v", err)
+	assert.False(t, errors.Is(err, ErrNotSyncedYet), "nothing is waiting to sync")
+}
+
+func TestGetResource_MissingReadWithConfirmedDeleteIsNotFound(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	// Cleanup removes the read desire before the delete desire, so an
+	// interrupted cleanup leaves only the confirmed delete desire behind.
+	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testID.Delete(), testOwner)
+
+	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.True(t, apierrors.IsNotFound(err), "a confirmed delete is not work in flight, got %v", err)
 }
 
 func TestGetResource_ReadDesireExistsNoResourceObservedIsNotSyncedYet(t *testing.T) {
@@ -62,6 +75,91 @@ func TestGetResource_ConfirmedNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, apierrors.IsNotFound(err), "confirmed-gone must be a real NotFound, not ErrNotSyncedYet")
 	assert.False(t, errors.Is(err, ErrNotSyncedYet))
+}
+
+func TestGetResource_NotFoundWithActiveApplyIsUnsynced(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
+	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testID.Apply(), Owner: testOwner,
+		Spec: desire.ApplySpec{KubeContent: configMapManifest(1)},
+	})
+	require.NoError(t, err)
+
+	_, err = c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.ErrorIs(t, err, ErrNotSyncedYet)
+	assert.False(t, apierrors.IsNotFound(err))
+}
+
+func TestGetResource_MissingReadWithActiveApplyIsUnsynced(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testID.Apply(), Owner: testOwner,
+		Spec: desire.ApplySpec{KubeContent: configMapManifest(1)},
+	})
+	require.NoError(t, err)
+
+	_, err = c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.ErrorIs(t, err, ErrNotSyncedYet)
+	assert.False(t, apierrors.IsNotFound(err))
+}
+
+func TestGetResource_MissingReadWithPendingDeleteIsUnsynced(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	desiretest.PutDeleteDesire(t, ctx, store, testID.Delete(), testOwner,
+		metav1.ConditionFalse, desire.ReasonWaitingForDeletion)
+
+	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.ErrorIs(t, err, ErrNotSyncedYet)
+	assert.False(t, apierrors.IsNotFound(err))
+}
+
+func TestGetResource_PendingDeleteDoesNotTrustReadNotFound(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
+	desiretest.PutDeleteDesire(t, ctx, store, testID.Delete(), testOwner,
+		metav1.ConditionFalse, desire.ReasonWaitingForDeletion)
+
+	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.ErrorIs(t, err, ErrNotSyncedYet)
+	assert.False(t, apierrors.IsNotFound(err), "a pending delete is not confirmed by a stale read mirror")
+}
+
+func TestGetResource_ConfirmedDeleteStillReturnsStaleMirror(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, configMapManifest(1))
+	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testID.Delete(), testOwner)
+
+	object, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.NoError(t, err)
+	assert.Equal(t, testName, object.GetName(), "ordinary discovery returns the mirror")
+	state, err := c.ProbeDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.NoError(t, err)
+	assert.Equal(t, transportclient.DeletionConfirmed, state)
+}
+
+func TestGetResource_ConfirmedDeleteDoesNotChangeAbsentMirror(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
+	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testID.Delete(), testOwner)
+
+	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.True(t, apierrors.IsNotFound(err), "ordinary discovery reports the absent mirror")
+	state, err := c.ProbeDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
+	require.NoError(t, err)
+	assert.Equal(t, transportclient.DeletionConfirmed, state)
 }
 
 func TestGetResource_InvalidReadDesire(t *testing.T) {
@@ -135,6 +233,14 @@ func TestDecodeKubeContent(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecodeKubeContent_EmptyObjectIsPresent(t *testing.T) {
+	obj, err := decodeKubeContent([]byte(`{}`), testNamespace, testName)
+
+	require.NoError(t, err)
+	require.NotNil(t, obj)
+	assert.Empty(t, obj.Object)
 }
 
 func TestDecodeReadDesire(t *testing.T) {

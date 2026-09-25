@@ -14,10 +14,16 @@ import (
 )
 
 // DiscoverResources implements transportclient.TransportClient. It lists
-// every read desire in the target partition and filters by GVK and the
-// discovery criteria. desire.Identity carries no labels, so label-selector
-// discovery must scan client-side, the same shape as
+// read desires in the target partition and filters their mirrored objects by
+// GVK, namespace, and discovery criteria. desire.Identity carries no labels, so
+// selector matching must scan client-side, the same shape as
 // maestroclient.DiscoverResources scanning ManifestWorks.
+//
+// Selector results come from read mirrors only. An unsynced mirror in scope has
+// nothing to match yet, so an empty selector result is reported as
+// ErrNotSyncedYet while one remains. Apply and delete desires are not
+// consulted: the partition is shared, so scanning them would couple this
+// selector to every other target of the same kind.
 func (c *Client) DiscoverResources(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,
@@ -35,19 +41,21 @@ func (c *Client) DiscoverResources(
 	}
 
 	list := &unstructured.UnstructuredList{}
+	hasUnsyncedRead := false
 	for _, rd := range reads {
 		if rd.Identity.Group != gvk.Group || rd.Identity.Resource != tc.Resource {
 			continue
 		}
+		if namespace := discovery.GetNamespace(); namespace != "" && rd.Identity.Namespace != namespace {
+			continue
+		}
 
-		// Route through the same three-way interpretation GetResource uses, so a
-		// single item's outcome here can never drift from what a Get on that same
-		// identity would report.
 		obj, err := c.decodeReadDesire(gvk, rd.Identity.Namespace, rd.Identity.Name, rd)
 		switch {
 		case errors.Is(err, ErrNotSyncedYet):
 			// Not yet synced — nothing to match discovery criteria against,
-			// same as a live List not yet showing a slow-to-create resource.
+			// so an empty result cannot confirm absence while one remains in scope.
+			hasUnsyncedRead = true
 			continue
 		case apierrors.IsNotFound(err):
 			// Confirmed absent — same as a live List not showing a deleted resource.
@@ -68,5 +76,8 @@ func (c *Client) DiscoverResources(
 		}
 	}
 
+	if len(list.Items) == 0 && hasUnsyncedRead && discovery.GetLabelSelector() != "" {
+		return nil, ErrNotSyncedYet
+	}
 	return list, nil
 }

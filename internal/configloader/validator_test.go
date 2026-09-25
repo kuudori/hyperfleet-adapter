@@ -233,6 +233,23 @@ func TestValidateTemplateVariables(t *testing.T) {
 		assert.Contains(t, err.Error(), "undefined template variable \"undefinedVar\"")
 	})
 
+	t.Run("CEL resource states are not a template variable", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Resources = []Resource{{
+			Name: "testNs",
+			Manifest: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata":   map[string]interface{}{"name": "{{ .resource_states.testNs }}"},
+			},
+			Discovery: &DiscoveryConfig{Namespace: "*", ByName: "test"},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		err := v.ValidateSemantic()
+		require.ErrorContains(t, err, `undefined template variable "resource_states.testNs"`)
+	})
+
 	t.Run("derived param variable is available for resources", func(t *testing.T) {
 		cfg := baseTaskConfig()
 		cfg.Params = []Parameter{
@@ -333,6 +350,30 @@ func TestValidatePayloadWhenCELExpression(t *testing.T) {
 		require.NoError(t, v.ValidateStructure())
 		require.NoError(t, v.ValidateSemantic())
 	})
+}
+
+func TestValidateResourceStatesCELVariable(t *testing.T) {
+	cfg := baseTaskConfig()
+	cfg.Resources = []Resource{{
+		Name:      "remoteConfig",
+		Manifest:  map[string]interface{}{"apiVersion": "v1", "kind": "ConfigMap"},
+		Discovery: &DiscoveryConfig{ByName: "remote-config"},
+		Lifecycle: &ResourceLifecycle{Delete: &LifecycleDelete{
+			When: &LifecycleWhen{Expression: `resource_states.remoteConfig == "present"`},
+		}},
+	}}
+	cfg.Post = &PostConfig{Payloads: []Payload{{
+		Name: "statePayload",
+		Build: map[string]interface{}{
+			"state": map[string]interface{}{
+				"expression": `resource_states.remoteConfig == "present"`,
+			},
+		},
+	}}}
+
+	v := newTaskValidator(cfg)
+	require.NoError(t, v.ValidateStructure())
+	require.NoError(t, v.ValidateSemantic())
 }
 
 func TestValidatePostActionWhenCELExpression(t *testing.T) {
@@ -1158,6 +1199,18 @@ func TestValidateLifecycleConfig(t *testing.T) {
 		err := newTaskValidator(cfg).ValidateSemantic()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "lifecycle.delete requires a discovery config")
+	})
+
+	t.Run("desire selector deletion is rejected", func(t *testing.T) {
+		cfg := withLifecycle(&LifecycleDelete{When: &LifecycleWhen{Expression: "true"}})
+		cfg.Resources[0].Transport = &TransportConfig{
+			Client: "remote", Desire: &DesireTransportConfig{TargetCluster: "cluster", Resource: "configmaps"},
+		}
+		cfg.Resources[0].Discovery = &DiscoveryConfig{
+			BySelectors: &SelectorConfig{LabelSelector: map[string]string{"app": "target"}},
+		}
+		err := newTaskValidator(cfg).ValidateSemantic()
+		require.ErrorContains(t, err, "selector-based lifecycle deletion is unsupported for desire transport")
 	})
 
 	t.Run("no lifecycle config is valid", func(t *testing.T) {

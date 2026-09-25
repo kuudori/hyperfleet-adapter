@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
@@ -11,8 +12,10 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,6 +25,14 @@ import (
 
 // testDeletedTime is a non-null deleted_time value used in lifecycle delete tests to trigger when-expressions.
 const testDeletedTime = "2026-01-01T00:00:00Z"
+
+const (
+	testResourceAName = "resourceA"
+	testResourceBName = "resourceB"
+	testResourceAID   = "resource-a"
+	testResourceBID   = "resource-b"
+	testResourceBPath = "default/resource-b"
+)
 
 func TestResourceExecutor_ResolveTransport(t *testing.T) {
 	remoteClient := k8sclient.NewMockK8sClient()
@@ -234,12 +245,14 @@ func TestResourceExecutor_NamedRemoteTransportRoutesLifecycleOperations(t *testi
 		resource.Lifecycle = &configloader.ResourceLifecycle{
 			Create: &configloader.LifecycleCreate{When: &configloader.LifecycleWhen{Expression: "true"}},
 		}
+		execCtx := NewExecutionContext(t.Context(), nil, nil)
 
 		results, err := newNamedRemoteResourceExecutor(remote, fallback).ExecuteAll(
-			context.Background(), []configloader.Resource{resource}, NewExecutionContext(context.Background(), nil, nil))
+			t.Context(), []configloader.Resource{resource}, execCtx)
 
 		require.NoError(t, err)
 		require.Equal(t, manifest.OperationCreate, results[0].Operation)
+		assert.Equal(t, ResourceStatePresent, execCtx.ResourceStates[resource.Name])
 	})
 
 	t.Run("selector discovery", func(t *testing.T) {
@@ -258,6 +271,30 @@ func TestResourceExecutor_NamedRemoteTransportRoutesLifecycleOperations(t *testi
 		require.NoError(t, err)
 	})
 
+	t.Run("non-Desire selector no-match confirms absence", func(t *testing.T) {
+		remote := k8sclient.NewMockK8sClient()
+		remote.DiscoverResult = &unstructured.UnstructuredList{Items: []unstructured.Unstructured{{
+			Object: map[string]interface{}{"apiVersion": "v1", "kind": "ConfigMap"},
+		}}}
+		resource := namedRemoteResource(&configloader.DiscoveryConfig{
+			Namespace:   "default",
+			BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{"app": "missing"}},
+		})
+		execCtx := NewExecutionContext(t.Context(), nil, nil)
+		re := newNamedRemoteResourceExecutor(remote, fallback)
+		client, target, err := re.resolveTransport(resource, execCtx)
+		require.NoError(t, err)
+		_, err = re.discoverResource(t.Context(), resource, execCtx, client, target)
+		require.NoError(t, err)
+		require.Equal(t, ResourceStatePresent, execCtx.ResourceStates[resource.Name])
+		remote.DiscoverResult = &unstructured.UnstructuredList{}
+
+		_, err = re.discoverResource(t.Context(), resource, execCtx, client, target)
+
+		require.True(t, apierrors.IsNotFound(err))
+		assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
+	})
+
 	t.Run("delete and post-delete discovery", func(t *testing.T) {
 		remote := k8sclient.NewMockK8sClient()
 		remote.Resources["default/test-config"] = &unstructured.Unstructured{Object: map[string]interface{}{
@@ -269,14 +306,357 @@ func TestResourceExecutor_NamedRemoteTransportRoutesLifecycleOperations(t *testi
 		resource.Lifecycle = &configloader.ResourceLifecycle{
 			Delete: &configloader.LifecycleDelete{When: &configloader.LifecycleWhen{Expression: "true"}},
 		}
+		execCtx := NewExecutionContext(t.Context(), nil, nil)
 
 		results, err := newNamedRemoteResourceExecutor(remote, fallback).ExecuteAll(
-			context.Background(), []configloader.Resource{resource}, NewExecutionContext(context.Background(), nil, nil))
+			t.Context(), []configloader.Resource{resource}, execCtx)
 
 		require.NoError(t, err)
 		require.Equal(t, manifest.OperationDelete, results[0].Operation)
 		assert.Empty(t, remote.Resources)
+		assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
 	})
+}
+
+func TestResourceExecutor_DesireTransport_DeletedPrerequisiteBeforeDependent(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+	dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "test-cm", "namespace": "default"},
+	}}
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
+			desireTransportName: {Type: configloader.TransportTypeRemote},
+		}},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireclient.NewClient(store, desireOwner),
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	prerequisite.Name = testResourceAName
+	dependent := newResourceWithLifecycle(
+		fmt.Sprintf("!resources.?%s.hasValue()", testResourceAName), "Background")
+	dependent.Name = testResourceBName
+
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{dependent, prerequisite}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, manifest.OperationDelete, results[0].Operation)
+	assert.True(t, dependentClient.DeleteCalled)
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[prerequisite.Name])
+	assert.NotContains(t, execCtx.GetCELVariables()[configloader.FieldResources], prerequisite.Name)
+}
+
+type failingReadCleanupStore struct {
+	desire.SpecStore
+}
+
+func (s *failingReadCleanupStore) DeleteReadDesire(
+	_ context.Context, _ desire.Identity, _ string, _ int64,
+) error {
+	return errors.New("cleanup write failed")
+}
+
+func TestResourceExecutor_DesireCleanupFailureBlocksDependentDelete(t *testing.T) {
+	tests := []struct {
+		name           string
+		deleteGate     string
+		readNotFound   bool
+		noDeleteDesire bool
+	}{
+		{
+			name:       "stale object with resource state gate",
+			deleteGate: `resource_states.?resourceA.orValue("") == "confirmed_deleted"`,
+		},
+		{
+			name:         "NotFound mirror with legacy absence gate",
+			readNotFound: true,
+			deleteGate:   `!resources.?resourceA.hasValue()`,
+		},
+		{
+			name:           "no-work cleanup failure with state gate",
+			readNotFound:   true,
+			noDeleteDesire: true,
+			deleteGate:     `resource_states.?resourceA.orValue("") == "confirmed_deleted"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			store := memory.New()
+			if tt.readNotFound {
+				desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+			} else {
+				desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent())
+			}
+			if !tt.noDeleteDesire {
+				desiretest.PutConfirmedDeleteDesire(t, ctx, store, testDesireID.Delete(), desireOwner)
+			}
+			dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+			dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1", "kind": "ConfigMap",
+				"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
+			}}
+			re := newResourceExecutor(&ExecutorConfig{
+				Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
+					desireTransportName: {Type: configloader.TransportTypeRemote},
+				}},
+				TransportRegistry: transportclient.Registry{
+					desireTransportName: desireclient.NewClient(
+						&failingReadCleanupStore{SpecStore: store}, desireOwner),
+					configloader.TransportClientKubernetes: dependentClient,
+				},
+			})
+			prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+			prerequisite.Name = testResourceAName
+			dependent := newResourceWithLifecycle(tt.deleteGate, "Background")
+			dependent.Name = testResourceBName
+			execCtx := NewExecutionContext(ctx, nil, nil)
+			execCtx.Params["deleted_time"] = testDeletedTime
+
+			results, err := re.ExecuteAll(ctx, []configloader.Resource{prerequisite, dependent}, execCtx)
+
+			require.ErrorContains(t, err, "cleanup write failed")
+			require.Len(t, results, 2)
+			assert.Equal(t, StatusFailed, results[0].Status)
+			assert.False(t, dependentClient.DeleteCalled, "failed cleanup must not release a dependent")
+			assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[prerequisite.Name])
+		})
+	}
+}
+
+// A dependent listed before its prerequisite evaluates its gate against
+// pre-discovery. While the prerequisite's read mirror still shows the object,
+// the dependent waits; the prerequisite's own delete path confirms from the
+// delete desire and cleans up, so the next event releases the dependent. This
+// is the one-pass ordering model: later resources cascade within an event,
+// earlier ones on the next.
+func TestResourceExecutor_DesireTransport_StaleReadDelaysEarlierDependentOneEvent(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner,
+		[]byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"test-cm","namespace":"default"}}`))
+	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testDesireID.Delete(), desireOwner)
+	dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
+	}}
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
+			desireTransportName: {Type: configloader.TransportTypeRemote},
+		}},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireclient.NewClient(store, desireOwner),
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	prerequisite.Name = testResourceAName
+	dependent := newResourceWithLifecycle(
+		`resource_states.?resourceA.orValue("") == "confirmed_deleted"`, "Background")
+	dependent.Name = testResourceBName
+	resources := []configloader.Resource{dependent, prerequisite}
+
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err := re.ExecuteAll(ctx, resources, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.False(t, dependentClient.DeleteCalled, "the stale mirror still shows the prerequisite")
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[prerequisite.Name])
+	_, err = store.GetReadDesire(ctx, testDesireID.Read())
+	assert.ErrorIs(t, err, desire.ErrNotFound)
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound)
+
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err = re.ExecuteAll(ctx, resources, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.True(t, dependentClient.DeleteCalled, "no desires remain, so the prerequisite is confirmed absent")
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[prerequisite.Name])
+}
+
+func TestResourceExecutor_DesireTransport_CleanedPrerequisiteAfterDependent(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
+	}}
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
+			desireTransportName: {Type: configloader.TransportTypeRemote},
+		}},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireclient.NewClient(store, desireOwner),
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	prerequisite.Name = testResourceAName
+	dependent := newResourceWithLifecycle(
+		`resource_states.?resourceA.orValue("") == "confirmed_deleted"`, "Background")
+	dependent.Name = testResourceBName
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{dependent, prerequisite}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.True(t, dependentClient.DeleteCalled,
+		"already-cleaned prerequisite must be visible to dependent CEL regardless of resource order")
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[prerequisite.Name])
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound)
+}
+
+func TestResourceExecutor_DesireTransport_EmptyStoreDeleteIsNoWork(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	re := newDesireExecutor(store)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
+	assert.NotContains(t,
+		execCtx.GetCELVariables()[configloader.FieldResources].(map[string]any), resource.Name)
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "no-work deletion must not create a new DeleteDesire")
+	_, err = store.GetReadDesire(ctx, testDesireID.Read())
+	assert.ErrorIs(t, err, desire.ErrNotFound)
+}
+
+// A target with no desire records reads as confirmed absent, the same as a
+// Kubernetes NotFound: confirmed_deleted does not claim the object once existed.
+func TestResourceExecutor_DesireTransport_EmptyStoreReadsAsConfirmedAbsent(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	re := newDesireExecutor(store)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	resource.Name = "testResource"
+	resource.Lifecycle.Create = &configloader.LifecycleCreate{
+		When: &configloader.LifecycleWhen{
+			Expression: `resource_states.?testResource.orValue("") == "confirmed_deleted"`,
+		},
+	}
+	execCtx := NewExecutionContext(ctx, nil, nil)
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
+	require.NoError(t, err, "the create gate sees the never-created target as absent")
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name],
+		"after the apply, the new read desire has not synced yet")
+}
+
+func TestResourceExecutor_DesireTransport_NormalEventKeepsAbsentRead(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+	re := newDesireExecutor(store)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	resource.Lifecycle.Create = &configloader.LifecycleCreate{
+		When: &configloader.LifecycleWhen{Expression: "false"},
+	}
+	execCtx := NewExecutionContext(ctx, nil, nil)
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSkipped, results[0].Status)
+	_, err = store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err, "a normal event must not stop observing an absent resource")
+}
+
+func TestResourceExecutor_UnsyncedPrerequisiteDoesNotSatisfyCreateGate(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutUnsyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+	desireClient := desireclient.NewClient(store, desireOwner)
+	dependentClient := k8sclient.NewMockK8sClient()
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
+			desireTransportName: {Type: configloader.TransportTypeRemote},
+		}},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireClient,
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+
+	prerequisite := newDesireResourceWithLifecycle("", "Background")
+	prerequisite.Name = "prerequisite"
+	dependent := newResourceWithLifecycleCreate(`resource_states.?prerequisite.orValue("") == "present"`)
+	dependent.Name = "dependent"
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{prerequisite, dependent},
+		NewExecutionContext(ctx, nil, nil))
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, StatusSkipped, results[1].Status)
+	assert.Equal(t, manifest.OperationSkip, results[1].Operation)
+	assert.Empty(t, dependentClient.Resources, "unsynced prerequisites are not discovered resources")
+}
+
+func TestResourceExecutor_UnsyncedDeleteErrorIsPropagated(t *testing.T) {
+	ctx := t.Context()
+	inner := memory.New()
+	_, err := inner.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testDesireID.Apply(),
+		Owner:    desireOwner,
+		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+	})
+	require.NoError(t, err)
+	desiretest.PutUnsyncedReadDesire(t, ctx, inner, testDesireID.Read(), desireOwner)
+	wantErr := errors.New("delete desire write failed")
+	store := &failingCreateDeleteDesireStore{SpecStore: inner, err: wantErr}
+	re := newDesireExecutor(store)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.ErrorIs(t, err, wantErr)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFailed, results[0].Status)
+	_, err = inner.GetApplyDesire(ctx, testDesireID.Apply())
+	assert.NoError(t, err, "failed DeleteDesire creation must leave the ApplyDesire intact")
+}
+
+type failingCreateDeleteDesireStore struct {
+	desire.SpecStore
+	err error
+}
+
+func (s *failingCreateDeleteDesireStore) CreateDeleteDesire(
+	context.Context, desire.DeleteDesire,
+) (desire.DeleteDesire, error) {
+	return desire.DeleteDesire{}, s.err
 }
 
 // TestResourceExecutor_ExecuteAll_DiscoveryFailure verifies that when discovery fails after a successful apply,
@@ -2100,8 +2480,8 @@ func TestResourceExecutor_ExecuteAll_ContinuesAfterDeleteFailure(t *testing.T) {
 	mock := &multiDeleteMock{
 		MockK8sClient: k8sclient.NewMockK8sClient(),
 		objects: map[string]*unstructured.Unstructured{
-			"resource-a": makeObj("resource-a"),
-			"resource-b": makeObj("resource-b"),
+			testResourceAID: makeObj(testResourceAID),
+			testResourceBID: makeObj(testResourceBID),
 		},
 		deleteErr: errors.New("RBAC denied"),
 	}
@@ -2113,12 +2493,12 @@ func TestResourceExecutor_ExecuteAll_ContinuesAfterDeleteFailure(t *testing.T) {
 	})
 
 	resourceA := newResourceWithLifecycle("deleted_time != null", "Background")
-	resourceA.Name = "resource-a"
-	resourceA.Discovery = &configloader.DiscoveryConfig{ByName: "resource-a", Namespace: "default"}
+	resourceA.Name = testResourceAID
+	resourceA.Discovery = &configloader.DiscoveryConfig{ByName: testResourceAID, Namespace: "default"}
 
 	resourceB := newResourceWithLifecycle("deleted_time != null", "Background")
-	resourceB.Name = "resource-b"
-	resourceB.Discovery = &configloader.DiscoveryConfig{ByName: "resource-b", Namespace: "default"}
+	resourceB.Name = testResourceBID
+	resourceB.Discovery = &configloader.DiscoveryConfig{ByName: testResourceBID, Namespace: "default"}
 
 	execCtx := NewExecutionContext(context.Background(), nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
@@ -2127,8 +2507,8 @@ func TestResourceExecutor_ExecuteAll_ContinuesAfterDeleteFailure(t *testing.T) {
 
 	// Both resources must have been attempted despite the first failure.
 	require.Len(t, mock.deleteCalls, 2, "both resources must be attempted even after first delete fails")
-	assert.Equal(t, "resource-a", mock.deleteCalls[0])
-	assert.Equal(t, "resource-b", mock.deleteCalls[1])
+	assert.Equal(t, testResourceAID, mock.deleteCalls[0])
+	assert.Equal(t, testResourceBID, mock.deleteCalls[1])
 
 	// ExecuteAll returns the first delete error.
 	require.Error(t, err)
@@ -2153,11 +2533,11 @@ func TestResourceExecutor_ExecuteAll_ContinuesAfterCELEvalError(t *testing.T) {
 
 	// resourceA has an invalid CEL expression — evaluateLifecycleDeleteWhen will error.
 	resourceA := newResourceWithLifecycle("deleted_time != null &&", "Background")
-	resourceA.Name = "resource-a"
+	resourceA.Name = testResourceAID
 
 	// resourceB has a valid expression that evaluates to false → normal apply.
 	resourceB := newResourceWithLifecycle("false", "Background")
-	resourceB.Name = "resource-b"
+	resourceB.Name = testResourceBID
 
 	execCtx := NewExecutionContext(context.Background(), nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
@@ -2371,6 +2751,7 @@ func TestResourceExecutor_LifecycleDelete_Step6_CleanupCalled(t *testing.T) {
 type cleanupTrackingDeleteMockClient struct {
 	*k8sclient.MockK8sClient
 	CleanupError     error
+	CleanupErrorFor  string
 	CleanupNamespace string
 	CleanupName      string
 	DeleteCalled     bool
@@ -2397,7 +2778,10 @@ func (m *cleanupTrackingDeleteMockClient) CleanupAfterDeletion(
 	m.CleanupCalled = true
 	m.CleanupNamespace = namespace
 	m.CleanupName = name
-	return m.CleanupError
+	if m.CleanupErrorFor == "" || m.CleanupErrorFor == name {
+		return m.CleanupError
+	}
+	return nil
 }
 
 func TestResourceExecutor_LifecycleDelete_CleanupError_StatusFailed(t *testing.T) {
@@ -2417,10 +2801,78 @@ func TestResourceExecutor_LifecycleDelete_CleanupError_StatusFailed(t *testing.T
 
 	results, err := re.ExecuteAll(context.Background(), []configloader.Resource{resource}, execCtx)
 
-	require.Error(t, err)
+	require.ErrorContains(t, err, "desire cleanup failed")
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusFailed, results[0].Status)
 	assert.True(t, mock.CleanupCalled)
+}
+
+func TestResourceExecutor_CleanupFailureDoesNotBlockOtherDeletes(t *testing.T) {
+	inner := k8sclient.NewMockK8sClient()
+	inner.Resources[testResourceBPath] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]interface{}{"name": testResourceBID, "namespace": "default"},
+	}}
+	mock := &cleanupTrackingDeleteMockClient{
+		MockK8sClient:   inner,
+		CleanupError:    errors.New("cleanup store unavailable"),
+		CleanupErrorFor: testResourceAID,
+	}
+	re := newResourceExecutor(&ExecutorConfig{TransportRegistry: testTransportRegistry(mock)})
+
+	resourceA := newResourceWithLifecycle("deleted_time != null", "Background")
+	resourceA.Name = testResourceAID
+	resourceA.Manifest.(map[string]interface{})["metadata"].(map[string]interface{})["name"] = testResourceAID
+	resourceA.Discovery = &configloader.DiscoveryConfig{Namespace: "default", ByName: testResourceAID}
+	resourceB := newResourceWithLifecycle("deleted_time != null", "Background")
+	resourceB.Name = testResourceBID
+	resourceB.Manifest.(map[string]interface{})["metadata"].(map[string]interface{})["name"] = testResourceBID
+	resourceB.Discovery = &configloader.DiscoveryConfig{Namespace: "default", ByName: testResourceBID}
+	execCtx := NewExecutionContext(t.Context(), nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := re.ExecuteAll(t.Context(), []configloader.Resource{resourceA, resourceB}, execCtx)
+
+	require.ErrorContains(t, err, "cleanup store unavailable")
+	require.Len(t, results, 2)
+	assert.Equal(t, StatusFailed, results[0].Status)
+	assert.Equal(t, StatusSuccess, results[1].Status)
+	assert.NotContains(t, inner.Resources, testResourceBPath,
+		"an unrelated deletion should proceed despite the cleanup failure")
+}
+
+func TestResourceExecutor_NormalCreateSkipDoesNotRunDeletionCleanup(t *testing.T) {
+	inner := k8sclient.NewMockK8sClient()
+	inner.Resources[testResourceBPath] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": testResourceBID, "namespace": "default"},
+	}}
+	mock := &cleanupTrackingDeleteMockClient{
+		MockK8sClient: inner, CleanupError: errors.New("cleanup store unavailable"), CleanupErrorFor: testResourceAID,
+	}
+	re := newResourceExecutor(&ExecutorConfig{TransportRegistry: testTransportRegistry(mock)})
+
+	resourceA := newResourceWithLifecycle("", "Background")
+	resourceA.Name = testResourceAID
+	resourceA.Discovery.ByName = testResourceAID
+	resourceA.Lifecycle.Create = &configloader.LifecycleCreate{
+		When: &configloader.LifecycleWhen{Expression: "false"},
+	}
+	resourceB := newResourceWithLifecycle("deleted_time != null", "Background")
+	resourceB.Name = testResourceBID
+	resourceB.Manifest.(map[string]interface{})["metadata"].(map[string]interface{})["name"] = testResourceBID
+	resourceB.Discovery.ByName = testResourceBID
+	execCtx := NewExecutionContext(t.Context(), nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := re.ExecuteAll(t.Context(), []configloader.Resource{resourceA, resourceB}, execCtx)
+
+	require.NoError(t, err, "a resource that is not deleting must not run desire cleanup")
+	require.Len(t, results, 2)
+	assert.Equal(t, StatusSkipped, results[0].Status)
+	assert.Equal(t, StatusSuccess, results[1].Status)
+	assert.True(t, mock.DeleteCalled)
 }
 
 // cleanupKeepOnDeleteMockClient keeps the resource after delete (simulating finalizers/async)
@@ -2591,22 +3043,32 @@ func TestResourceExecutor_DesireTransport_SlowApplier(t *testing.T) {
 	assert.NoError(t, err, "ReadDesire must still exist")
 
 	desiretest.MarkDeleteDesireConfirmed(t, ctx, store, testDesireID.Delete())
-	desiretest.MarkReadDesireNotFound(t, ctx, store, testDesireID.Read())
 
-	// ---- Event 3: delete (applier confirmed) ----
+	// ---- Event 3: delete (DeleteDesire confirms while ReadDesire stays stale) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
 	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
-	assert.Equal(t, "resource already deleted or never existed", results[0].OperationReason)
+	assert.Equal(t, "resource deletion confirmed by transport", results[0].OperationReason)
 
 	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
 	assert.ErrorIs(t, err, desire.ErrNotFound, "DeleteDesire must be removed by cleanup")
 
 	_, err = store.GetReadDesire(ctx, testDesireID.Read())
-	assert.ErrorIs(t, err, desire.ErrNotFound, "ReadDesire must be removed by cleanup")
+	assert.ErrorIs(t, err, desire.ErrNotFound, "cleanup must remove the stale ReadDesire")
+
+	// A later delete event with no remaining desires must not recreate work.
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
+	assert.NotContains(t, execCtx.GetCELVariables()[configloader.FieldResources], resource.Name)
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "the no-work path must not recreate a delete desire")
 }
 
 // Test 2: Fast applier — applier confirms between DeleteResource and
@@ -2641,7 +3103,7 @@ func TestResourceExecutor_DesireTransport_FastApplier(t *testing.T) {
 	assert.ErrorIs(t, err, desire.ErrNotFound, "DeleteDesire must be removed in single cycle")
 
 	_, err = inner.GetReadDesire(ctx, testDesireID.Read())
-	assert.ErrorIs(t, err, desire.ErrNotFound, "ReadDesire must be removed in single cycle")
+	assert.ErrorIs(t, err, desire.ErrNotFound, "confirmed cleanup must remove the ReadDesire")
 }
 
 // Test 3: Transient NotFound before apply lands — regression test.
@@ -2673,16 +3135,22 @@ func TestResourceExecutor_DesireTransport_TransientNotFound(t *testing.T) {
 
 	// ---- Event 2: delete.when true ----
 	// Discovery reads mirror → NotFound → step 2 → tryCleanupDesires.
-	// CleanupAfterDeletion sees no DeleteDesire but ApplyDesire exists → error.
+	// CleanupAfterDeletion sees no DeleteDesire but ApplyDesire exists → safe wait.
 	execCtx = NewExecutionContext(ctx, nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
 	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
-	require.Error(t, err)
+	require.NoError(t, err)
 	require.Len(t, results, 1)
-	assert.Equal(t, StatusFailed, results[0].Status)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+	assert.Equal(t, "desire deletion pending", results[0].OperationReason)
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
 
 	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
-	assert.NoError(t, err, "ApplyDesire must survive — no orphan")
+	assert.ErrorIs(t, err, desire.ErrNotFound,
+		"DeleteResource must atomically remove the active ApplyDesire")
+
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.NoError(t, err, "DeleteResource must leave a DeleteDesire for the applier")
 
 	_, err = store.GetReadDesire(ctx, testDesireID.Read())
 	assert.NoError(t, err, "ReadDesire must survive — no orphan")
@@ -2734,23 +3202,22 @@ func TestResourceExecutor_DesireTransport_FullLifecycleFromEmptyStore(t *testing
 
 	// Simulate applier confirming deletion.
 	desiretest.MarkDeleteDesireConfirmed(t, ctx, store, testDesireID.Delete())
-	desiretest.MarkReadDesireNotFound(t, ctx, store, testDesireID.Read())
 
-	// ---- Event 4: delete (applier confirmed → cleanup removes all desires) ----
+	// ---- Event 4: delete (DeleteDesire confirms while ReadDesire stays stale) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
 	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
-	assert.Equal(t, "resource already deleted or never existed", results[0].OperationReason)
+	assert.Equal(t, "resource deletion confirmed by transport", results[0].OperationReason)
 
 	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
 	assert.ErrorIs(t, err, desire.ErrNotFound, "DeleteDesire must be removed by cleanup")
 	_, err = store.GetReadDesire(ctx, testDesireID.Read())
-	assert.ErrorIs(t, err, desire.ErrNotFound, "ReadDesire must be removed by cleanup")
+	assert.ErrorIs(t, err, desire.ErrNotFound, "confirmed cleanup must remove the ReadDesire")
 
-	// ---- Event 5: apply on empty store again (post-cleanup) ----
+	// ---- Event 5: apply again after both desires were removed ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
 	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
 	require.NoError(t, err)
@@ -2760,7 +3227,51 @@ func TestResourceExecutor_DesireTransport_FullLifecycleFromEmptyStore(t *testing
 	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
 	require.NoError(t, err, "ApplyDesire must exist after re-apply")
 	_, err = store.GetReadDesire(ctx, testDesireID.Read())
-	require.NoError(t, err, "ReadDesire must be re-created after cleanup")
+	require.NoError(t, err, "the re-apply must recreate its paired ReadDesire")
+}
+
+func TestResourceExecutor_PendingDesireDeleteDoesNotCountAsDeleted(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent())
+	_, err := store.CreateDeleteDesire(ctx, desire.DeleteDesire{
+		Identity: testDesireID.Delete(), Owner: desireOwner,
+	})
+	require.NoError(t, err)
+
+	registry := prometheus.NewRegistry()
+	re := newDesireExecutor(store)
+	re.metrics = metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	countedDeletions := func() float64 {
+		families, gatherErr := registry.Gather()
+		require.NoError(t, gatherErr)
+		for _, family := range families {
+			if family.GetName() != "hyperfleet_adapter_resources_deleted_total" {
+				continue
+			}
+			var count float64
+			for _, metric := range family.GetMetric() {
+				count += metric.GetCounter().GetValue()
+			}
+			return count
+		}
+		return 0
+	}
+
+	for _, wantCount := range []float64{0, 1} {
+		execCtx := NewExecutionContext(ctx, nil, nil)
+		execCtx.Params["deleted_time"] = testDeletedTime
+		results, executeErr := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+		require.NoError(t, executeErr)
+		require.Len(t, results, 1)
+		assert.Equal(t, StatusSuccess, results[0].Status)
+		assert.Equal(t, wantCount, countedDeletions())
+		if wantCount == 0 {
+			assert.Equal(t, desireDeletionPendingReason, results[0].OperationReason)
+			desiretest.MarkDeleteDesireConfirmed(t, ctx, store, testDesireID.Delete())
+		}
+	}
 }
 
 // Test 5: Step 2 ErrDeletionPending — delete desire exists but applier
@@ -2804,10 +3315,15 @@ func TestResourceExecutor_DesireTransport_Step2_DeletionPending_DeleteNotConfirm
 	execCtx = NewExecutionContext(ctx, nil, nil)
 	execCtx.Params["deleted_time"] = testDeletedTime
 	results, err = re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
-	require.Error(t, err)
-	assert.ErrorIs(t, results[0].Error, desireclient.ErrDeletionPending,
-		"cleanup must return ErrDeletionPending when delete desire is unconfirmed")
-	assert.Equal(t, StatusFailed, results[0].Status)
+	require.NoError(t, err, "pending deletion must not fail reconciliation")
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+	assert.Equal(t, "desire deletion pending", results[0].OperationReason)
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
+	assert.Nil(t, execCtx.Adapter.ExecutionError)
+	resources := execCtx.GetCELVariables()[configloader.FieldResources].(map[string]interface{})
+	assert.Equal(t, map[string]interface{}{}, resources[resource.Name],
+		"pending cleanup must remain visible as an unsynced placeholder")
 
 	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
 	assert.NoError(t, err, "DeleteDesire must survive — not yet confirmed")
@@ -2860,4 +3376,372 @@ func TestResourceExecutor_DesireTransport_Step6_DeletionPending_NonFatal(t *test
 
 	_, err = inner.GetApplyDesire(ctx, testDesireID.Apply())
 	assert.ErrorIs(t, err, desire.ErrNotFound, "ApplyDesire must be removed by DeleteResource")
+}
+
+func TestResourceExecutor_DesireTransport_RecordsResourceStates(t *testing.T) {
+	tests := []struct {
+		name           string
+		seed           string
+		wantState      ResourceState
+		wantAvailable  int64
+		wantObject     bool
+		checkAvailable bool
+	}{
+		{
+			name:           "present full object",
+			seed:           "synced-full",
+			wantState:      ResourceStatePresent,
+			wantAvailable:  3,
+			wantObject:     true,
+			checkAvailable: true,
+		},
+		{
+			name:       "present empty object",
+			seed:       "synced-empty",
+			wantState:  ResourceStatePresent,
+			wantObject: true,
+		},
+		{
+			name:      "unsynced mirror",
+			seed:      "unsynced",
+			wantState: ResourceStateUnsynced,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			store := memory.New()
+			switch tt.seed {
+			case "synced-full":
+				desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, []byte(`{
+					"apiVersion":"v1","kind":"ConfigMap",
+					"metadata":{"name":"test-config","namespace":"default"},
+					"status":{"availableReplicas":3,"conditions":[{"type":"Available","status":"True"}]}
+				}`))
+			case "synced-empty":
+				desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, []byte(`{}`))
+			case "unsynced":
+				desiretest.PutUnsyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+			default:
+				t.Fatalf("unknown seed %q", tt.seed)
+			}
+			re := newDesireExecutor(store)
+			resource := newDesireResourceWithLifecycle("", "Background")
+			execCtx := NewExecutionContext(ctx, nil, nil)
+
+			results, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+			assert.Equal(t, tt.wantState, execCtx.ResourceStates[resource.Name])
+			if tt.wantObject {
+				object, ok := execCtx.Resources[resource.Name].(*unstructured.Unstructured)
+				require.True(t, ok)
+				if tt.checkAvailable {
+					status, ok := object.Object["status"].(map[string]interface{})
+					require.True(t, ok)
+					assert.Equal(t, tt.wantAvailable, status["availableReplicas"])
+				} else {
+					assert.Empty(t, object.Object)
+				}
+			} else {
+				assert.NotContains(t, execCtx.Resources, resource.Name)
+			}
+		})
+	}
+
+	t.Run("confirmed deletion by name", func(t *testing.T) {
+		ctx := t.Context()
+		store := memory.New()
+		desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+		re := newDesireExecutor(store)
+		resource := newDesireResourceWithLifecycle("", "Background")
+		execCtx := NewExecutionContext(ctx, nil, nil)
+		client, target, err := re.resolveTransport(resource, execCtx)
+		require.NoError(t, err)
+
+		discovered, err := re.discoverResource(ctx, resource, execCtx, client, target)
+
+		require.Error(t, err)
+		assert.True(t, apierrors.IsNotFound(err))
+		assert.Nil(t, discovered)
+		assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
+	})
+
+	t.Run("selector no-match confirms absence", func(t *testing.T) {
+		ctx := t.Context()
+		store := memory.New()
+		desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+		re := newDesireExecutor(store)
+		resource := newDesireResourceWithLifecycle("", "Background")
+		resource.Discovery = &configloader.DiscoveryConfig{
+			Namespace: "default",
+			BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{
+				"app": "missing",
+			}},
+		}
+		execCtx := NewExecutionContext(ctx, nil, nil)
+		client, target, err := re.resolveTransport(resource, execCtx)
+		require.NoError(t, err)
+
+		discovered, err := re.discoverResource(ctx, resource, execCtx, client, target)
+
+		require.Error(t, err)
+		assert.True(t, apierrors.IsNotFound(err))
+		assert.Nil(t, discovered)
+		assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[resource.Name])
+	})
+
+	t.Run("selector no-match with an unsynced read remains uncertain", func(t *testing.T) {
+		ctx := t.Context()
+		store := memory.New()
+		desiretest.PutUnsyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+		re := newDesireExecutor(store)
+		resource := newDesireResourceWithLifecycle("", "Background")
+		resource.Discovery = &configloader.DiscoveryConfig{
+			Namespace: "default",
+			BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{
+				"app": "missing",
+			}},
+		}
+		execCtx := NewExecutionContext(ctx, nil, nil)
+		client, target, err := re.resolveTransport(resource, execCtx)
+		require.NoError(t, err)
+
+		discovered, err := re.discoverResource(ctx, resource, execCtx, client, target)
+
+		require.ErrorIs(t, err, desireclient.ErrNotSyncedYet)
+		assert.Nil(t, discovered)
+		assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
+	})
+
+	t.Run("decode failure remains an operational error", func(t *testing.T) {
+		ctx := t.Context()
+		store := memory.New()
+		desiretest.PutKubeAPIErrorReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, []byte("not-json"))
+		re := newDesireExecutor(store)
+		resource := newDesireResourceWithLifecycle("", "Background")
+		execCtx := NewExecutionContext(ctx, nil, nil)
+
+		_, err := re.ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+		require.Error(t, err)
+		assert.Empty(t, execCtx.ResourceStates)
+	})
+}
+
+func TestResourceExecutor_DesireTransport_UnsyncedDependencyBlocksDelete(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testDesireID.Apply(),
+		Owner:    desireOwner,
+		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+	})
+	require.NoError(t, err)
+
+	desireClient := desireclient.NewClient(store, desireOwner)
+	dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]interface{}{"name": "test-cm", "namespace": "default"},
+	}}
+
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{
+			Transports: map[string]configloader.TransportDefinition{
+				desireTransportName: {Type: configloader.TransportTypeRemote},
+			},
+		},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireClient,
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+
+	unsynced := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	unsynced.Name = testResourceAName
+	dependent := newResourceWithLifecycle(
+		fmt.Sprintf(`resource_states.?%s.orValue("") == "confirmed_deleted"`, testResourceAName), "Background")
+	dependent.Name = testResourceBName
+
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{unsynced, dependent}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, manifest.OperationCreate, results[1].Operation)
+	assert.False(t, dependentClient.DeleteCalled,
+		"dependent deletion must wait while the prerequisite desire read is unsynced")
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[unsynced.Name])
+}
+
+func TestResourceExecutor_DesireTransport_PendingCleanupBlocksDeleteDependency(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testDesireID.Apply(),
+		Owner:    desireOwner,
+		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+	})
+	require.NoError(t, err)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+
+	desireClient := desireclient.NewClient(store, desireOwner)
+	dependentClient := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	dependentClient.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata":   map[string]interface{}{"name": "test-cm", "namespace": "default"},
+	}}
+
+	re := newResourceExecutor(&ExecutorConfig{
+		Config: &configloader.Config{
+			Transports: map[string]configloader.TransportDefinition{
+				desireTransportName: {Type: configloader.TransportTypeRemote},
+			},
+		},
+		TransportRegistry: transportclient.Registry{
+			desireTransportName:                    desireClient,
+			configloader.TransportClientKubernetes: dependentClient,
+		},
+	})
+
+	unsynced := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	unsynced.Name = testResourceAName
+	dependent := newResourceWithLifecycle(
+		fmt.Sprintf(`resource_states.?%s.orValue("") == "confirmed_deleted"`, testResourceAName), "Background")
+	dependent.Name = testResourceBName
+
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{unsynced, dependent}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, manifest.OperationCreate, results[1].Operation)
+	assert.False(t, dependentClient.DeleteCalled,
+		"dependent deletion must wait while desire cleanup is pending")
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[unsynced.Name])
+}
+
+func TestResourceExecutor_DesireSelectorDeleteRejectedWithPendingApply(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	content := []byte(`{
+		"apiVersion":"v1","kind":"ConfigMap",
+		"metadata":{"name":"test-config","namespace":"default","labels":{"app":"prerequisite"}}
+	}`)
+	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+		Identity: testDesireID.Apply(), Owner: desireOwner,
+		Spec: desire.ApplySpec{KubeContent: content},
+	})
+	require.NoError(t, err)
+	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	resource.Manifest.(map[string]any)["metadata"].(map[string]any)["labels"] = map[string]any{"app": "prerequisite"}
+	resource.Discovery = &configloader.DiscoveryConfig{
+		Namespace: "default",
+		BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{
+			"app": "prerequisite",
+		}},
+	}
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := newDesireExecutor(store).ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.ErrorContains(t, err, "selector-based lifecycle deletion is unsupported for desire transport")
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFailed, results[0].Status)
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	require.ErrorIs(t, err, desire.ErrNotFound, "unsupported selector deletion must not create a delete desire")
+	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
+	require.NoError(t, err, "a rejected selector deletion must leave the pending apply untouched")
+}
+
+// By-name deletion targets discovery.by_name, the identity discovery reads, even
+// before the read mirror has synced.
+func TestResourceExecutor_DesireByNameUnsyncedDeletesDiscoveryTarget(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	target := testDesireID.WithName("discovery-target")
+	desiretest.PutUnsyncedReadDesire(t, ctx, store, target.Read(), desireOwner)
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	resource.Discovery.ByName = target.Name
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := newDesireExecutor(store).ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, desireDeletionPendingReason, results[0].OperationReason)
+	assert.Equal(t, target.Name, results[0].ResourceName)
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
+	_, err = store.GetDeleteDesire(ctx, target.Delete())
+	assert.NoError(t, err, "the delete desire targets discovery.by_name")
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "the manifest's own name is not a delete target")
+}
+
+func TestResourceExecutor_DesireSelectorDeleteIsRejected(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, []byte(`{
+		"apiVersion":"v1","kind":"ConfigMap",
+		"metadata":{"name":"test-config","namespace":"default","labels":{"app":"prerequisite"}}
+	}`))
+	resource := newDesireResourceWithLifecycle("deleted_time != null", "Background")
+	resource.Discovery = &configloader.DiscoveryConfig{
+		Namespace: "default",
+		BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{
+			"app": "prerequisite",
+		}},
+	}
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["deleted_time"] = testDeletedTime
+
+	results, err := newDesireExecutor(store).ExecuteAll(ctx, []configloader.Resource{resource}, execCtx)
+
+	require.ErrorContains(t, err, "selector-based lifecycle deletion is unsupported for desire transport")
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFailed, results[0].Status)
+	assert.Equal(t, ResourceStatePresent, execCtx.ResourceStates[resource.Name],
+		"the rejection leaves the discovered state alone")
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "unsupported selector deletion must not create a delete desire")
+}
+
+func TestResourceExecutor_KubernetesSelectorAbsenceDeletesDependent(t *testing.T) {
+	client := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	client.Resources["default/test-cm"] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]interface{}{"name": "test-cm", "namespace": "default"},
+	}}
+	re := newResourceExecutor(&ExecutorConfig{TransportRegistry: testTransportRegistry(client)})
+	prerequisite := newResourceWithLifecycle("", "Background")
+	prerequisite.Name = testResourceAName
+	prerequisite.Discovery = &configloader.DiscoveryConfig{
+		Namespace:   "default",
+		BySelectors: &configloader.SelectorConfig{LabelSelector: map[string]string{"app": "missing"}},
+	}
+	prerequisite.Lifecycle.Create = &configloader.LifecycleCreate{
+		When: &configloader.LifecycleWhen{Expression: "false"},
+	}
+	dependent := newResourceWithLifecycle(
+		`resource_states.?resourceA.orValue("") == "confirmed_deleted"`, "Background")
+	dependent.Name = testResourceBName
+	execCtx := NewExecutionContext(t.Context(), nil, nil)
+
+	results, err := re.ExecuteAll(t.Context(), []configloader.Resource{prerequisite, dependent}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.Equal(t, StatusSkipped, results[0].Status)
+	assert.True(t, client.DeleteCalled)
+	assert.Equal(t, ResourceStateConfirmedDeleted, execCtx.ResourceStates[prerequisite.Name])
 }

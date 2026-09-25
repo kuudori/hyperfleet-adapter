@@ -27,6 +27,7 @@ func NewClient(store desire.SpecStore, owner string) *Client {
 }
 
 var (
-	_ transportclient.TransportClient = (*Client)(nil)
-	_ transportclient.DesireCleaner   = (*Client)(nil)
+	_ transportclient.TransportClient   = (*Client)(nil)
+	_ transportclient.DesireCleaner     = (*Client)(nil)
+	_ transportclient.DeletionLifecycle = (*Client)(nil)
 )

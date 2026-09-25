@@ -743,17 +743,18 @@ The **desire transport** delivers resources by recording declarative intent into
 ```yaml
 resources:
   - name: "remoteConfig"
-    transport:                       # NOTE: the "desire" transport shape lands with HYPERFLEET-1440/1441
-      client: "desire"               # Config syntax to be finalized
+    transport:
+      client: "remote-primary"
+      desire:
+        target_cluster: "{{ .clusterId }}"
+        resource: "configmaps"
     manifest:
-      # ... standard manifest; discovery reads the mirrored live object
+      # ... standard manifest; discovery reads the mirrored object
     discovery:
       by_name: "{{ .clusterId }}-config"
 ```
 
-For desire-transport resources, discovery returns the **full live object** mirrored through the read desire — status and all — landing in `resources.<name>` with the same shape a locally discovered object would have. You write CEL against it exactly as you would for a Kubernetes-direct resource; no `statusFeedback` traversal or feedback rules are involved.
-
-> The desire transport, its generation tracking, and full-object discovery land with HYPERFLEET-1440 and HYPERFLEET-1441. This section documents the contract adapter authors write against, not the wiring.
+For desire-transport resources, discovery returns the **full mirrored object** from the read desire — status and all — in `resources.<name>` with the same shape a locally discovered object would have. The mirror is eventually consistent and may be stale; see the contract below. You write CEL against it exactly as you would for a Kubernetes-direct resource; no `statusFeedback` traversal or feedback rules are involved.
 
 ### The eventual-consistency contract for remote reads
 
@@ -765,14 +766,14 @@ When discovery reads a desire-transport resource, it returns the object as of th
 
 Treat every remote read as **potentially stale**. Do not assume a change you just applied is visible on the next line of CEL.
 
-#### Staleness is a generation mismatch, and the framework re-queues
+#### Staleness is visible through a generation mismatch
 
 The `hyperfleet.io/generation` annotation is written once on the manifest and **round-trips through the mirror** into the mirrored live object. This is the staleness signal:
 
 - When the generation on the mirrored object **matches** the generation you applied, the mirror is current — the applier has caught up with your intent.
 - When they **differ**, the mirror is stale — the applier has not yet reconciled your latest apply desire.
 
-On a generation mismatch the framework **re-queues the event rather than blocking** on a live read. Your adapter does not wait in-line for the backend to converge; it reports what it can and the reconciliation loop runs again once the mirror advances. Design your status conditions to say *"not converged yet"* on a mismatch instead of treating it as a failure.
+On a generation mismatch the adapter does not block on a live read. It reports the mirrored state it has, while the surrounding reconciliation system is expected to trigger another reconciliation as the mirror advances. Design your status conditions to say *"not converged yet"* on a mismatch instead of treating it as a failure.
 
 ```mermaid
 sequenceDiagram
@@ -783,7 +784,7 @@ sequenceDiagram
 
     Adapter->>Store: record apply desire (generation N+1)
     Adapter->>Mirror: discover → still shows generation N
-    Note over Adapter: generation mismatch → re-queue, don't block
+    Note over Adapter: generation mismatch → report not converged; do not block
     Applier->>Store: reconcile desire
     Applier->>Mirror: mirror live object (generation N+1)
     Note over Adapter: next reconcile: mirror matches → converged
@@ -795,38 +796,37 @@ Three states are distinguishable downstream, and they mean different things:
 
 | State | Meaning | What it tells the author |
 |-------|---------|--------------------------|
-| **Not synced yet** | The resource was requested but the mirror has not populated it (no read desire yet, or mirror lag) | Transient. The applier has not caught up — expect convergence on a later reconcile |
-| **Present** | The mirror holds the live object | Read its fields; check the mirrored generation before trusting freshness |
-| **Not found** | The resource is confirmed gone (deleted-resource sentinel) | Terminal for this resource — it does not exist, do not wait for it |
+| **Unsynced** | The read mirror has not synced yet, or an apply or delete is still in flight, so a missing or NotFound mirror is not conclusive | Transient. Do not treat it as confirmed absence |
+| **Present** | The mirror holds an object | Read its fields; check the mirrored generation before trusting freshness |
+| **Confirmed deleted** | No apply or delete is in flight, and the mirror reports NotFound or no desire exists for the target at all (never created, or already cleaned up). During deletion, `DeleteDesire=Deleted` also confirms absence while the read mirror is still stale | The object is absent and no transport work is pending. It does not prove the object once existed |
 
-The critical distinction is **not-synced-yet vs. not-found**: an absent mirror ("I have not seen it yet") is not the same as a confirmed-gone resource ("it does not exist"). Reporting `Ready=False` because a mirror has not synced is a bug — the resource may be seconds from appearing. Reporting it because the resource is confirmed gone is correct.
+The critical distinction is **unsynced vs. confirmed deleted**: an absent mirror ("I have not seen it yet") is not the same as a confirmed-gone resource ("it does not exist"). Use `resource_states` to make that distinction. Reporting `Ready=False` because a mirror has not synced is a bug — the resource may be seconds from appearing. A confirmed deletion is a separate terminal outcome.
 
 #### Writing CEL against remote reads
 
-Use optional access so a not-yet-synced mirror does not error your expression, and gate "ready" on both presence **and** a matching generation:
+Use `resource_states` to distinguish a present mirror from an unsynced or confirmed-deleted resource. Use `resources` to read object fields only after discovery reports `present`:
 
 ```cel
-// Present AND current: the mirror holds the object and it reflects this generation
-resources.?remoteConfig.hasValue()
+// The mirror contains an object and it reflects this generation
+resource_states.?remoteConfig.orValue("") == "present"
   && resources.remoteConfig.metadata.annotations["hyperfleet.io/generation"] == string(generation)
 
-// Not synced yet — absent mirror, treat as transient (Unknown), never as failure
-!resources.?remoteConfig.hasValue()
-  ? "Unknown"
-  : resources.?remoteConfig.?status.?conditions.orValue([])
-      .exists(c, c.type == "Ready" && c.status == "True")
-    ? "True" : "False"
+// Confirmed absence is different from an unavailable mirror
+resource_states.?remoteConfig.orValue("") == "confirmed_deleted"
+
+// Unsynced is transient; do not report it as confirmed failure or deletion
+resource_states.?remoteConfig.orValue("") == "unsynced"
 ```
 
-> Until the not-synced-yet vs. not-found sentinel lands (HYPERFLEET-1440), `!hasValue()` alone cannot separate a mirror that has not synced from a resource that is confirmed gone — both read as absent. Treat absence as `"Unknown"` only where a confirmed-deleted resource is also acceptable as `"Unknown"`; otherwise defer the terminal-vs-transient decision to that sentinel once it exists.
+`resources.?remoteConfig.hasValue()` reports whether the alias has a non-null value in the CEL context. It is `true` for a present object and for the empty placeholder used for `unsynced`; it is `false` for confirmed deletion or an unprocessed resource. Use `resource_states` for presence and lifecycle decisions.
 
 Guidance for status conditions:
 
-- Default a remote-backed condition to `"Unknown"` while the mirror is absent — it is not evidence of failure.
+- Default a remote-backed condition to `"Unknown"` while `resource_states.X` is `unsynced` or missing — it is not evidence of failure.
 - Only trust a mirrored object's status once its `hyperfleet.io/generation` matches the `generation` you applied; otherwise you are reading a stale snapshot.
 - Reserve `"False"`/failure for a confirmed-gone resource or an actual bad status on a current mirror, never for staleness.
 
-> **See also:** [ADR-0015 — Eventual consistency for the read path](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/adrs/0015-eventual-consistency-for-read-path.md) for general background on the API read path (transaction-free GET/LIST reads and polling mitigation). It does not define the desire transport, the read-desire mirror, generation matching, or the framework re-queue behavior described above — those land with HYPERFLEET-1440/1441.
+> **See also:** [ADR-0015 — Eventual consistency for the read path](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/adrs/0015-eventual-consistency-for-read-path.md) for general background on the API read path (transaction-free GET/LIST reads and polling mitigation). It does not define the desire transport, the read-desire mirror, or generation matching described above. Reconciliation scheduling is owned by the surrounding event/reconciliation system.
 
 ### Conditional creation (lifecycle.create)
 
@@ -941,7 +941,7 @@ Then reference `is_deleting` in `lifecycle.delete.when.expression`.
 
 #### Dependency ordering
 
-When multiple resources must be deleted in a specific order, use `resources.?X.hasValue()` to check whether a dependency has been confirmed gone:
+When multiple resources must be deleted in a specific order, use `resource_states.?X.orValue("") == "confirmed_deleted"` to check whether a dependency has been confirmed gone. This also keeps an unsynced remote mirror from looking like confirmed absence:
 
 ```yaml
 resources:
@@ -958,7 +958,7 @@ resources:
       delete:
         when:
           # Delete namespace only once configMapResource is confirmed gone
-          expression: "is_deleting && !resources.?configMapResource.hasValue()"
+          expression: 'is_deleting && resource_states.?configMapResource.orValue("") == "confirmed_deleted"'
 ```
 
 How this works across reconciliation cycles:
@@ -969,22 +969,24 @@ Reconciliation 1 (is_deleting=true):
   → Skip namespaceResource deletion           ✗ (configMapResource still present)
 
 Reconciliation 2 (configMapResource gone):
-  → configMapResource absent in context       -
-  → Delete namespaceResource                  ✓ (condition met)
+  → resource_states.configMapResource == "confirmed_deleted" ✓
+  → Delete namespaceResource                               ✓ (condition met)
 ```
 
-> **Note**: Use `!resources.?X.hasValue()` to check resource absence. Do not use `has()` (returns `true` even for nil-valued keys) or `== null` (fails if the key was never added due to a mid-loop executor failure).
+> **Note**: `resources.?X.hasValue()` is not a confirmed-presence check: it is also `true` for an unsynced resource's empty placeholder. For lifecycle ordering across Kubernetes and remote resources, use `resource_states.?X.orValue("") == "confirmed_deleted"`. A remote selector result comes from read mirrors only: it is `unsynced` while an unsynced mirror remains in the selector's scope, and otherwise an empty result is `confirmed_deleted`. A selector cannot see an apply or delete that has not reached a mirror yet, so use `discovery.by_name` for resources that lifecycle conditions depend on. Desire-transport lifecycle deletion requires `discovery.by_name`; selector-based deletion is rejected because it cannot identify all desires to clean up. Selector discovery remains available for reads. Do not use `has()` (returns `true` even for nil-valued keys) or `== null` (fails if the key was never added due to a mid-loop executor failure).
 
 #### Post-delete context
 
-After deleting a resource, the executor rediscovers it to determine its actual state and updates `resources.X` accordingly:
+After deleting a resource, the executor rediscovers it to determine its actual state and updates `resources.X` accordingly. Desire-transport resources are confirmed by the applier's delete desire status instead of rediscovery, because the read mirror can lag the deletion:
 
-| Post-delete state | `resources.X` | Effect on dependents |
-|---|---|---|
-| Resource confirmed gone (NotFound) | absent from context | Dependents can cascade in the same reconciliation |
-| Resource still present (finalizers or Maestro async) | existing object | Dependents wait for the next reconciliation |
+| Post-delete state | `resources.X` | `resource_states.X` | Effect on dependents |
+|---|---|---|---|
+| Resource confirmed gone (NotFound, or the desire transport's delete confirmed) and desire cleanup succeeded | absent from context | `confirmed_deleted` | Dependents later in the list can cascade in the same reconciliation |
+| Resource still present (finalizers, Maestro async, or an unconfirmed desire delete) | existing object | `present` | Dependents wait for the next reconciliation |
+| Desire delete not yet confirmed and no mirrored object | empty placeholder | `unsynced` | Dependents wait for a later reconciliation |
+| Desire cleanup failed after confirmation | last mirrored object, or empty placeholder | `unsynced` | Dependents wait; execution fails |
 
-This means same-reconciliation cascading works for Kubernetes resources without finalizers. Resources with finalizers or Maestro ManifestWorks defer to the next reconciliation.
+This means same-reconciliation cascading works for Kubernetes resources without finalizers, and for desire-transport resources whose delete the applier has confirmed and whose desire cleanup succeeded. A cleanup failure does not retract the applier's confirmation, but it keeps dependent gates closed in that execution. Resources with finalizers or Maestro ManifestWorks defer to the next reconciliation. A dependent listed before the resource it waits for sees the result on the next reconciliation, whatever the transport. Once a confirmed deletion's desires are cleaned up, later reconciliations find no desire records and report `confirmed_deleted` again.
 
 #### propagationPolicy
 
@@ -1054,8 +1056,8 @@ Use `adapter.executionError` in Health/Finalized conditions to detect any failur
 Adapters that handle deletion must report a `Finalized` condition that signals to the HyperFleet API when cleanup is complete. The condition must guard against three failure modes:
 
 1. **Not yet deleting** — `is_deleting` prevents reporting `Finalized=True` before deletion is requested
-2. **Executor failed mid-loop** — `adapter.executionStatus == "success"` prevents `Finalized=True` when some resources were never processed (their context keys are absent, making `hasValue()` return `false` incorrectly)
-3. **Resources still present** — `!resources.?X.hasValue()` confirms the resource is actually gone
+2. **Executor failed mid-loop** — `adapter.executionStatus == "success"` prevents `Finalized=True` when some resources were never processed (their context keys are absent, making absence checks return `true` incorrectly)
+3. **Resources still present** — `resource_states.?X.orValue("") == "confirmed_deleted"` confirms the resource is actually gone
 
 ```yaml
 - type: "Finalized"
@@ -1063,7 +1065,7 @@ Adapters that handle deletion must report a `Finalized` condition that signals t
     expression: |
       is_deleting
         && adapter.?executionStatus.orValue("") == "success"
-        && !resources.?clusterNamespace.hasValue()
+        && resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
       ? "True" : "False"
   reason:
     expression: |
@@ -1071,7 +1073,7 @@ Adapters that handle deletion must report a `Finalized` condition that signals t
       ? "NotDeleting"
       : adapter.?executionStatus.orValue("") != "success"
         ? "AdapterUnhealthy"
-        : !resources.?clusterNamespace.hasValue()
+        : resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
           ? "CleanupConfirmed"
           : "CleanupInProgress"
   message:
@@ -1080,7 +1082,7 @@ Adapters that handle deletion must report a `Finalized` condition that signals t
       ? "No pending deletion for this adapter instance"
       : adapter.?executionStatus.orValue("") != "success"
         ? "Cannot confirm cleanup while adapter is unhealthy"
-        : !resources.?clusterNamespace.hasValue()
+        : resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
           ? "All managed resources deleted and verified"
           : "Resource cleanup in progress"
 ```

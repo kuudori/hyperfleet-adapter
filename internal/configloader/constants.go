@@ -6,18 +6,26 @@ package configloader
 
 // Field names
 const (
-	FieldAdapter       = "adapter"
-	FieldHyperfleetAPI = "hyperfleet_api"
-	FieldKubernetes    = "kubernetes"
-	FieldParams        = "params"
-	FieldPreconditions = "preconditions"
-	FieldResources     = "resources"
-	FieldPost          = "post"
-	FieldEnv           = "env"
-	FieldEvent         = "event"
-	FieldTransports    = "transports"
-	FieldStores        = "stores"
+	FieldAdapter        = "adapter"
+	FieldHyperfleetAPI  = "hyperfleet_api"
+	FieldKubernetes     = "kubernetes"
+	FieldParams         = "params"
+	FieldPreconditions  = "preconditions"
+	FieldResources      = "resources"
+	FieldResourceStates = "resource_states"
+	FieldPost           = "post"
+	FieldEnv            = "env"
+	FieldEvent          = "event"
+	FieldTransports     = "transports"
+	FieldStores         = "stores"
 )
+
+// ErrMsgDesireSelectorDeleteUnsupported is shared between config-load validation
+// (validator.go) and the executor's runtime guard (executeDesireResourceDelete),
+// which independently rejects selector-based desire deletion for configs built
+// without going through the validator (e.g. tests, dry-run construction).
+const ErrMsgDesireSelectorDeleteUnsupported = "selector-based lifecycle deletion is unsupported for " +
+	"desire transport; use discovery.by_name"
 
 // Adapter field names
 const (

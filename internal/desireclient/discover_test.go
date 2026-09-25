@@ -7,6 +7,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -125,6 +126,87 @@ func TestDiscoverResources_SkipsNotFoundFalseDesire(t *testing.T) {
 	list, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.NoError(t, err)
 	assert.Empty(t, list.Items, "Successful=False/NotFound desire must not appear in discovery")
+}
+
+func TestDiscoverResources_SelectorIgnoresApplyAndDeleteDesires(t *testing.T) {
+	// Selector results come from read mirrors only. The partition is shared by
+	// every target of the same kind, so another target's apply or unconfirmed
+	// delete must not make this selector's result uncertain.
+	tests := []struct {
+		seed      func(t *testing.T, ctx context.Context, store *memory.Store)
+		name      string
+		namespace string
+	}{
+		{
+			name: "unrelated pending delete in the partition",
+			seed: func(t *testing.T, ctx context.Context, store *memory.Store) {
+				desiretest.PutDeleteDesire(t, ctx, store,
+					testID.WithNamespace("other-tenant").WithName("other-config").Delete(), testOwner,
+					metav1.ConditionFalse, desire.ReasonWaitingForDeletion)
+			},
+		},
+		{
+			name:      "pending apply behind an old NotFound read",
+			namespace: testNamespace,
+			seed: func(t *testing.T, ctx context.Context, store *memory.Store) {
+				_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
+					Identity: testID.Apply(), Owner: testOwner,
+					Spec: desire.ApplySpec{KubeContent: []byte(`{
+						"apiVersion":"v1","kind":"ConfigMap",
+						"metadata":{"name":"my-config","namespace":"default","labels":{"app":"pending"}}
+					}`)},
+				})
+				require.NoError(t, err)
+				desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testID.Read(), testOwner)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			store := newMemoryStore()
+			tt.seed(t, ctx, store)
+
+			list, err := newTestClient(store).DiscoverResources(ctx, testGVK(),
+				&manifest.DiscoveryConfig{Namespace: tt.namespace, LabelSelector: "app=pending"}, testTransportContext())
+
+			require.NoError(t, err)
+			assert.Empty(t, list.Items)
+		})
+	}
+}
+
+func TestDiscoverResources_SelectorWithUnsyncedReadInScopeIsNotSyncedYet(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	desiretest.PutUnsyncedReadDesire(t, ctx, store, testID.WithName("syncing-config").Read(), testOwner)
+	c := newTestClient(store)
+
+	_, err := c.DiscoverResources(ctx, testGVK(),
+		&manifest.DiscoveryConfig{Namespace: testNamespace, LabelSelector: "app=missing"}, testTransportContext())
+	require.ErrorIs(t, err, ErrNotSyncedYet, "an unsynced mirror in scope might still match")
+
+	list, err := c.DiscoverResources(ctx, testGVK(),
+		&manifest.DiscoveryConfig{Namespace: "other", LabelSelector: "app=missing"}, testTransportContext())
+	require.NoError(t, err, "an unsynced mirror outside the selector's namespace cannot match")
+	assert.Empty(t, list.Items)
+}
+
+func TestDiscoverResources_ConfirmedDeleteStillReturnsStaleMatchingRead(t *testing.T) {
+	ctx := t.Context()
+	store := newMemoryStore()
+	c := newTestClient(store)
+	content := []byte(`{
+		"apiVersion":"v1","kind":"ConfigMap",
+		"metadata":{"name":"my-config","namespace":"default","labels":{"app":"deleted"}}
+	}`)
+	desiretest.PutSyncedReadDesire(t, ctx, store, testID.Read(), testOwner, content)
+	desiretest.PutConfirmedDeleteDesire(t, ctx, store, testID.Delete(), testOwner)
+
+	list, err := c.DiscoverResources(ctx, testGVK(),
+		&manifest.DiscoveryConfig{Namespace: testNamespace, LabelSelector: "app=deleted"}, testTransportContext())
+	require.NoError(t, err)
+	require.Len(t, list.Items, 1, "ordinary selector discovery returns the mirror")
 }
 
 func TestDiscoverResources_SkipsUndecodableContentButKeepsOthers(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // newMockAPIClient creates a new mock API client for convenience
@@ -184,6 +185,36 @@ func TestExecutionContext(t *testing.T) {
 	assert.Empty(t, execCtx.Params)
 	assert.Empty(t, execCtx.Resources)
 	assert.Equal(t, string(StatusSuccess), execCtx.Adapter.ExecutionStatus)
+}
+
+func TestExecutionContext_GetCELVariables_ResourceStates(t *testing.T) {
+	execCtx := NewExecutionContext(t.Context(), nil, nil)
+	execCtx.Resources["remoteConfig"] = &unstructured.Unstructured{Object: map[string]interface{}{
+		"status": map[string]interface{}{"availableReplicas": int64(3)},
+	}}
+	execCtx.Resources["deletedConfig"] = nil
+	execCtx.ResourceStates["remoteConfig"] = ResourceStatePresent
+	execCtx.ResourceStates["pendingConfig"] = ResourceStateUnsynced
+	execCtx.ResourceStates["deletedConfig"] = ResourceStateConfirmedDeleted
+
+	variables := execCtx.GetCELVariables()
+
+	resources, ok := variables[configloader.FieldResources].(map[string]interface{})
+	require.True(t, ok)
+	remoteConfig := resources["remoteConfig"].(map[string]interface{})
+	status := remoteConfig["status"].(map[string]interface{})
+	assert.Equal(t, int64(3), status["availableReplicas"])
+	assert.NotContains(t, resources, "deletedConfig")
+	assert.Equal(t, map[string]interface{}{}, resources["pendingConfig"],
+		"an unsynced resource uses a placeholder rather than a discovered object")
+
+	states, ok := variables[configloader.FieldResourceStates].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, map[string]interface{}{
+		"remoteConfig":  "present",
+		"pendingConfig": "unsynced",
+		"deletedConfig": "confirmed_deleted",
+	}, states)
 }
 
 func TestExecutionContext_SetError(t *testing.T) {

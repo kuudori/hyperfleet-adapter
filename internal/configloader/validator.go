@@ -481,6 +481,9 @@ func (v *TaskConfigValidator) initCELEnv() error {
 			root = varName[:idx]
 		}
 
+		if root == FieldResourceStates {
+			continue
+		}
 		if addedRoots[root] {
 			continue
 		}
@@ -491,6 +494,10 @@ func (v *TaskConfigValidator) initCELEnv() error {
 
 	if !addedRoots[FieldResources] {
 		options = append(options, cel.Variable(FieldResources, cel.MapType(cel.StringType, cel.DynType)))
+	}
+
+	if !addedRoots[FieldResourceStates] {
+		options = append(options, cel.Variable(FieldResourceStates, cel.MapType(cel.StringType, cel.StringType)))
 	}
 
 	if !addedRoots[FieldAdapter] {
@@ -891,6 +898,11 @@ func (v *TaskConfigValidator) validateLifecycleConfig() {
 		if resource.Lifecycle.Delete != nil {
 			del := resource.Lifecycle.Delete
 			basePath := fmt.Sprintf("%s[%d].%s.%s", FieldResources, i, FieldLifecycle, FieldLifecycleDelete)
+			if resource.Transport != nil && resource.Transport.Desire != nil && resource.Discovery != nil &&
+				resource.Discovery.ByName == "" && resource.Discovery.BySelectors != nil &&
+				len(resource.Discovery.BySelectors.LabelSelector) > 0 {
+				v.errors.Add(basePath, ErrMsgDesireSelectorDeleteUnsupported)
+			}
 
 			// discovery is required — without it executeResourceDelete cannot locate
 			// the resource and will silently declare it "already deleted" without calling DeleteResource.

@@ -21,6 +21,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
+const (
+	desireDeletionPendingReason     = "desire deletion pending"
+	resourceAlreadyDeletedReason    = "resource already deleted or never existed"
+	resourceDeletionConfirmedReason = "resource deletion confirmed by transport"
+)
+
 // ResourceExecutor creates and updates Kubernetes resources
 type ResourceExecutor struct {
 	registry transportclient.Registry
@@ -47,6 +53,9 @@ func (re *ResourceExecutor) ExecuteAll(
 ) ([]ResourceResult, error) {
 	if execCtx.Resources == nil {
 		execCtx.Resources = make(map[string]interface{})
+	}
+	if execCtx.ResourceStates == nil {
+		execCtx.ResourceStates = make(map[string]ResourceState)
 	}
 
 	// Pre-discover all resources before evaluating any lifecycle.create.when or lifecycle.delete.when expression.
@@ -292,13 +301,44 @@ func (re *ResourceExecutor) renderToBytes(
 	return manifest.RenderStringManifest(manifestStr, execCtx.Params)
 }
 
-// discoverResource discovers the applied resource using the discovery config.
-// For k8s transport: discovers the K8s resource by name or label selector.
-// For maestro transport: discovers the ManifestWork by name or label selector.
-// The discovered resource is stored in execCtx.Resources for post-action CEL evaluation.
+// discoverResource discovers the resource using the discovery config.
+// It supports by-name and label-selector discovery for the configured transport.
+// It records the discovery outcome in execCtx.ResourceStates and returns the
+// discovered object to callers, which decide whether to store it in
+// execCtx.Resources for CEL evaluation.
 type discoveryTarget struct {
 	Namespace string
 	Name      string
+}
+
+func (re *ResourceExecutor) recordDiscoveryState(
+	resource configloader.Resource,
+	execCtx *ExecutionContext,
+	discovered *unstructured.Unstructured,
+	discoverErr error,
+) {
+	switch {
+	case discovered != nil:
+		execCtx.ResourceStates[resource.Name] = ResourceStatePresent
+	case errors.Is(discoverErr, desireclient.ErrNotSyncedYet):
+		// ErrNotSyncedYet is produced only by the desire transport, so this
+		// check alone identifies it without asserting the transport's type.
+		execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
+	case apierrors.IsNotFound(discoverErr):
+		// An empty selector result confirms absence from read mirrors only;
+		// pending applies or deletes that have not reached a mirror are not
+		// visible to selectors.
+		execCtx.ResourceStates[resource.Name] = ResourceStateConfirmedDeleted
+	}
+}
+
+// deletePropagationPolicy returns the resource's configured lifecycle.delete
+// propagation policy, defaulting to "Background" when unset.
+func deletePropagationPolicy(resource configloader.Resource) string {
+	if resource.Lifecycle.Delete.PropagationPolicy != "" {
+		return resource.Lifecycle.Delete.PropagationPolicy
+	}
+	return "Background"
 }
 
 func (re *ResourceExecutor) renderDiscoveryTarget(
@@ -340,7 +380,9 @@ func (re *ResourceExecutor) discoverResource(
 	// Discover by name
 	if discovery.ByName != "" {
 		gvk := re.resolveGVK(resource)
-		return transportClient.GetResource(ctx, gvk, dt.Namespace, dt.Name, transportTarget)
+		discovered, discoverErr := transportClient.GetResource(ctx, gvk, dt.Namespace, dt.Name, transportTarget)
+		re.recordDiscoveryState(resource, execCtx, discovered, discoverErr)
+		return discovered, discoverErr
 	}
 
 	// Discover by label selector
@@ -368,14 +410,19 @@ func (re *ResourceExecutor) discoverResource(
 
 		list, err := transportClient.DiscoverResources(ctx, gvk, discoveryConfig, transportTarget)
 		if err != nil {
+			re.recordDiscoveryState(resource, execCtx, nil, err)
 			return nil, err
 		}
 
 		if len(list.Items) == 0 {
-			return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: gvk.Kind}, "")
+			notFoundErr := apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: gvk.Kind}, "")
+			re.recordDiscoveryState(resource, execCtx, nil, notFoundErr)
+			return nil, notFoundErr
 		}
 
-		return manifest.GetLatestGenerationFromList(list), nil
+		discovered := manifest.GetLatestGenerationFromList(list)
+		re.recordDiscoveryState(resource, execCtx, discovered, nil)
+		return discovered, nil
 	}
 
 	return nil, fmt.Errorf("discovery config must specify byName or bySelectors")
@@ -538,7 +585,9 @@ func hasLifecycleConfig(resources []configloader.Resource) bool {
 // lifecycle.delete.when CEL expressions regardless of list order.
 //
 // NotFound is non-fatal: the resource stays absent from context (resources.?X.hasValue()
-// returns false), which is correct for "not yet created" or "already deleted".
+// returns false), which is correct for "not yet created" or "already deleted". A desire
+// mirror that has not synced yet is also left out of execCtx.Resources, but its
+// "unsynced" discovery state keeps CEL from reading it as absent.
 //
 // Any other error (RBAC denial, network failure, API server error) is returned immediately.
 // These transient errors must not be silently treated as "resource absent": doing so could
@@ -566,7 +615,8 @@ func (re *ResourceExecutor) preDiscoverAll(
 		discovered, err := re.discoverResource(ctx, resource, execCtx, transportClient, transportTarget)
 		if err != nil {
 			if apierrors.IsNotFound(err) || errors.Is(err, desireclient.ErrNotSyncedYet) {
-				// Resource does not exist yet — leave absent from context.
+				// Absent or not synced yet: leave it out of context. discoverResource
+				// recorded which one in execCtx.ResourceStates.
 				continue
 			}
 			// Transient error (RBAC, network, API server): propagate so the reconciliation
@@ -679,6 +729,9 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 // This allows same-reconciliation cascading for K8s resources without finalizers, while
 // correctly deferring to the next reconciliation for resources with finalizers or async
 // Maestro deletions.
+//
+// Transports that implement transportclient.DeletionLifecycle confirm deletion from their
+// own delete status instead; see executeDesireResourceDelete.
 func (re *ResourceExecutor) executeResourceDelete(
 	ctx context.Context,
 	resource configloader.Resource,
@@ -703,6 +756,10 @@ func (re *ResourceExecutor) executeResourceDelete(
 		Name:      resource.Name,
 		Status:    StatusSuccess,
 		Operation: manifest.OperationDelete,
+	}
+	if lifecycle, ok := transportClient.(transportclient.DeletionLifecycle); ok {
+		return re.executeDesireResourceDelete(ctx, resource, execCtx, transportClient,
+			lifecycle, transportTarget, gvk, resourceType, startTime, result)
 	}
 
 	// Step 1: Discover the existing resource
@@ -748,7 +805,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 		}
 
 		slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
-		result.OperationReason = "resource already deleted or never existed"
+		result.OperationReason = resourceAlreadyDeletedReason
 		re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusSuccess)
 		re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
 		return result, nil
@@ -769,10 +826,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 	}
 
 	// Step 4: Build delete options
-	propagationPolicy := "Background"
-	if resource.Lifecycle.Delete.PropagationPolicy != "" {
-		propagationPolicy = resource.Lifecycle.Delete.PropagationPolicy
-	}
+	propagationPolicy := deletePropagationPolicy(resource)
 	deleteOpts := &transportclient.DeleteOptions{PropagationPolicy: propagationPolicy}
 
 	// Step 5: Delete via transport client
@@ -839,6 +893,117 @@ func (re *ResourceExecutor) executeResourceDelete(
 	re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
 
 	return result, nil
+}
+
+// executeDesireResourceDelete deletes a by-name target through a transport that deletes
+// asynchronously. The transport's delete status, not a re-discovered mirror, confirms
+// deletion (HYPERFLEET-1439):
+//   - Confirmed: store the deleted sentinel so later resources and post-actions see the
+//     resource as gone, then remove the transport's bookkeeping.
+//   - Pending: wait. Dependents keep seeing the mirrored object, or the unsynced
+//     placeholder when there is none.
+//   - None: discovery decides. NotFound means nothing is mirrored and no work is in
+//     flight (already cleaned up or never created), so the sentinel is stored once the
+//     bookkeeping is gone. A present or unsynced target gets a delete request, which is
+//     probed again so a fast transport can confirm within this event.
+func (re *ResourceExecutor) executeDesireResourceDelete(
+	ctx context.Context,
+	resource configloader.Resource,
+	execCtx *ExecutionContext,
+	client transportclient.TransportClient,
+	lifecycle transportclient.DeletionLifecycle,
+	target transportclient.TransportContext,
+	gvk schema.GroupVersionKind,
+	resourceType string,
+	startTime time.Time,
+	result ResourceResult,
+) (ResourceResult, error) {
+	defer func() { re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime)) }()
+	fail := func(message string, err error) (ResourceResult, error) {
+		result.Status = StatusFailed
+		result.Error = err
+		re.recordResourceError(execCtx, resource, err)
+		re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusError)
+		return result, NewExecutorError(PhaseResources, resource.Name, message, err)
+	}
+	succeed := func(reason string) ResourceResult {
+		result.OperationReason = reason
+		re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusSuccess)
+		return result
+	}
+	pending := func() ResourceResult {
+		if execCtx.ResourceStates[resource.Name] != ResourceStatePresent {
+			execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
+		}
+		result.OperationReason = desireDeletionPendingReason
+		return result
+	}
+	markDeleted := func() {
+		execCtx.ResourceStates[resource.Name] = ResourceStateConfirmedDeleted
+		execCtx.Resources[resource.Name] = nil
+	}
+
+	// Delete desires are keyed by name, so a selector cannot identify the target.
+	if resource.Discovery == nil || resource.Discovery.ByName == "" {
+		return fail("unsupported desire deletion discovery",
+			errors.New(configloader.ErrMsgDesireSelectorDeleteUnsupported))
+	}
+	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.Params)
+	if err != nil {
+		return fail("failed to render deletion target", err)
+	}
+	result.Kind, result.Namespace, result.ResourceName = gvk.Kind, dt.Namespace, dt.Name
+
+	state, err := lifecycle.ProbeDeletion(ctx, gvk, dt.Namespace, dt.Name, target)
+	if err != nil {
+		return fail("failed to probe deletion", err)
+	}
+	if state == transportclient.DeletionNone {
+		discovered, discoverErr := re.discoverResource(ctx, resource, execCtx, client, target)
+		switch {
+		case apierrors.IsNotFound(discoverErr):
+			cleanupErr := lifecycle.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, target)
+			if errors.Is(cleanupErr, desireclient.ErrDeletionPending) {
+				// Work appeared after discovery, so absence is no longer conclusive.
+				return pending(), nil
+			}
+			if cleanupErr != nil {
+				execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
+				return fail("desire cleanup failed", cleanupErr)
+			}
+			slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
+			markDeleted()
+			return succeed(resourceAlreadyDeletedReason), nil
+		case discoverErr != nil && !errors.Is(discoverErr, desireclient.ErrNotSyncedYet):
+			return fail("failed to discover resource for deletion", discoverErr)
+		}
+		if discovered != nil {
+			execCtx.Resources[resource.Name] = discovered
+		}
+		result.DiscoveredState = discovered
+		if deleteErr := client.DeleteResource(ctx, gvk, dt.Namespace, dt.Name,
+			&transportclient.DeleteOptions{PropagationPolicy: deletePropagationPolicy(resource)}, target); deleteErr != nil {
+			return fail("failed to delete resource", deleteErr)
+		}
+		if state, err = lifecycle.ProbeDeletion(ctx, gvk, dt.Namespace, dt.Name, target); err != nil {
+			return fail("failed to probe deletion after request", err)
+		}
+	}
+	if state != transportclient.DeletionConfirmed {
+		slog.InfoContext(ctx, "resource delete: waiting for transport confirmation", "resource", resource.Name)
+		return pending(), nil
+	}
+
+	// The delete status confirms absence even while the read mirror still shows the
+	// object. Expose the deleted sentinel after cleanup so a cleanup failure does
+	// not release dependent deletion gates during this execution.
+	slog.InfoContext(ctx, "resource delete: confirmed by transport", "resource", resource.Name)
+	if cleanupErr := lifecycle.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, target); cleanupErr != nil {
+		execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
+		return fail("desire cleanup failed", cleanupErr)
+	}
+	markDeleted()
+	return succeed(resourceDeletionConfirmedReason), nil
 }
 
 // recordResourceError sets execCtx.Adapter.ExecutionError (first error wins) and populates

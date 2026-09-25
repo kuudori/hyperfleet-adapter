@@ -2,7 +2,6 @@ package desireclient
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -13,14 +12,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/json"
 )
 
-// GetResource implements transportclient.TransportClient. It reads the
-// mirrored live object from the read desire's status, distinguishing three
-// outcomes per the eventual-consistency contract
-// (docs/adapter-authoring-guide.md): not-synced-yet (ErrNotSyncedYet),
-// confirmed-absent (apierrors.NewNotFound), and present (the mirrored
-// object).
+// GetResource implements transportclient.TransportClient. It returns the
+// object mirrored by the read desire. Absence is conclusive only when no apply
+// or unconfirmed delete is in flight for the target: a NotFound mirror, or no
+// read desire at all, is then reported as apierrors.NewNotFound, and otherwise
+// as ErrNotSyncedYet. A target with no desire records is therefore not found,
+// whether it was never created or its desires were already cleaned up. A
+// confirmed delete never hides a mirrored object here; the executor confirms
+// deletion through transportclient.DeletionLifecycle.
 func (c *Client) GetResource(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,
@@ -32,20 +34,51 @@ func (c *Client) GetResource(
 		return nil, err
 	}
 
-	id, err := buildIdentity(tc, desire.TypeRead, gvk, namespace, name)
+	readID, err := buildIdentity(tc, desire.TypeRead, gvk, namespace, name)
 	if err != nil {
 		return nil, err
 	}
 
-	rd, err := c.store.GetReadDesire(ctx, id)
-	if errors.Is(err, desire.ErrNotFound) {
-		return nil, ErrNotSyncedYet
-	}
-	if err != nil {
+	rd, err := c.store.GetReadDesire(ctx, readID)
+	switch {
+	case errors.Is(err, desire.ErrNotFound):
+		// No mirror to decode; in-flight work below decides whether it is absent.
+	case err != nil:
 		return nil, fmt.Errorf("desireclient: failed to get read desire for %s/%s: %w", namespace, name, err)
+	default:
+		object, readErr := c.decodeReadDesire(gvk, namespace, name, rd)
+		if !apierrors.IsNotFound(readErr) {
+			return object, readErr
+		}
+	}
+	// A missing or NotFound mirror cannot confirm absence while a delete or
+	// apply is still in flight: a NotFound mirror can predate either write.
+	deleteID, err := buildIdentity(tc, desire.TypeDelete, gvk, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	dd, err := c.store.GetDeleteDesire(ctx, deleteID)
+	switch {
+	case err == nil && !desire.IsDeleted(dd.Status):
+		return nil, ErrNotSyncedYet
+	case err != nil && !errors.Is(err, desire.ErrNotFound):
+		return nil, fmt.Errorf("desireclient: failed to get delete desire for %s/%s: %w",
+			namespace, name, err)
 	}
 
-	return c.decodeReadDesire(gvk, namespace, name, rd)
+	applyID, err := buildIdentity(tc, desire.TypeApply, gvk, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+	_, err = c.store.GetApplyDesire(ctx, applyID)
+	switch {
+	case err == nil:
+		return nil, ErrNotSyncedYet
+	case !errors.Is(err, desire.ErrNotFound):
+		return nil, fmt.Errorf("desireclient: failed to get apply desire for %s/%s: %w",
+			namespace, name, err)
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: tc.Resource}, name)
 }
 
 // decodeReadDesire translates a ReadDesire's status conditions into the
@@ -86,10 +119,10 @@ func (c *Client) decodeReadDesire(
 func decodeKubeContent(
 	kubeContent []byte, namespace, name string,
 ) (*unstructured.Unstructured, error) {
-	obj := &unstructured.Unstructured{}
-	if err := json.Unmarshal(kubeContent, obj); err != nil {
+	var object map[string]any
+	if err := json.Unmarshal(kubeContent, &object); err != nil {
 		return nil, fmt.Errorf("desireclient: failed to decode mirrored content for %s/%s: %w", namespace, name, err)
 	}
 	// return the possibly stale mirror, even in the case of a KubeAPIError or PreCheckFailed
-	return obj, nil
+	return &unstructured.Unstructured{Object: object}, nil
 }

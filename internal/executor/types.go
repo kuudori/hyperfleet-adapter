@@ -40,6 +40,21 @@ const (
 	StatusSkipped ExecutionStatus = "skipped"
 )
 
+// ResourceState describes a discovery outcome exposed to CEL.
+type ResourceState string
+
+const (
+	// ResourceStateUnsynced means the adapter cannot safely release an absence
+	// gate yet: the mirror has not synced, work is in flight, or cleanup failed.
+	ResourceStateUnsynced ResourceState = "unsynced"
+	// ResourceStatePresent means discovery returned an object, including an empty object.
+	ResourceStatePresent ResourceState = "present"
+	// ResourceStateConfirmedDeleted means the object is confirmed absent with no
+	// transport work pending, either by discovery or by the transport's delete
+	// status. It does not prove the object ever existed.
+	ResourceStateConfirmedDeleted ResourceState = "confirmed_deleted"
+)
+
 // ResourceRef represents a reference to a HyperFleet resource
 type ResourceRef struct {
 	ID   string `json:"id,omitempty"`
@@ -189,6 +204,8 @@ type ExecutionContext struct {
 	// Nested discoveries are also added as top-level entries keyed by nested discovery name.
 	// Values are expected to be *unstructured.Unstructured.
 	Resources map[string]interface{}
+	// ResourceStates holds the latest discovery state keyed by resource name.
+	ResourceStates map[string]ResourceState
 	// Evaluations tracks all condition evaluations for debugging/auditing
 	Evaluations []EvaluationRecord
 	// Adapter holds adapter execution metadata
@@ -264,12 +281,13 @@ func NewExecutionContext(
 	config *configloader.Config,
 ) *ExecutionContext {
 	return &ExecutionContext{
-		Ctx:         ctx,
-		Config:      config,
-		EventData:   eventData,
-		Params:      make(map[string]interface{}),
-		Resources:   make(map[string]interface{}),
-		Evaluations: make([]EvaluationRecord, 0),
+		Ctx:            ctx,
+		Config:         config,
+		EventData:      eventData,
+		Params:         make(map[string]interface{}),
+		Resources:      make(map[string]interface{}),
+		ResourceStates: make(map[string]ResourceState),
+		Evaluations:    make([]EvaluationRecord, 0),
 		Adapter: AdapterMetadata{
 			ExecutionStatus: string(StatusSuccess),
 		},
@@ -375,7 +393,8 @@ func (ec *ExecutionContext) SetSkipped(reason, message string) {
 }
 
 // GetCELVariables returns all variables for CEL evaluation.
-// This includes Params, adapter metadata, and resources.
+// This includes params, adapter metadata, discovered resources, resource states,
+// event data, and environment variables.
 func (ec *ExecutionContext) GetCELVariables() map[string]interface{} {
 	result := make(map[string]interface{})
 
@@ -385,14 +404,12 @@ func (ec *ExecutionContext) GetCELVariables() map[string]interface{} {
 	}
 
 	// Add adapter metadata (use helper from utils.go)
-	result["adapter"] = adapterMetadataToMap(&ec.Adapter)
+	result[configloader.FieldAdapter] = adapterMetadataToMap(&ec.Adapter)
 
 	// Add resources (convert unstructured to maps for CEL evaluation).
-	// Deleted resources (nil sentinels) are intentionally omitted from this map.
-	// A missing key returns Optional.none() via optional access, so
-	// "!resources.?clusterJob.hasValue()" correctly evaluates to true when a
-	// resource is confirmed deleted. Use "adapter.?resourcesSkipped.orValue(false)"
-	// to distinguish "deleted" from "never processed" in Finalized conditions.
+	// Unsynced resources get an empty placeholder so legacy absence checks do not
+	// mistake an uncertain discovery result for confirmed deletion. Use
+	// resource_states to distinguish a placeholder from a real discovered object.
 	resources := make(map[string]interface{})
 	for name, val := range ec.Resources {
 		if val == nil {
@@ -413,9 +430,19 @@ func (ec *ExecutionContext) GetCELVariables() map[string]interface{} {
 			resources[name] = nested
 		}
 	}
-	result["resources"] = resources
-	result["event"] = ec.EventData
-	result["env"] = buildEnvMap()
+	resourceStates := make(map[string]any, len(ec.ResourceStates))
+	for name, state := range ec.ResourceStates {
+		if state == ResourceStateUnsynced {
+			if _, exists := resources[name]; !exists {
+				resources[name] = map[string]any{}
+			}
+		}
+		resourceStates[name] = string(state)
+	}
+	result[configloader.FieldResources] = resources
+	result[configloader.FieldResourceStates] = resourceStates
+	result[configloader.FieldEvent] = ec.EventData
+	result[configloader.FieldEnv] = buildEnvMap()
 
 	return result
 }
