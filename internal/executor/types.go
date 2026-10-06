@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"maps"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
@@ -196,10 +197,17 @@ type ExecutionContext struct {
 	Config *configloader.Config
 	// EventData is the parsed event data payload
 	EventData map[string]interface{}
-	// Params holds extracted parameters and captured fields
-	// - Populated during param extraction phase with event/env data
-	// - Populated during precondition phase with captured API response fields
+	// Params holds only author-defined variables: extracted params, API-call
+	// precondition responses, captures and post payloads. It does not hold the
+	// built-in variables (adapter, config, env, event). templateVariables and
+	// GetCELVariables add them on each read.
 	Params map[string]interface{}
+	// configVariable is the redacted config map that templates and CEL read as
+	// config. extractParams sets it once.
+	configVariable map[string]any
+	// envVariable is the environment snapshot that templates, CEL and env params
+	// read. NewExecutionContext takes the snapshot.
+	envVariable map[string]any
 	// Resources holds discovered resources keyed by resource name.
 	// Nested discoveries are also added as top-level entries keyed by nested discovery name.
 	// Values are expected to be *unstructured.Unstructured.
@@ -285,6 +293,7 @@ func NewExecutionContext(
 		Config:         config,
 		EventData:      eventData,
 		Params:         make(map[string]interface{}),
+		envVariable:    buildEnvMap(),
 		Resources:      make(map[string]interface{}),
 		ResourceStates: make(map[string]ResourceState),
 		Evaluations:    make([]EvaluationRecord, 0),
@@ -392,19 +401,39 @@ func (ec *ExecutionContext) SetSkipped(reason, message string) {
 	}
 }
 
-// GetCELVariables returns all variables for CEL evaluation.
-// This includes params, adapter metadata, discovered resources, resource states,
-// event data, and environment variables.
-func (ec *ExecutionContext) GetCELVariables() map[string]interface{} {
-	result := make(map[string]interface{})
-
-	// Copy all params
-	for k, v := range ec.Params {
-		result[k] = v
+// adapterVariable builds the adapter variable: the adapter name and version plus
+// the execution metadata. No other code builds this map. Go templates and CEL
+// both read it. Build it on each read, because the execution metadata changes.
+func (ec *ExecutionContext) adapterVariable() map[string]any {
+	adapter := adapterMetadataToMap(&ec.Adapter)
+	var name, version string
+	if ec.Config != nil {
+		name, version = ec.Config.Adapter.Name, ec.Config.Adapter.Version
 	}
+	adapter[configloader.FieldName] = name
+	adapter[configloader.FieldVersion] = version
+	return adapter
+}
 
-	// Add adapter metadata (use helper from utils.go)
-	result[configloader.FieldAdapter] = adapterMetadataToMap(&ec.Adapter)
+// templateVariables returns the variables that Go templates and CEL share: Params
+// plus the built-in variables adapter, config, env and event. A built-in variable
+// replaces a param with the same name. Call it where you use the result, because
+// Params and the execution metadata change during execution.
+func (ec *ExecutionContext) templateVariables() map[string]any {
+	vars := make(map[string]any, len(ec.Params)+len(configloader.BuiltinVariables()))
+	maps.Copy(vars, ec.Params)
+	vars[configloader.FieldAdapter] = ec.adapterVariable()
+	vars[configloader.FieldConfig] = ec.configVariable
+	vars[configloader.FieldEnv] = ec.envVariable
+	vars[configloader.FieldEvent] = ec.EventData
+	return vars
+}
+
+// GetCELVariables returns all variables for CEL evaluation: the template
+// variables (params, adapter, config, env, event) plus discovered resources and
+// their resource states.
+func (ec *ExecutionContext) GetCELVariables() map[string]any {
+	result := ec.templateVariables()
 
 	// Add resources (convert unstructured to maps for CEL evaluation).
 	// Unsynced resources get an empty placeholder so legacy absence checks do not
@@ -441,8 +470,6 @@ func (ec *ExecutionContext) GetCELVariables() map[string]interface{} {
 	}
 	result[configloader.FieldResources] = resources
 	result[configloader.FieldResourceStates] = resourceStates
-	result[configloader.FieldEvent] = ec.EventData
-	result[configloader.FieldEnv] = buildEnvMap()
 
 	return result
 }

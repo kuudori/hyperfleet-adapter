@@ -2,15 +2,17 @@ package configloader
 
 import (
 	"fmt"
+	"slices"
 )
 
 // -----------------------------------------------------------------------------
 // Built-in Variables
 // -----------------------------------------------------------------------------
 
-// builtinVariables is the list of built-in variables always available in templates/CEL
+// builtinVariables lists the built-in variables that the runtime adds to every
+// template and CEL context.
 var builtinVariables = []string{
-	"adapter", "config", "env", "event", "now", "date",
+	FieldAdapter, FieldConfig, FieldEnv, FieldEvent,
 }
 
 // BuiltinVariables returns the list of built-in variables always available in templates/CEL
@@ -18,38 +20,50 @@ func BuiltinVariables() []string {
 	return builtinVariables
 }
 
+// ReservedVariableNames returns every name that the runtime adds to CEL: the
+// built-in variables plus resources and resource_states. Params, API-call
+// preconditions, captures and post payloads cannot use these names.
+func ReservedVariableNames() []string {
+	return slices.Concat(builtinVariables, []string{FieldResources, FieldResourceStates})
+}
+
+// builtinVariableSet returns a new set that contains the built-in variables.
+func builtinVariableSet() map[string]bool {
+	set := make(map[string]bool, len(builtinVariables))
+	for _, name := range builtinVariables {
+		set[name] = true
+	}
+	return set
+}
+
 // -----------------------------------------------------------------------------
 // Config Accessors (Unified Configuration)
 // -----------------------------------------------------------------------------
 
-// GetDefinedVariables returns all variables defined in the config that can be used
-// in templates and CEL expressions. This includes:
-// - Built-in variables (adapter, now, date)
-// - Parameters from params
-// - Captured variables from preconditions
-// - Post payloads
-// - Resource aliases (resources.<name>)
-func (c *Config) GetDefinedVariables() map[string]bool {
-	vars := make(map[string]bool)
+// definedVariables returns the built-in variables, every author-defined name and
+// the resource aliases (resources.<name>). The author-defined names are the params,
+// API-call precondition responses and their captures, and post payloads. The
+// executor stores them in Params, so each one is a top-level template and CEL variable.
+func definedVariables(
+	params []Parameter, preconditions []Precondition, post *PostConfig, resources []Resource,
+) map[string]bool {
+	vars := builtinVariableSet()
 
-	if c == nil {
-		return vars
-	}
-
-	// Built-in variables
-	for _, b := range BuiltinVariables() {
-		vars[b] = true
-	}
-
-	// Parameters from params
-	for _, p := range c.Params {
+	for _, p := range params {
 		if p.Name != "" {
 			vars[p.Name] = true
 		}
 	}
 
-	// Variables from precondition captures
-	for _, precond := range c.Preconditions {
+	for _, precond := range preconditions {
+		// Only API-call preconditions store values: the response under the
+		// precondition name, plus its captures.
+		if precond.APICall == nil {
+			continue
+		}
+		if precond.Name != "" {
+			vars[precond.Name] = true
+		}
 		for _, capture := range precond.Capture {
 			if capture.Name != "" {
 				vars[capture.Name] = true
@@ -57,17 +71,15 @@ func (c *Config) GetDefinedVariables() map[string]bool {
 		}
 	}
 
-	// Post payloads
-	if c.Post != nil {
-		for _, p := range c.Post.Payloads {
+	if post != nil {
+		for _, p := range post.Payloads {
 			if p.Name != "" {
 				vars[p.Name] = true
 			}
 		}
 	}
 
-	// Resource aliases
-	for _, r := range c.Resources {
+	for _, r := range resources {
 		if r.Name != "" {
 			vars[FieldResources+"."+r.Name] = true
 		}

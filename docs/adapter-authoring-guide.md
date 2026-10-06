@@ -1905,12 +1905,13 @@ More information about deployment can be found in [Architecture repository - Hyp
 |---|---|---|
 | _(param names)_ | Extracted params as top-level names — write `clusterID`, not `params.clusterID` | `clusterID`, `region` |
 | `resources.*` | Discovered K8s resources by alias (empty during precondition phase) | `resources.managedCluster.status` |
-| `adapter.*` | Adapter execution metadata; meaningful values only in post-phase expressions | `adapter.executionStatus`, `adapter.errorMessage` |
+| `resource_states.*` | Discovery outcome by resource alias: `present`, `confirmed_deleted` or `unsynced` (empty during precondition phase) | `resource_states.?managedCluster.orValue("") == "present"` |
+| `adapter.*` | Adapter name and version, plus execution metadata that is meaningful only in post-phase expressions | `adapter.name`, `adapter.executionStatus`, `adapter.errorMessage` |
 | `env.*` | OS environment variables accessible to the process | `env.REGION`, `env.NAMESPACE` |
 | `event.*` | Triggering CloudEvent payload fields | `event.id`, `event.kind` |
-| `config.*` | Full adapter deployment config as a nested map | `config.clients.hyperfleetApi.baseUrl` |
+| `config.*` | Merged deployment and task config as a nested map with snake_case keys. The runtime redacts sensitive values. | `config.clients.hyperfleet_api.base_url` |
 
-See [CEL Conventions — Variable Reference](conventions/cel.md#variable-reference) for per-context availability and reserved name rules.
+See [CEL Conventions — Variables](conventions/cel.md#variables) for per-context availability, reserved name rules and optional-resource patterns.
 
 ```cel
 # Optional chaining — safe access to fields that may not exist
@@ -2179,6 +2180,7 @@ when:
 {{ .clusterId | lower }}                         Lowercase filter
 {{ now | date "2006-01-02T15:04:05Z07:00" }}     Current timestamp (RFC 3339)
 {{ .adapter.name }}                              Adapter name from config
+{{ .adapter.version }}                           Adapter version from config
 ```
 
 ### Structural syntax

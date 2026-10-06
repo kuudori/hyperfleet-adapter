@@ -813,6 +813,22 @@ func TestPayloadWhenCondition(t *testing.T) {
 	}
 }
 
+// A template in a later payload reads an earlier payload.
+func TestBuildPostPayloads_LaterPayloadReadsEarlierPayload(t *testing.T) {
+	pae := testPAE()
+	execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
+
+	payloads := []configloader.Payload{
+		{Name: "first", Build: map[string]interface{}{"status": "ok"}},
+		{Name: "second", Build: map[string]interface{}{"fromTemplate": "{{ .first }}"}},
+	}
+
+	skipped, err := pae.buildPostPayloads(context.Background(), payloads, execCtx)
+	require.NoError(t, err)
+	assert.Empty(t, skipped)
+	assert.JSONEq(t, `{"fromTemplate":"{\"status\":\"ok\"}"}`, execCtx.Params["second"].(string))
+}
+
 func TestPostActionSkippedWhenReferencedPayloadSkipped(t *testing.T) {
 	mockClient := hyperfleetapi.NewMockClient()
 	mockClient.DoResponse = &hyperfleetapi.Response{

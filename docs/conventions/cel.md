@@ -14,10 +14,10 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 | _(capture names)_ | any | resources, post payloads, post_action when, payload when | Named captures from `precondition.capture` are stored in params and promoted to top-level names in all downstream contexts. |
 | `resources.*` | map | resources (pre-discovery state), post payloads, post_action when, payload when | Discovered objects by alias. `present` resources expose their object; `unsynced` resources expose their last known object, or an empty placeholder when there is none; confirmed-deleted and unprocessed resources are absent. Use `resource_states` to distinguish these outcomes. |
 | `resource_states.*` | string | resources (pre-discovery state), post payloads, post_action when, payload when | Discovery outcome by resource alias: `present`, `confirmed_deleted`, or `unsynced`. Use `confirmed_deleted` when a lifecycle condition must distinguish confirmed absence from an unavailable mirror. |
-| `adapter.*` | map | all contexts[¹](#footnotes) | Adapter execution metadata. See fields below. Values are only meaningful in post-phase expressions - during params and preconditions `executionStatus` is always `"success"` and error fields are empty. |
+| `adapter.*` | map | all contexts[¹](#footnotes) | Adapter name and version, plus execution metadata. See fields below. Go templates read the same map as `{{ .adapter }}`. Execution metadata is meaningful only in post-phase expressions. During params and preconditions, `executionStatus` is always `"success"` and the error fields are empty. |
 | `env.*` | map | all contexts[¹](#footnotes) | All OS environment variables accessible to the process (`env.MY_VAR`). No declaration needed. |
 | `event.*` | map | all contexts[¹](#footnotes) | Full triggering event payload (`event.id`, `event.kind`, etc.). No declaration needed. |
-| `config.*` | map | all contexts[¹](#footnotes) | Full adapter deployment config as a nested map. |
+| `config.*` | map | all contexts[¹](#footnotes) | Merged deployment and task config as a nested map with snake_case keys (`config.clients.hyperfleet_api.base_url`). The runtime redacts sensitive values, such as TLS file paths and store credentials. A param with `source: config.<path>` reads the unredacted value. |
 
 #### Footnotes
 
@@ -27,6 +27,8 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 
 | Field | Type | Description |
 |---|---|---|
+| `adapter.name` | string | adapter name from the deployment config (`adapter.name`) |
+| `adapter.version` | string | adapter version from the deployment config (`adapter.version`) |
 | `adapter.executionStatus` | string | `"success"` or `"failed"` |
 | `adapter.resourcesSkipped` | bool | `true` when resources were intentionally skipped |
 | `adapter.skipReason` | string | why resources were skipped |
@@ -35,9 +37,31 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 | `adapter.executionError` | map or null | `{phase, step, message}` for the first failure, nil otherwise |
 | `adapter.resourceErrors` | map | per-resource error maps keyed by resource name |
 
+#### Go templates
+
+Go templates (`{{ .name }}`) read params, captures, API-call precondition responses and post payloads. They also read `adapter`, `config`, `env` and `event`, with the same shapes as in CEL. Only CEL reads `resources` and `resource_states`.
+
+#### Capture expressions
+
+`precondition.capture` fields and expressions read only the API response. They read its top-level fields, and the precondition name holds the whole response. They cannot read params or the variables above.
+
 #### Reserved names
 
-`adapter`, `resources`, `resource_states`, `env`, and `event` are **reserved** — they are overwritten by the runtime at evaluation time regardless of any param with the same name. `config` is also set by the runtime but a param named `config` would take precedence in earlier phases.
+`adapter`, `config`, `env`, `event`, `resources` and `resource_states` are **reserved**. The config loader rejects a param, API-call precondition, capture or post payload that uses one of these names.
+
+#### Optional-resource patterns
+
+`resources` and `resource_states` are empty maps before the resources phase, so guard each access:
+
+```cel
+// Field of a resource that may be missing
+resources.?x.?status.?phase.orValue("")
+
+// Discovery outcome: "present", "confirmed_deleted" or "unsynced"
+resource_states.?x.orValue("") == "confirmed_deleted"
+```
+
+`!resources.?x.hasValue()` is `false` for an unsynced resource, which keeps its last known object or an empty placeholder. Use `resource_states` for presence and lifecycle decisions.
 
 ## Custom Functions
 

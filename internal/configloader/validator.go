@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"cel.dev/cel-go/cel"
@@ -336,6 +337,7 @@ func (v *TaskConfigValidator) ValidateSemantic() error {
 
 	// Run all semantic validators
 	v.validatePreconditionAPICallForbidden()
+	v.validateReservedVariableNames()
 	v.validateParamSources()
 	v.validateParamAPICallTemplates()
 	v.validateParamFileSources()
@@ -370,6 +372,40 @@ func (v *TaskConfigValidator) validatePreconditionAPICallForbidden() {
 	}
 }
 
+// validateReservedVariableNames rejects an author-defined name that uses a reserved
+// name. The runtime replaces such a variable, so no template or CEL expression can
+// read its value. Params, API-call precondition responses, captures and post payloads
+// all become top-level template and CEL names.
+func (v *TaskConfigValidator) validateReservedVariableNames() {
+	reserved := ReservedVariableNames()
+	check := func(name, path string) {
+		if slices.Contains(reserved, name) {
+			v.errors.Add(path, fmt.Sprintf("%q is a reserved variable name (reserved: %s)",
+				name, strings.Join(reserved, ", ")))
+		}
+	}
+
+	for i, param := range v.config.Params {
+		check(param.Name, fmt.Sprintf("%s[%d].%s", FieldParams, i, FieldName))
+	}
+	for i, precond := range v.config.Preconditions {
+		// Only API-call preconditions store values: the response under the
+		// precondition name, plus its captures.
+		if precond.APICall == nil {
+			continue
+		}
+		check(precond.Name, fmt.Sprintf("%s[%d].%s", FieldPreconditions, i, FieldName))
+		for j, capture := range precond.Capture {
+			check(capture.Name, fmt.Sprintf("%s[%d].%s[%d].%s", FieldPreconditions, i, FieldCapture, j, FieldName))
+		}
+	}
+	if v.config.Post != nil {
+		for i, payload := range v.config.Post.Payloads {
+			check(payload.Name, fmt.Sprintf("%s.%s[%d].%s", FieldPost, FieldPayloads, i, FieldName))
+		}
+	}
+}
+
 func (v *TaskConfigValidator) validateParamSources() {
 	for i, param := range v.config.Params {
 		if param.Source.IsZero() || (param.Source.IsString() && strings.TrimSpace(param.Source.StringVal) == "") {
@@ -397,10 +433,7 @@ func (v *TaskConfigValidator) validateParamFileSources() {
 }
 
 func (v *TaskConfigValidator) validateParamAPICallTemplates() {
-	available := make(map[string]bool)
-	for _, b := range BuiltinVariables() {
-		available[b] = true
-	}
+	available := builtinVariableSet()
 
 	for i, param := range v.config.Params {
 		if param.Source.IsAPICall() && param.Source.APICall != nil {
@@ -448,52 +481,18 @@ func (v *TaskConfigValidator) collectDefinedVariables() {
 	v.definedVars = v.config.GetDefinedVariables()
 }
 
-// GetDefinedVariables returns all variables defined in the task config
+// GetDefinedVariables returns every variable that templates and CEL expressions
+// can read:
+// - Built-in variables (adapter, config, env, event)
+// - Params
+// - API-call precondition responses and their captures
+// - Post payloads
+// - Resource aliases (resources.<name>)
 func (c *AdapterTaskConfig) GetDefinedVariables() map[string]bool {
-	vars := make(map[string]bool)
-
 	if c == nil {
-		return vars
+		return make(map[string]bool)
 	}
-
-	// Built-in variables
-	for _, b := range BuiltinVariables() {
-		vars[b] = true
-	}
-
-	// Parameters from params
-	for _, p := range c.Params {
-		if p.Name != "" {
-			vars[p.Name] = true
-		}
-	}
-
-	// Variables from precondition captures
-	for _, precond := range c.Preconditions {
-		for _, capture := range precond.Capture {
-			if capture.Name != "" {
-				vars[capture.Name] = true
-			}
-		}
-	}
-
-	// Post payloads
-	if c.Post != nil {
-		for _, p := range c.Post.Payloads {
-			if p.Name != "" {
-				vars[p.Name] = true
-			}
-		}
-	}
-
-	// Resource aliases
-	for _, r := range c.Resources {
-		if r.Name != "" {
-			vars[FieldResources+"."+r.Name] = true
-		}
-	}
-
-	return vars
+	return definedVariables(c.Params, c.Preconditions, c.Post, c.Resources)
 }
 
 func (v *TaskConfigValidator) initCELEnv() error {

@@ -219,17 +219,20 @@ Preconditions have **two different data scopes** for capture and conditions:
 
 | Operation | Data Scope | Available Variables |
 |-----------|------------|---------------------|
-| **Capture** (`field`/`expression`) | API Response only | Only the parsed JSON response (e.g., `status.conditions`, `items[0].name`) |
-| **Conditions** (`conditions`/`expression`) | Full execution context | `params.*`, `<precondition-name>.*`, `adapter.*`, `resources.*` |
+| **Capture** (`field`/`expression`) | API Response only | Top-level fields of the parsed JSON response (e.g., `status.conditions`, `items[0].name`). `<precondition-name>` holds the whole response. |
+| **Conditions** (`conditions`/`expression`) | Full execution context | param names, `<precondition-name>.*`, `adapter.*`, `config.*`, `env.*`, `event.*`, `resources.*` |
 
 **Conditions scope details:**
 
 | Variable | Source |
 |----------|--------|
-| `params.*` | Original extracted params |
+| `<param-name>` | Extracted params, as top-level names |
 | `<precondition-name>.*` | Full API response from that precondition (e.g., `checkClusterStatus.status.conditions`) |
 | `capturedField` | Explicitly captured fields (added to params) |
-| `adapter.*` | Adapter metadata |
+| `adapter.*` | Adapter name and version, plus execution metadata |
+| `config.*` | Merged deployment and task config. The runtime redacts sensitive values. |
+| `env.*` | OS environment variables |
+| `event.*` | Full triggering event payload |
 | `resources.*` | Created resources (empty during preconditions) |
 
 <details>
@@ -458,6 +461,8 @@ post:
 
 | Variable | Type | Description |
 |----------|------|-------------|
+| `adapter.name` | string | Adapter name from the deployment config |
+| `adapter.version` | string | Adapter version from the deployment config |
 | `adapter.executionStatus` | string | `"success"` or `"failed"` (process execution status) |
 | `adapter.resourcesSkipped` | bool | Resources were skipped (business outcome) |
 | `adapter.skipReason` | string | Why resources were skipped |
@@ -475,12 +480,12 @@ url: "{{ .apiBaseUrl }}/api/{{ .apiVersion }}/clusters/{{ .clusterId }}"
 
 ### Available Template Variables
 
-| Source | Example                            |
-|--------|------------------------------------|
-| Extracted params | `{{ .clusterId }}`                 |
-| Captured fields | `{{ .reconciledConditionStatus }}` |
-| Adapter metadata | `{{ .adapter.name }}`              |
-| Event metadata | `{{ .eventMetadata.id }}`          |
+| Source           | Example                                                 |
+|------------------|---------------------------------------------------------|
+| Extracted params | `{{ .clusterId }}`                                      |
+| Captured fields  | `{{ .reconciledConditionStatus }}`                      |
+| Adapter          | `{{ .adapter.name }}`, `{{ .adapter.executionStatus }}` |
+| Event payload    | `{{ .event.id }}`                                       |
 
 ## Integration
 

@@ -104,7 +104,7 @@ func (pae *PostActionExecutor) buildPostPayloads(
 ) (map[string]bool, error) {
 	skippedPayloads := make(map[string]bool)
 
-	// Create evaluation context with all CEL variables (params, adapter, resources)
+	// Create evaluation context with all CEL variables
 	evalCtx := criteria.NewEvaluationContext()
 	evalCtx.SetVariablesFromMap(execCtx.GetCELVariables())
 
@@ -141,8 +141,9 @@ func (pae *PostActionExecutor) buildPostPayloads(
 			return nil, fmt.Errorf("payload '%s' has neither Build nor BuildRefContent", payload.Name)
 		}
 
-		// Build the payload
-		builtPayload, err := pae.buildPayload(ctx, buildDef, evaluator, execCtx.Params)
+		// Build the payload. Rebuild the template variables on each iteration, so
+		// that templates in later payloads can read earlier payloads from execCtx.Params.
+		builtPayload, err := pae.buildPayload(ctx, buildDef, evaluator, execCtx.templateVariables())
 		if err != nil {
 			return nil, fmt.Errorf("failed to build payload '%s': %w", payload.Name, err)
 		}

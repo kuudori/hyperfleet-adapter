@@ -92,7 +92,7 @@ func extractParam(
 	case param.Source.IsFile():
 		return extractFromFile(param)
 	case param.Source.IsString():
-		return extractFromStringSource(param, execCtx.EventData, configMap, execCtx.Params)
+		return extractFromStringSource(param, execCtx, configMap)
 	default:
 		return param.Default, nil
 	}
@@ -101,24 +101,24 @@ func extractParam(
 // extractFromStringSource handles env.*, event.*, config.*, and dot-notation param derivation
 func extractFromStringSource(
 	param configloader.Parameter,
-	eventData map[string]interface{},
+	execCtx *ExecutionContext,
 	configMap map[string]interface{},
-	resolvedParams map[string]interface{},
 ) (interface{}, error) {
 	source := param.Source.StringVal
 	switch {
 	case strings.HasPrefix(source, "env."):
-		return extractFromEnv(source[4:])
+		return extractFromEnv(execCtx.envVariable, source[4:])
 	case strings.HasPrefix(source, "event."):
-		return utils.GetNestedValue(eventData, source[6:])
+		return utils.GetNestedValue(execCtx.EventData, source[6:])
 	case strings.HasPrefix(source, "config."):
 		return utils.GetNestedValue(configMap, source[7:])
 	case source == "":
 		return param.Default, nil
 	default:
-		// Check if the first path segment is a previously resolved param.
+		// Check whether the first path segment is a previously resolved param or a
+		// built-in variable (adapter, config, env, event). Build the map only on this path.
 		parts := strings.SplitN(source, ".", 2)
-		if baseVal, ok := resolvedParams[parts[0]]; ok {
+		if baseVal, ok := execCtx.templateVariables()[parts[0]]; ok {
 			if len(parts) == 1 {
 				return baseVal, nil
 			}
@@ -130,7 +130,7 @@ func extractFromStringSource(
 			return utils.GetNestedValue(m, parts[1])
 		}
 		// Fallback: treat as bare event path (preserves old behavior for unqualified field names)
-		return utils.GetNestedValue(eventData, source)
+		return utils.GetNestedValue(execCtx.EventData, source)
 	}
 }
 
@@ -234,24 +234,14 @@ func configToMap(cfg *configloader.Config) (map[string]interface{}, error) {
 	return m, nil
 }
 
-// extractFromEnv extracts a value from environment variables
-func extractFromEnv(envVar string) (interface{}, error) {
-	value, exists := os.LookupEnv(envVar)
+// extractFromEnv reads a value from the environment snapshot. The env variable
+// uses the same snapshot, so env params and env.* always return the same value.
+func extractFromEnv(env map[string]any, envVar string) (interface{}, error) {
+	value, exists := env[envVar]
 	if !exists {
 		return nil, fmt.Errorf("environment variable %s not set", envVar)
 	}
 	return value, nil
-}
-
-// addAdapterParams adds adapter info, config, env, and event to execCtx.Params
-func addAdapterParams(config *configloader.Config, execCtx *ExecutionContext, configMap map[string]interface{}) {
-	execCtx.Params["adapter"] = map[string]interface{}{
-		"name":    config.Adapter.Name,
-		"version": config.Adapter.Version,
-	}
-	execCtx.Params["config"] = configMap
-	execCtx.Params["env"] = buildEnvMap()
-	execCtx.Params["event"] = execCtx.EventData
 }
 
 // convertParamType converts a value to the specified type.

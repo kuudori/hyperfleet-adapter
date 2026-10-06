@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/cloudevents/sdk-go/v2/event"
@@ -558,6 +559,14 @@ func TestParamExtractor(t *testing.T) {
 			expectValue: "1.0.0",
 		},
 		{
+			name: "derive from adapter variable",
+			params: []configloader.Parameter{
+				{Name: "derivedAdapterName", Source: configloader.StringSource("adapter.name")},
+			},
+			expectKey:   "derivedAdapterName",
+			expectValue: "test",
+		},
+		{
 			name: "use default for missing optional config field",
 			params: []configloader.Parameter{
 				{Name: "optional", Source: configloader.StringSource("config.nonexistent"), Default: "fallback"},
@@ -576,9 +585,6 @@ func TestParamExtractor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create fresh context for each test
-			execCtx := NewExecutionContext(context.Background(), eventData, nil)
-
 			// Create config with test params
 			config := &configloader.Config{
 				Adapter: configloader.AdapterInfo{
@@ -587,6 +593,9 @@ func TestParamExtractor(t *testing.T) {
 				},
 				Params: tt.params,
 			}
+
+			// Create a new context for each test. The config supplies adapter.name.
+			execCtx := NewExecutionContext(t.Context(), eventData, config)
 
 			// Extract params using pure function
 			configMap, err := configToMap(config)
@@ -616,11 +625,25 @@ func runParamExtraction(
 ) (*ExecutionContext, error) {
 	t.Helper()
 	execCtx := NewExecutionContext(context.Background(), eventData, nil)
-	configMap, err := configToMap(config)
-	require.NoError(t, err)
-	addAdapterParams(config, execCtx, configMap)
-	err = extractConfigParams(context.Background(), config, execCtx, configMap, mockClient)
-	return execCtx, err
+	return execCtx, extractParams(execCtx, config, mockClient)
+}
+
+// An env param and env.* read the same snapshot, even if the process
+// environment changes after NewExecutionContext returns.
+func TestParamExtractor_EnvSourceMatchesEnvVariable(t *testing.T) {
+	t.Setenv("SNAPSHOT_VAR", "before")
+	execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
+	t.Setenv("SNAPSHOT_VAR", "after")
+
+	config := &configloader.Config{
+		Params: []configloader.Parameter{{Name: "fromEnv", Source: configloader.StringSource("env.SNAPSHOT_VAR")}},
+	}
+	require.NoError(t, extractParams(execCtx, config, nil))
+
+	env, ok := execCtx.templateVariables()["env"].(map[string]any)
+	require.True(t, ok, "env must be a map")
+	assert.Equal(t, "before", execCtx.Params["fromEnv"])
+	assert.Equal(t, "before", env["SNAPSHOT_VAR"])
 }
 
 // TestParamExtractor_APICallSource tests params with source: api_call
@@ -2268,8 +2291,12 @@ func TestGetCELVariables_AllNamespaces(t *testing.T) {
 		"id":   "cluster-abc",
 		"kind": "ManagedCluster",
 	}
-	execCtx := NewExecutionContext(context.Background(), eventData, nil)
+	config := &configloader.Config{Adapter: configloader.AdapterInfo{Name: "cel-adapter", Version: "2.0.0"}}
+	execCtx := NewExecutionContext(t.Context(), eventData, config)
 	execCtx.Params["myParam"] = "param-value"
+	configMap, err := configToMap(config.Redacted())
+	require.NoError(t, err)
+	execCtx.configVariable = configMap
 
 	vars := execCtx.GetCELVariables()
 
@@ -2287,9 +2314,19 @@ func TestGetCELVariables_AllNamespaces(t *testing.T) {
 	// params are available as top-level names
 	assert.Equal(t, "param-value", vars["myParam"])
 
+	// config is the redacted config map
+	assert.Equal(t, configMap, vars["config"])
+
+	// adapter contains the adapter name and version and the execution metadata
+	adapterMap, ok := vars["adapter"].(map[string]any)
+	require.True(t, ok, "adapter must be a map")
+	assert.Equal(t, "cel-adapter", adapterMap["name"])
+	assert.Equal(t, "2.0.0", adapterMap["version"])
+	assert.Equal(t, string(StatusSuccess), adapterMap["executionStatus"])
+
 	// existing namespaces must still be present
-	assert.Contains(t, vars, "adapter")
 	assert.Contains(t, vars, "resources")
+	assert.Contains(t, vars, "resource_states")
 }
 
 // TestCELExpression_EnvVariable verifies env.* is accessible in a precondition CEL expression
@@ -2558,6 +2595,188 @@ func TestGoTemplate_EventInManifest(t *testing.T) {
 	require.NotNil(t, applied, "resource should be applied with rendered name")
 	assert.Equal(t, "default", applied.GetNamespace())
 	assert.Equal(t, "cluster-123", applied.GetName())
+}
+
+// TestExecutionContext_AdapterVariableSharedByTemplatesAndCEL verifies that Go
+// templates and CEL read the same adapter map: name, version and execution metadata.
+func TestExecutionContext_AdapterVariableSharedByTemplatesAndCEL(t *testing.T) {
+	config := &configloader.Config{Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.2.3"}}
+	execCtx := NewExecutionContext(t.Context(), map[string]any{"id": "cluster-1"}, config)
+	execCtx.SetError("X", "m")
+
+	templateAdapter, ok := execCtx.templateVariables()[configloader.FieldAdapter].(map[string]any)
+	require.True(t, ok)
+	celAdapter, ok := execCtx.GetCELVariables()[configloader.FieldAdapter].(map[string]any)
+	require.True(t, ok)
+
+	assert.Equal(t, celAdapter, templateAdapter)
+	assert.Equal(t, "test-adapter", templateAdapter["name"])
+	assert.Equal(t, "1.2.3", templateAdapter["version"])
+	assert.Equal(t, string(StatusFailed), templateAdapter["executionStatus"])
+
+	t.Run("nil config keeps name and version keys", func(t *testing.T) {
+		adapter := NewExecutionContext(t.Context(), nil, nil).templateVariables()[configloader.FieldAdapter]
+		assert.Subset(t, adapter, map[string]any{"name": "", "version": ""})
+	})
+}
+
+// TestCELExpression_AdapterNameInPrecondition verifies adapter.name is readable from CEL.
+func TestCELExpression_AdapterNameInPrecondition(t *testing.T) {
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+		Preconditions: []configloader.Precondition{
+			{
+				ActionBase: configloader.ActionBase{Name: "checkAdapterName"},
+				Expression: `adapter.name == "test-adapter"`,
+			},
+		},
+	}
+
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithAPIClient(newMockAPIClient()).
+		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		Build()
+	require.NoError(t, err)
+
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-adapter-name"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	require.Len(t, result.PreconditionResults, 1)
+	assert.True(t, result.PreconditionResults[0].Matched, "adapter.name CEL expression should match")
+}
+
+// statusPayloadConfig returns a config whose single post action PUTs the
+// statusPayload payload built from the given template values.
+func statusPayloadConfig(build map[string]any, resources []configloader.Resource) *configloader.Config {
+	return &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+		Params: []configloader.Parameter{
+			{Name: "clusterId", Source: configloader.StringSource("event.id")},
+		},
+		Resources: resources,
+		Post: &configloader.PostConfig{
+			Payloads: []configloader.Payload{{Name: "statusPayload", Build: build}},
+			PostActions: []configloader.PostAction{{
+				ActionBase: configloader.ActionBase{
+					Name: "reportStatus",
+					APICall: &configloader.APICall{
+						Method: "PUT",
+						URL:    "/clusters/{{ .clusterId }}/statuses",
+						Body:   "{{ .statusPayload }}",
+					},
+				},
+			}},
+		},
+	}
+}
+
+// putRequestBody returns the decoded body of the only PUT request.
+func putRequestBody(t *testing.T, mockClient *hyperfleetapi.MockClient) map[string]any {
+	t.Helper()
+	var body map[string]any
+	for _, req := range mockClient.Requests {
+		if req.Method == http.MethodPut {
+			require.Nil(t, body, "expected a single PUT request")
+			require.NoError(t, json.Unmarshal(req.Body, &body))
+		}
+	}
+	require.NotNil(t, body, "expected a PUT request")
+	return body
+}
+
+// TestGoTemplate_AdapterMetadataInPostPayload verifies that templates read the
+// current execution metadata, not a copy from the param extraction phase.
+func TestGoTemplate_AdapterMetadataInPostPayload(t *testing.T) {
+	k8sClient := k8sclient.NewMockK8sClient()
+	k8sClient.ApplyResourceError = fmt.Errorf("apply failed")
+	resources := []configloader.Resource{{
+		Name: "testResource",
+		Manifest: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata":   map[string]any{"name": "test-cm", "namespace": "default"},
+		},
+	}}
+	config := statusPayloadConfig(map[string]any{
+		"status":  "{{ .adapter.executionStatus }}",
+		"adapter": "{{ .adapter.name }}",
+	}, resources)
+	mockClient := newMockAPIClient()
+
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithAPIClient(mockClient).
+		WithTransportRegistry(testTransportRegistry(k8sClient)).
+		Build()
+	require.NoError(t, err)
+
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusFailed, result.Status)
+	require.Error(t, result.Errors[PhaseResources])
+	require.NoError(t, result.Errors[PhasePostActions])
+	body := putRequestBody(t, mockClient)
+	assert.Equal(t, string(StatusFailed), body["status"])
+	assert.Equal(t, "test-adapter", body["adapter"])
+}
+
+// TestExecutionContext_TemplateAndCELVariablesAgree verifies that templates and CEL
+// read the same value for every built-in variable and every param, and that the
+// runtime adds every name the config validator reserves. When you add a name to
+// the configloader lists, also add it to the runtime. It also verifies that only
+// CEL reads resources and resource_states.
+func TestExecutionContext_TemplateAndCELVariablesAgree(t *testing.T) {
+	config := &configloader.Config{Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"}}
+	execCtx := NewExecutionContext(t.Context(), map[string]any{"id": "cluster-1"}, config)
+	execCtx.configVariable = map[string]any{"adapter": map[string]any{"name": "test-adapter"}}
+	execCtx.Params["clusterId"] = "cluster-1"
+
+	templateVars, celVars := execCtx.templateVariables(), execCtx.GetCELVariables()
+
+	// ObjectsAreEqual and key checks keep the environment map out of failure messages.
+	for _, name := range slices.Concat(configloader.BuiltinVariables(), []string{"clusterId"}) {
+		_, found := templateVars[name]
+		assert.True(t, found, "%q missing from template variables", name)
+		assert.True(t, assert.ObjectsAreEqual(templateVars[name], celVars[name]),
+			"%q differs between template and CEL variables", name)
+	}
+	for _, name := range configloader.ReservedVariableNames() {
+		_, found := celVars[name]
+		assert.True(t, found, "reserved %q missing from CEL variables", name)
+	}
+	for _, name := range []string{configloader.FieldResources, configloader.FieldResourceStates} {
+		_, inTemplates := templateVars[name]
+		assert.False(t, inTemplates, "%q must be CEL-only", name)
+	}
+}
+
+// TestExecute_BuiltinVariablesNotInParams verifies that Params does not hold
+// adapter, config, env and event, and that templates can still read them.
+func TestExecute_BuiltinVariablesNotInParams(t *testing.T) {
+	config := statusPayloadConfig(map[string]any{
+		"configAdapterName": "{{ .config.adapter.name }}",
+	}, nil)
+	mockClient := newMockAPIClient()
+
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithAPIClient(mockClient).
+		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		Build()
+	require.NoError(t, err)
+
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "cluster-1", result.Params["clusterId"])
+	assert.Contains(t, result.Params, "statusPayload")
+	for _, name := range configloader.BuiltinVariables() {
+		// Check only the key. A failure message that prints Params shows the whole environment.
+		_, found := result.Params[name]
+		assert.False(t, found, "built-in %q must not be stored in params", name)
+	}
+	assert.Equal(t, "test-adapter", putRequestBody(t, mockClient)["configAdapterName"])
 }
 
 func getCounterValue(t *testing.T, families []*dto.MetricFamily, metricName, labelName, labelValue string) float64 {

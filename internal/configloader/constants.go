@@ -7,6 +7,7 @@ package configloader
 // Field names
 const (
 	FieldAdapter        = "adapter"
+	FieldConfig         = "config"
 	FieldHyperfleetAPI  = "hyperfleet_api"
 	FieldKubernetes     = "kubernetes"
 	FieldParams         = "params"
