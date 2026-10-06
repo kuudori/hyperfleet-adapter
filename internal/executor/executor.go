@@ -257,23 +257,27 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 
 // executeParamExtraction extracts parameters from the event and environment
 func (e *Executor) executeParamExtraction(execCtx *ExecutionContext) error {
-	configMap, err := configToMap(e.config.Config)
+	return extractParams(execCtx, e.config.Config, e.config.APIClient)
+}
+
+// extractParams sets the config variable and extracts the configured params.
+func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiClient hyperfleetapi.Client) error {
+	configMap, err := configToMap(config)
 	if err != nil {
 		return NewExecutorError(PhaseParamExtraction, "config", "failed to marshal config", err)
 	}
 
-	// Use a redacted config map for template-accessible params to avoid exposing sensitive
-	// values (e.g. TLS cert paths) in rendered manifests or logs.
-	redactedMap, err := configToMap(e.config.Config.Redacted())
+	// Templates and CEL read a redacted config, so rendered manifests and logs do
+	// not show sensitive values such as TLS file paths.
+	redactedMap, err := configToMap(config.Redacted())
 	if err != nil {
 		return NewExecutorError(PhaseParamExtraction, "config", "failed to marshal redacted config", err)
 	}
-
-	addAdapterParams(e.config.Config, execCtx, redactedMap)
+	execCtx.configVariable = redactedMap
 
 	// config.* param sources resolve against the real (unredacted) config so that
 	// sensitive fields like cert paths can still be explicitly extracted when needed.
-	return extractConfigParams(execCtx.Ctx, e.config.Config, execCtx, configMap, e.config.APIClient)
+	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient)
 }
 
 // startTracedExecution creates an OTel span and adds trace context to logs.

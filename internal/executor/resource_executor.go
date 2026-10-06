@@ -317,7 +317,7 @@ func (re *ResourceExecutor) renderToBytes(
 		return nil, fmt.Errorf("failed to convert manifest to string: %w", err)
 	}
 
-	return manifest.RenderStringManifest(manifestStr, execCtx.Params)
+	return manifest.RenderStringManifest(manifestStr, execCtx.templateVariables())
 }
 
 // discoverResource discovers the resource using the discovery config.
@@ -391,7 +391,8 @@ func (re *ResourceExecutor) discoverResource(
 		return nil, nil
 	}
 
-	dt, err := re.renderDiscoveryTarget(discovery, execCtx.Params)
+	vars := execCtx.templateVariables()
+	dt, err := re.renderDiscoveryTarget(discovery, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -405,11 +406,11 @@ func (re *ResourceExecutor) discoverResource(
 	if discovery.BySelectors != nil && len(discovery.BySelectors.LabelSelector) > 0 {
 		renderedLabels := make(map[string]string)
 		for k, v := range discovery.BySelectors.LabelSelector {
-			renderedK, err := utils.RenderTemplate(k, execCtx.Params)
+			renderedK, err := utils.RenderTemplate(k, vars)
 			if err != nil {
 				return nil, fmt.Errorf("failed to render label key template: %w", err)
 			}
-			renderedV, err := utils.RenderTemplate(v, execCtx.Params)
+			renderedV, err := utils.RenderTemplate(v, vars)
 			if err != nil {
 				return nil, fmt.Errorf("failed to render label value template: %w", err)
 			}
@@ -478,7 +479,7 @@ func (re *ResourceExecutor) tryCleanupDesires(
 	if !ok || resource.Discovery == nil || resource.Discovery.ByName == "" {
 		return nil
 	}
-	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.Params)
+	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.templateVariables())
 	if err != nil {
 		return err
 	}
@@ -494,6 +495,7 @@ func (re *ResourceExecutor) discoverNestedResources(
 	parent *unstructured.Unstructured,
 ) map[string]*unstructured.Unstructured {
 	nestedResults := make(map[string]*unstructured.Unstructured)
+	vars := execCtx.templateVariables()
 
 	for _, nd := range resource.NestedDiscoveries {
 		if nd.Discovery == nil {
@@ -501,7 +503,7 @@ func (re *ResourceExecutor) discoverNestedResources(
 		}
 
 		// Build discovery config with rendered templates
-		discoveryConfig, err := re.buildNestedDiscoveryConfig(nd.Discovery, execCtx.Params)
+		discoveryConfig, err := re.buildNestedDiscoveryConfig(nd.Discovery, vars)
 		if err != nil {
 			slog.WarnContext(ctx, "resource nested discovery failed to build config",
 				"resource", resource.Name, "nested_discovery", nd.Name, "error", err)
@@ -669,7 +671,8 @@ func (re *ResourceExecutor) resolveTransport(
 		if resource.Transport == nil || resource.Transport.Maestro == nil {
 			return nil, nil, fmt.Errorf("maestro transport config is required")
 		}
-		targetCluster, templateErr := utils.RenderTemplate(resource.Transport.Maestro.TargetCluster, execCtx.Params)
+		targetCluster, templateErr := utils.RenderTemplate(
+			resource.Transport.Maestro.TargetCluster, execCtx.templateVariables())
 		if templateErr != nil {
 			return nil, nil, fmt.Errorf("render maestro target cluster: %w", templateErr)
 		}
@@ -679,7 +682,7 @@ func (re *ResourceExecutor) resolveTransport(
 	if !configured || definition.Type != configloader.TransportTypeRemote {
 		return client, nil, nil
 	}
-	targetCluster, err := utils.RenderTemplate(definition.TargetCluster, execCtx.Params)
+	targetCluster, err := utils.RenderTemplate(definition.TargetCluster, execCtx.templateVariables())
 	if err != nil {
 		return nil, nil, fmt.Errorf("render transport %q target_cluster: %w", transportName, err)
 	}
@@ -974,7 +977,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 		return fail("unsupported desire deletion discovery",
 			errors.New(configloader.ErrMsgDesireSelectorDeleteUnsupported))
 	}
-	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.Params)
+	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.templateVariables())
 	if err != nil {
 		return fail("failed to render deletion target", err)
 	}

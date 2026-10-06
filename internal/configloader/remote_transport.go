@@ -179,30 +179,10 @@ func ValidateConfigRouting(config *Config) error {
 	return ValidateResourceTransports(config)
 }
 
-// targetClusterVariables returns the names present in the execution params when
-// the executor renders target_cluster. Unlike GetDefinedVariables it excludes
-// post payloads and resource aliases, which are not params at that point.
+// targetClusterVariables returns the template variables that exist when the
+// executor renders target_cluster: the built-in variables plus the names in Params.
+// Unlike GetDefinedVariables, it excludes post payloads and resource aliases,
+// because they do not exist yet at that point.
 func targetClusterVariables(config *Config) map[string]bool {
-	vars := map[string]bool{"adapter": true, "config": true, "env": true, "event": true}
-	for _, param := range config.Params {
-		if param.Name != "" {
-			vars[param.Name] = true
-		}
-	}
-	for _, precondition := range config.Preconditions {
-		// Only API call preconditions store params: the response under the
-		// precondition name, plus its captures.
-		if precondition.APICall == nil {
-			continue
-		}
-		if precondition.Name != "" {
-			vars[precondition.Name] = true
-		}
-		for _, capture := range precondition.Capture {
-			if capture.Name != "" {
-				vars[capture.Name] = true
-			}
-		}
-	}
-	return vars
+	return definedVariables(config.Params, config.Preconditions, nil, nil)
 }

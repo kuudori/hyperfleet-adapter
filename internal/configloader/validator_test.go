@@ -231,6 +231,25 @@ func TestValidateTemplateVariables(t *testing.T) {
 		assert.Contains(t, err.Error(), "undefined template variable \"undefinedVar\"")
 	})
 
+	t.Run("API call precondition response is available for resources", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Preconditions = []Precondition{{
+			ActionBase: ActionBase{Name: "getCluster", APICall: &APICall{Method: "GET", URL: "/clusters"}},
+		}}
+		cfg.Resources = []Resource{{
+			Name: "testNs",
+			Manifest: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "Namespace",
+				"metadata":   map[string]interface{}{"name": "ns-{{ .getCluster.id }}"},
+			},
+			Discovery: &DiscoveryConfig{Namespace: "*", ByName: "ns-{{ .getCluster.id }}"},
+		}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
+
 	t.Run("CEL resource states are not a template variable", func(t *testing.T) {
 		cfg := baseTaskConfig()
 		cfg.Resources = []Resource{{
@@ -582,6 +601,83 @@ func TestBuiltinVariables(t *testing.T) {
 	v := newTaskValidator(cfg)
 	require.NoError(t, v.ValidateStructure())
 	require.NoError(t, v.ValidateSemantic())
+}
+
+func TestValidateReservedVariableNames(t *testing.T) {
+	apiCall := &APICall{Method: "GET", URL: "/clusters"}
+	const reservedList = "(reserved: adapter, config, env, event, resources, resource_states)"
+
+	tests := []struct {
+		configure func(cfg *AdapterTaskConfig)
+		name      string
+		wantPath  string
+		wantName  string
+	}{
+		{
+			name: "param",
+			configure: func(cfg *AdapterTaskConfig) {
+				cfg.Params = []Parameter{{Name: "config", Source: StringSource("event.id")}}
+			},
+			wantPath: "params[0].name",
+			wantName: "config",
+		},
+		{
+			name: "api call precondition",
+			configure: func(cfg *AdapterTaskConfig) {
+				cfg.Preconditions = []Precondition{{ActionBase: ActionBase{Name: "adapter", APICall: apiCall}}}
+			},
+			wantPath: "preconditions[0].name",
+			wantName: "adapter",
+		},
+		{
+			name: "capture",
+			configure: func(cfg *AdapterTaskConfig) {
+				cfg.Preconditions = []Precondition{{
+					ActionBase: ActionBase{Name: "getCluster", APICall: apiCall},
+					Capture: []CaptureField{
+						{Name: "env", FieldExpressionDef: FieldExpressionDef{Field: "status.phase"}},
+					},
+				}}
+			},
+			wantPath: "preconditions[0].capture[0].name",
+			wantName: "env",
+		},
+		{
+			name: "payload",
+			configure: func(cfg *AdapterTaskConfig) {
+				cfg.Post = &PostConfig{Payloads: []Payload{
+					{Name: "resource_states", Build: map[string]any{"status": "ready"}},
+				}}
+			},
+			wantPath: "post.payloads[0].name",
+			wantName: "resource_states",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseTaskConfig()
+			tt.configure(cfg)
+			v := newTaskValidator(cfg)
+			require.NoError(t, v.ValidateStructure())
+
+			err := v.ValidateSemantic()
+			require.Error(t, err)
+			var verrs *ValidationErrors
+			require.ErrorAs(t, err, &verrs)
+			require.Len(t, verrs.Errors, 1, "only the reserved name should be rejected: %v", err)
+			assert.Equal(t, tt.wantPath, verrs.Errors[0].Path)
+			assert.Equal(t, `"`+tt.wantName+`" is a reserved variable name `+reservedList, verrs.Errors[0].Message)
+		})
+	}
+
+	t.Run("precondition without api call may use a reserved name", func(t *testing.T) {
+		cfg := baseTaskConfig()
+		cfg.Preconditions = []Precondition{{ActionBase: ActionBase{Name: "config"}, Expression: "true"}}
+		v := newTaskValidator(cfg)
+		require.NoError(t, v.ValidateStructure())
+		require.NoError(t, v.ValidateSemantic())
+	})
 }
 
 func TestPayloadValidate(t *testing.T) {

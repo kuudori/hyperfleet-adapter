@@ -76,7 +76,7 @@ func ExecuteLogAction(
 	}
 
 	// Render the message template
-	message, err := utils.RenderTemplate(logAction.Message, execCtx.Params)
+	message, err := utils.RenderTemplate(logAction.Message, execCtx.templateVariables())
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to render log message", "error", err)
 		return
@@ -105,8 +105,10 @@ func ExecuteAPICall(
 		return nil, "", fmt.Errorf("apiCall is nil")
 	}
 
+	vars := execCtx.templateVariables()
+
 	// First render the URL template to resolve variables like {{ .hyperfleetApiBaseUrl }}
-	renderedURL, err := utils.RenderTemplate(apiCall.URL, execCtx.Params)
+	renderedURL, err := utils.RenderTemplate(apiCall.URL, vars)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to render URL template: %w", err)
 	}
@@ -122,7 +124,7 @@ func ExecuteAPICall(
 	// Add headers
 	headers := make(map[string]string)
 	for _, h := range apiCall.Headers {
-		headerValue, headerErr := utils.RenderTemplate(h.Value, execCtx.Params)
+		headerValue, headerErr := utils.RenderTemplate(h.Value, vars)
 		if headerErr != nil {
 			return nil, url, fmt.Errorf("failed to render header '%s' template: %w", h.Name, headerErr)
 		}
@@ -160,7 +162,7 @@ func ExecuteAPICall(
 	case http.MethodPost:
 		body := []byte(apiCall.Body)
 		if apiCall.Body != "" {
-			body, err = utils.RenderTemplateBytes(apiCall.Body, execCtx.Params)
+			body, err = utils.RenderTemplateBytes(apiCall.Body, vars)
 			if err != nil {
 				return nil, url, fmt.Errorf("failed to render body template: %w", err)
 			}
@@ -175,7 +177,7 @@ func ExecuteAPICall(
 	case http.MethodPut:
 		body := []byte(apiCall.Body)
 		if apiCall.Body != "" {
-			body, err = utils.RenderTemplateBytes(apiCall.Body, execCtx.Params)
+			body, err = utils.RenderTemplateBytes(apiCall.Body, vars)
 			if err != nil {
 				return nil, "", fmt.Errorf("failed to render body template: %w", err)
 			}
@@ -190,7 +192,7 @@ func ExecuteAPICall(
 	case http.MethodPatch:
 		body := []byte(apiCall.Body)
 		if apiCall.Body != "" {
-			body, err = utils.RenderTemplateBytes(apiCall.Body, execCtx.Params)
+			body, err = utils.RenderTemplateBytes(apiCall.Body, vars)
 			if err != nil {
 				return nil, "", fmt.Errorf("failed to render body template: %w", err)
 			}
