@@ -135,7 +135,7 @@ Extracts parameters from various sources:
 
 ```yaml
 params:
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
     type: "string"
     required: true
@@ -173,10 +173,10 @@ Executes preconditions with optional API calls and condition evaluation:
 
 ```yaml
 preconditions:
-  - name: "checkClusterStatus"
+  - name: "checkResourceStatus"
     api_call:
       method: "GET"
-      url: "{{ .apiBaseUrl }}/clusters/{{ .clusterId }}"
+      url: "{{ .apiBaseUrl }}/clusters/{{ .resourceId }}"
     capture:
       # CEL expression for Reconciled condition status
       - name: "reconciledConditionStatus"
@@ -199,7 +199,7 @@ preconditions:
         value: "True"
 
       # Or dig directly into API response using precondition name
-      - field: "checkClusterStatus.status.nodeCount"
+      - field: "checkResourceStatus.status.nodeCount"
         operator: "greaterThan"
         value: 0
 ```
@@ -227,7 +227,7 @@ Preconditions have **two different data scopes** for capture and conditions:
 | Variable | Source |
 |----------|--------|
 | `<param-name>` | Extracted params, as top-level names |
-| `<precondition-name>.*` | Full API response from that precondition (e.g., `checkClusterStatus.status.conditions`) |
+| `<precondition-name>.*` | Full API response from that precondition (e.g., `checkResourceStatus.status.conditions`) |
 | `capturedField` | Explicitly captured fields (added to params) |
 | `adapter.*` | Adapter name and version, plus execution metadata |
 | `config.*` | Merged deployment and task config. The runtime redacts sensitive values. |
@@ -240,19 +240,19 @@ Preconditions have **two different data scopes** for capture and conditions:
 
 ```yaml
 preconditions:
-  - name: "getCluster"
+  - name: "getResource"
     api_call:
-      url: "{{ .apiBaseUrl }}/clusters/{{ .clusterId }}"
+      url: "{{ .apiBaseUrl }}/clusters/{{ .resourceId }}"
       method: GET
     # No need to capture everything - conditions can access full response
     conditions:
-      - field: "getCluster.spec.nodeCount"
+      - field: "getResource.spec.nodeCount"
         operator: "greaterThan"
         value: 0
     # Or use CEL expression with full access
     expression: |
-      getCluster.status.conditions.filter(c, c.type == "Reconciled")[0].status == "True" &&
-      size(getCluster.spec.nodes) > 0
+      getResource.status.conditions.filter(c, c.type == "Reconciled")[0].status == "True" &&
+      size(getResource.spec.nodes) > 0
 ```
 
 </details>
@@ -295,20 +295,20 @@ Creates or updates Kubernetes resources from manifests:
 
 ```yaml
 resources:
-  - name: "clusterNamespace"
+  - name: "resourceNamespace"
     manifest:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "cluster-{{ .clusterId }}"
+        name: "cluster-{{ .resourceId }}"
     discovery:
-      by_name: "cluster-{{ .clusterId }}"
+      by_name: "cluster-{{ .resourceId }}"
 
   - name: "externalTemplate"
     manifest:
       ref: "templates/deployment.yaml"
     discovery:
-      namespace: "cluster-{{ .clusterId }}"
+      namespace: "cluster-{{ .resourceId }}"
       by_selectors:
         label_selector:
           app: "myapp"
@@ -340,7 +340,7 @@ post:
     - name: "statusPayload"
       build:
         status:
-          expression: "resources.clusterController.status.readyReplicas > 0"
+          expression: "resources.resourceController.status.readyReplicas > 0"
         message: "Deployment successful"  # Direct string (Go template supported)
         errorMessage:
           field: "adapter.errorMessage"   # JSONPath extraction
@@ -350,7 +350,7 @@ post:
     - name: "reportStatus"
       api_call:
         method: "PUT"
-        url: "{{ .apiBaseUrl }}/clusters/{{ .clusterId }}/statuses"
+        url: "{{ .apiBaseUrl }}/clusters/{{ .resourceId }}/statuses"
         body: "{{ .statusPayload }}"
 ```
 
@@ -451,7 +451,7 @@ post:
     - name: "reportStatus"
       api_call:
         method: "PUT"
-        url: "{{ .apiBaseUrl }}/clusters/{{ .clusterId }}/statuses"
+        url: "{{ .apiBaseUrl }}/clusters/{{ .resourceId }}/statuses"
         body: "{{ .statusPayload }}"
 ```
 
@@ -475,14 +475,14 @@ post:
 All string values in the configuration support Go templates:
 
 ```yaml
-url: "{{ .apiBaseUrl }}/api/{{ .apiVersion }}/clusters/{{ .clusterId }}"
+url: "{{ .apiBaseUrl }}/api/{{ .apiVersion }}/clusters/{{ .resourceId }}"
 ```
 
 ### Available Template Variables
 
 | Source           | Example                                                 |
 |------------------|---------------------------------------------------------|
-| Extracted params | `{{ .clusterId }}`                                      |
+| Extracted params | `{{ .resourceId }}`                                      |
 | Captured fields  | `{{ .reconciledConditionStatus }}`                      |
 | Adapter          | `{{ .adapter.name }}`, `{{ .adapter.executionStatus }}` |
 | Event payload    | `{{ .event.id }}`                                       |

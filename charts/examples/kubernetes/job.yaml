@@ -2,9 +2,9 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: hello-world-job
-  namespace: "{{ .clusterId }}-k8s"
+  namespace: "{{ .resourceId }}-k8s"
   labels:
-    hyperfleet.io/cluster-id: "{{ .clusterId }}"
+    hyperfleet.io/cluster-id: "{{ .resourceId }}"
     hyperfleet.io/resource-type: "job"
   annotations:
     hyperfleet.io/generation: "{{ .generation }}"

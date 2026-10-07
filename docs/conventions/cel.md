@@ -10,7 +10,7 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 
 | Variable | Type | Available in | Description |
 |---|---|---|---|
-| _(param names)_ | any | all contexts[¹](#footnotes) | Extracted params injected as **top-level names** (eg. `clusterID`). Includes api_call result maps, event-derived values, env-derived values, and expression results. |
+| _(param names)_ | any | all contexts[¹](#footnotes) | Extracted params injected as **top-level names** (eg. `resourceId`). Includes api_call result maps, event-derived values, env-derived values, and expression results. |
 | _(capture names)_ | any | resources, post payloads, post_action when, payload when | Named captures from `precondition.capture` are stored in params and promoted to top-level names in all downstream contexts. |
 | `resources.*` | map | resources (pre-discovery state), post payloads, post_action when, payload when | Discovered objects by alias. `present` resources expose their object; `unsynced` resources expose their last known object, or an empty placeholder when there is none; confirmed-deleted and unprocessed resources are absent. Use `resource_states` to distinguish these outcomes. |
 | `resource_states.*` | string | resources (pre-discovery state), post payloads, post_action when, payload when | Discovery outcome by resource alias: `present`, `confirmed_deleted`, or `unsynced`. Use `confirmed_deleted` when a lifecycle condition must distinguish confirmed absence from an unavailable mirror. |

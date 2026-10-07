@@ -44,8 +44,8 @@ timeout := config.Clients.HyperfleetAPI.Timeout
 
 // Query helpers
 config.GetRequiredParams()
-config.GetResourceByName("clusterNamespace")
-config.GetPreconditionByName("clusterStatus")
+config.GetResourceByName("resourceNamespace")
+config.GetPreconditionByName("resourceStatus")
 config.GetPostActionByName("reportStatus")
 ```
 

@@ -2,10 +2,10 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: cluster-config
-  namespace: "{{ .clusterId }}-remote"
+  namespace: "{{ .resourceId }}-remote"
   labels:
-    hyperfleet.io/cluster-id: "{{ .clusterId }}"
+    hyperfleet.io/cluster-id: "{{ .resourceId }}"
   annotations:
     hyperfleet.io/generation: "{{ .generation }}"
 data:
-  cluster_id: "{{ .clusterId }}"
+  cluster_id: "{{ .resourceId }}"

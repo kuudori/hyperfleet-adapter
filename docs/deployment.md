@@ -317,7 +317,7 @@ adapterTaskConfig:
   external:
     task-config: |
       params:
-        - name: "clusterId"
+        - name: "resourceId"
           source: "event.id"
           type: "string"
           required: true

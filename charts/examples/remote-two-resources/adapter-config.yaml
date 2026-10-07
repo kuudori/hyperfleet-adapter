@@ -26,7 +26,7 @@ transports:
   remote-primary:
     type: remote
     store: remote-store
-    target_cluster: "{{ .clusterId }}"
+    target_cluster: "{{ .resourceId }}"
     resource_plurals:
       "v1/Namespace": namespaces
       "v1/ConfigMap": configmaps

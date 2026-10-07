@@ -37,7 +37,7 @@ func (pae *PostActionExecutor) ExecuteAll(
 		return []PostActionResult{}, nil
 	}
 
-	// Step 1: Build post payloads (like clusterStatusPayload)
+	// Step 1: Build post payloads (like resourceStatusPayload)
 	var skippedPayloads map[string]bool
 	if len(postConfig.Payloads) > 0 {
 		slog.InfoContext(ctx, "building post payloads", "payload_count", len(postConfig.Payloads))

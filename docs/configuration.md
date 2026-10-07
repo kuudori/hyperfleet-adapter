@@ -65,7 +65,7 @@ transports:
   remote-primary:
     type: remote
     store: remote-store
-    target_cluster: "{{ .clusterId }}"
+    target_cluster: "{{ .resourceId }}"
     resource_plurals:
       "v1/ConfigMap": configmaps
       "apps.example.io/v1/Widget": widgets
@@ -106,7 +106,7 @@ Every v2 task declares the YAML string `schema_version: "2.0"`. For example:
 ```yaml
 schema_version: "2.0"
 params:
-  - name: clusterId
+  - name: resourceId
     source: event.id
 resources:
   - name: configMap
