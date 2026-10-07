@@ -6,6 +6,8 @@ gotool = "$(GO)" tool -modfile="$(TOOL_MOD)" $(1)
 GOFMT ?= gofmt
 # Keep promtool out of tools/go.mod: it pulls Prometheus' large server dependency graph.
 PROMTOOL := github.com/prometheus/prometheus@v0.304.2
+# hyperfleet-hooks binary used by verify-tekton-bundles; override with a path.
+HYPERFLEET_HOOKS ?= hyperfleet-hooks
 
 # Binary output directory and name
 BIN_DIR := bin
@@ -431,6 +433,11 @@ verify-tools: tools ## Fail if tool module drifted
 
 .PHONY: verify
 verify: fmt-check vet ## Run all verification checks
+
+.PHONY: verify-tekton-bundles
+verify-tekton-bundles: ## Verify pinned Konflux task bundle digests in .tekton/ (needs hyperfleet-hooks v0.3.0+)
+	@command -v $(HYPERFLEET_HOOKS) >/dev/null 2>&1 || { echo "hyperfleet-hooks not found. Install it with 'go install github.com/openshift-hyperfleet/hyperfleet-hooks/cmd/hyperfleet-hooks@v0.3.0' or set HYPERFLEET_HOOKS=/path/to/hyperfleet-hooks"; exit 1; }
+	$(HYPERFLEET_HOOKS) verify-tekton-bundles --directory .tekton
 
 ##@ Dependencies
 
