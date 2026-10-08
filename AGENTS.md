@@ -37,7 +37,7 @@ Dry run processes one event with mock clients and needs no broker, cluster or AP
 
 Templates live in `configs/`, and working examples in `charts/examples/`. `docs/configuration.md` is the reference for every field, flag and env var.
 
-Every example and template task in this repo declares `schema_version: "2.0"` (some legacy Go test fixtures do not). A v2 resource names a transport from the deployment config (`kubernetes` or `remote`), and a resource without one uses the local Kubernetes client. Unversioned legacy tasks still load until HYPERFLEET-1504 removes them. Write new configs and fixtures as v2.
+Every example and template task in this repo declares `schema_version: "2.0"` (some legacy Go test fixtures do not). A v2 resource may name the built-in `kubernetes` transport or a transport declared in deployment config (for example, `remote-primary` with `type: remote`); without `transport`, it uses the local Kubernetes client. Unversioned legacy tasks still load until HYPERFLEET-1504 removes them. Write new configs and fixtures as v2.
 
 Every flag except `--dry-run-*` has an env var equivalent. When you add a deployment config override, update `viperKeyMappings` and `cliFlags` in `internal/configloader/viper_loader.go`, register the flag in `cmd/adapter/main.go` with `Env: <VAR>` in its help text, and document both in `docs/configuration.md`.
 

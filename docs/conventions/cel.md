@@ -100,7 +100,8 @@ resource_states.?x.orValue("") == "confirmed_deleted"
 
 ```cel
 // Post-phase: check a discovered resource reports Ready=True
-resources.?myResource.?status.?conditions.orValue([]).exists(c, c.type == "Ready" && c.status == "True")
+resource_states.?myResource.orValue("") == "present"
+  && resources.?myResource.?status.?conditions.orValue([]).exists(c, c.type == "Ready" && c.status == "True")
 
 // Post-action gate: check execution status
 adapter.?executionStatus.orValue("") == "success"

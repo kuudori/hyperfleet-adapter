@@ -428,7 +428,7 @@ Process execution errors are captured in `ExecutionResult` with:
 
 ### Error and Status Reporting
 
-Post-actions still execute after a precondition evaluation error or a resource failure, to allow comprehensive status reporting. They do not run when a required param fails to extract, or when a precondition `api_call` returns 404 (the event ends as `ResourceNotFound`); see `Execute` in `executor.go`:
+Post-actions still execute after a precondition evaluation error or a resource failure, to allow comprehensive status reporting. They do not run when a required param fails to extract, or when a precondition fails with a resource-not-found error, such as a 404 for the target resource (the event ends as `ResourceNotFound`). Other precondition errors still reach post-actions, including a 404 with code `HYPERFLEET-NTF-000`, which means no API route matched the URL. See `Execute` in `executor.go`:
 
 <details>
 <summary>Comprehensive status reporting example</summary>
