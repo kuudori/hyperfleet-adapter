@@ -1,22 +1,25 @@
 # V2 task config. A resource with no transport uses local Kubernetes.
 schema_version: "2.0"
+
+# This template manages clusters. For another kind, change the /clusters/ API
+# paths; resourceId is the event's resource ID.
 params:
-  - name: clusterId
+  - name: resourceId
     source: event.id
     type: string
     required: true
-  - name: clusterStatus
+  - name: resourceStatus
     source:
       api_call:
         method: GET
-        url: /clusters/{{ .clusterId }}
+        url: /clusters/{{ .resourceId }}
         timeout: 10s
   - name: generation
-    source: clusterStatus.generation
+    source: resourceStatus.generation
     type: int
   - name: is_deleting
     source:
-      expression: "clusterStatus.?deleted_time.hasValue()"
+      expression: "resourceStatus.?deleted_time.hasValue()"
 
 resources:
   - name: namespace
@@ -24,11 +27,11 @@ resources:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ .clusterId }}"
+        name: "{{ .resourceId }}"
         annotations:
           hyperfleet.io/generation: "{{ .generation }}"
     discovery:
-      by_name: "{{ .clusterId }}"
+      by_name: "{{ .resourceId }}"
     lifecycle:
       delete:
         when:
@@ -36,7 +39,7 @@ resources:
 
 post:
   payloads:
-    - name: clusterStatusPayload
+    - name: resourceStatusPayload
       build:
         adapter: "{{ .adapter.name }}"
         conditions:
@@ -106,11 +109,11 @@ post:
           expression: generation
         observed_time: '{{ now | date "2006-01-02T15:04:05Z07:00" }}'
   post_actions:
-    - name: reportClusterStatus
+    - name: reportResourceStatus
       api_call:
         method: PUT
-        url: /clusters/{{ .clusterId }}/statuses
+        url: /clusters/{{ .resourceId }}/statuses
         headers:
           - name: Content-Type
             value: application/json
-        body: "{{ .clusterStatusPayload }}"
+        body: "{{ .resourceStatusPayload }}"

@@ -112,7 +112,7 @@ func (pe *PreconditionExecutor) executePrecondition(
 		}
 
 		// Store full response under precondition name for condition digging
-		// e.g., conditions can access "check-cluster.status.conditions"
+		// e.g., conditions can access "check-resource.status.conditions"
 		execCtx.Params[precond.Name] = responseData
 
 		// Capture fields from response
@@ -125,8 +125,8 @@ func (pe *PreconditionExecutor) executePrecondition(
 			captureCtx.SetVariablesFromMap(responseData)
 			// Option 1: also expose the full response as a named map variable so capture
 			// expressions can safely navigate optional fields without an "undeclared reference"
-			// error, e.g.: dig(checkClusterState, "deleted_time") != null
-			//              has(checkClusterState.deleted_time)
+			// error, e.g.: dig(checkResourceState, "deleted_time") != null
+			//              has(checkResourceState.deleted_time)
 			captureCtx.Set(precond.Name, responseData)
 
 			captureEvaluator, evalErr := criteria.NewEvaluator(ctx, captureCtx)

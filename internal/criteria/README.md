@@ -53,7 +53,7 @@ result, err := evaluator.EvaluateCondition(
 if err != nil {
     log.Fatal(err)
 }
-fmt.Println("Cluster is reconciled:", result.Matched) // true
+fmt.Println("Resource is reconciled:", result.Matched) // true
 ```
 
 ### Evaluating Multiple Conditions
@@ -78,7 +78,7 @@ fmt.Println("All conditions pass:", result.Matched)
 
 ```go
 // Set nested data
-ctx.Set("cluster", map[string]interface{}{
+ctx.Set("resource", map[string]interface{}{
     "status": map[string]interface{}{
         "conditions": []interface{}{
             map[string]interface{}{
@@ -91,7 +91,7 @@ ctx.Set("cluster", map[string]interface{}{
 
 // Evaluate nested field
 result, err := evaluator.EvaluateCondition(
-    "{.cluster.status.conditions[?(@.type=='Reconciled')].status}",
+    "{.resource.status.conditions[?(@.type=='Reconciled')].status}",
     criteria.OperatorEquals,
     "True",
 )
@@ -186,7 +186,7 @@ ctx.Merge(ctx2) // ctx now has both key and newKey
 func (c *EvaluationContext) GetField(path string) (*FieldResult, error)
 ```
 
-Retrieves a field using dot notation (e.g., `"cluster.status.conditions"`) or JSONPath (e.g., `"{.items[0].name}"`).
+Retrieves a field using dot notation (e.g., `"resource.status.conditions"`) or JSONPath (e.g., `"{.items[0].name}"`).
 
 **Return Values:**
 
@@ -217,7 +217,7 @@ import (
 config, _ := config_loader.Load("adapter-config.yaml")
 
 // Get precondition
-precond := config.GetPreconditionByName("clusterStatus")
+precond := config.GetPreconditionByName("resourceStatus")
 
 // Create evaluation context with API response data
 ctx := criteria.NewEvaluationContext()
@@ -318,7 +318,7 @@ See the [adapter authoring guide](../../docs/adapter-authoring-guide.md#5-precon
 
 ```yaml
 preconditions:
-  - name: "clusterStatus"
+  - name: "resourceStatus"
     conditions:
       - field: "reconciledConditionStatus"
         operator: "equals"

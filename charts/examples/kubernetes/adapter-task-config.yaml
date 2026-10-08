@@ -1,28 +1,31 @@
 schema_version: "2.0"
 
+# This example manages clusters. For another kind, change the /clusters/ API
+# paths and the hyperfleet.io/cluster-* labels together with the matching
+# label_selector; resourceId is the event's resource ID.
 params:
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
     type: "string"
     required: true
 
-  - name: checkClusterState
+  - name: checkResourceState
     source:
       api_call:
         method: "GET"
-        url: "/clusters/{{ .clusterId }}"
+        url: "/clusters/{{ .resourceId }}"
         timeout: 10s
 
   - name: generation
-    source: checkClusterState.generation
+    source: checkResourceState.generation
     type: int
 
-  - name: clusterName
-    source: checkClusterState.name
+  - name: resourceName
+    source: checkResourceState.name
 
   - name: is_deleting
     source:
-      expression: "checkClusterState.?deleted_time.hasValue()"
+      expression: "checkResourceState.?deleted_time.hasValue()"
 
 resources:
   - name: namespace
@@ -30,17 +33,17 @@ resources:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ .clusterId }}-k8s"
+        name: "{{ .resourceId }}-k8s"
         labels:
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
-          hyperfleet.io/cluster-name: "{{ .clusterName }}"
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
+          hyperfleet.io/cluster-name: "{{ .resourceName }}"
           hyperfleet.io/managed-by: "{{ .adapter.name }}"
           hyperfleet.io/resource-type: "namespace"
         annotations:
           hyperfleet.io/created-by: "hyperfleet-adapter"
           hyperfleet.io/generation: "{{ .generation }}"
     discovery:
-      by_name: '{{ .clusterId }}-k8s'
+      by_name: '{{ .resourceId }}-k8s'
     lifecycle:
       delete:
         propagationPolicy: Background
@@ -50,11 +53,11 @@ resources:
     manifest:
       ref: "job.yaml"
     discovery:
-      namespace: '{{ .clusterId }}-k8s'
+      namespace: '{{ .resourceId }}-k8s'
       by_selectors:
         label_selector:
           hyperfleet.io/resource-type: "job"
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
     lifecycle:
       delete:
         propagationPolicy: Background
@@ -63,7 +66,7 @@ resources:
 
 post:
   payloads:
-    - name: "clusterStatusPayload"
+    - name: "resourceStatusPayload"
       build:
         adapter: "{{ .adapter.name }}"
         conditions:
@@ -170,11 +173,11 @@ post:
         observed_time: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
 
   post_actions:
-    - name: "reportClusterStatus"
+    - name: "reportResourceStatus"
       api_call:
         method: "PUT"
-        url: "/clusters/{{ .clusterId }}/statuses"
+        url: "/clusters/{{ .resourceId }}/statuses"
         headers:
           - name: "Content-Type"
             value: "application/json"
-        body: "{{ .clusterStatusPayload }}"
+        body: "{{ .resourceStatusPayload }}"
