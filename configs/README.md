@@ -11,10 +11,9 @@ Task config is YAML only; deployment config supports environment and flag
 overrides.
 See the [configuration reference](../docs/configuration.md#task-schema-version)
 for `schema_version` and named transport settings.
-
-<!-- TODO(HYPERFLEET-1448): this skeleton covers one local task only. Link the
-updated v2 authoring guide when it describes named transports, preconditions,
-captures, and by_selectors. -->
+This skeleton covers one local task. The
+[authoring guide](../docs/adapter-authoring-guide.md) covers named transports,
+preconditions, captures and `by_selectors`.
 
 ## Broker configuration
 

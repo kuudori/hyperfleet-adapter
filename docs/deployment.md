@@ -142,7 +142,7 @@ The broker config controls the message broker connection. It can be sourced in t
 | Inline YAML | `broker.yaml` | Full broker config as a YAML string |
 | Existing ConfigMap | `broker.configMapName` | Pre-existing ConfigMap (set `broker.create: false`) |
 
-When using individual properties, `broker.type` must be set to `googlepubsub` or `rabbitmq`. See the [Helm Values Reference](../charts/README.md) for the full list of `broker.googlepubsub.*` and `broker.rabbitmq.*` parameters with defaults. For broker config semantics (queue naming, fan-out behavior, exchange coupling), see the [Configuration Reference](configuration.md#broker).
+When using individual properties, `broker.type` must be set to `googlepubsub` or `rabbitmq`. See the [Helm Values Reference](../charts/README.md) for the full list of `broker.googlepubsub.*` and `broker.rabbitmq.*` parameters with defaults. For broker config semantics (queue naming, fan-out behavior, exchange coupling), see the [Configuration Reference](configuration.md#broker-clientsbroker).
 
 ---
 

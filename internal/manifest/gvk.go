@@ -15,10 +15,6 @@ import (
 // literal value. Appearing once rules out a kind set in both branches of an
 // {{ if }}/{{ else }}, and a second YAML document in the manifest. The
 // executor rejects a rendered manifest whose GVK differs.
-//
-// TODO(HYPERFLEET-1448): document in the authoring guide that declaring apiVersion
-// or kind in both {{ if }}/{{ else }} branches fails at startup, even when their
-// values match. Conditionals in other manifest fields remain supported.
 func StaticGVK(manifest string) (schema.GroupVersionKind, error) {
 	var apiVersion, kind string
 	indent := -1

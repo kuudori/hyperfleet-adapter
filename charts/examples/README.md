@@ -26,7 +26,3 @@ event with mock clients, and checks the trace. It needs Go, git and `jq`.
 
 Replace broker and image placeholders before installing. See the
 [authoring guide](../../docs/adapter-authoring-guide.md) for the v2 model.
-
-<!-- TODO(HYPERFLEET-1448): the authoring guide still shows the pre-v2
-`transport: {client: ...}` object form. This README and the per-example READMEs
-link it for the v2 model. -->

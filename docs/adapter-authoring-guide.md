@@ -1,20 +1,22 @@
 # HyperFleet Adapter Authoring Guide
 
-> **Audience:** Adapter authors writing task configurations for HyperFleet cluster lifecycle events.
+> **Audience:** Adapter authors writing task configurations for HyperFleet resource lifecycle events.
+
+> **Version:** This guide covers task configs that declare `schema_version: "2.0"`. If you maintain an unversioned (v1) task config, use the [v0.3.1 guide](https://github.com/openshift-hyperfleet/hyperfleet-adapter/blob/v0.3.1/docs/adapter-authoring-guide.md). [Appendix E](#appendix-e-concepts-changed-in-v2) summarizes what changed in v2. Some newer load-time rules apply to unversioned tasks as well and are not in the v0.3.1 guide: reserved param names and literal `apiVersion`/`kind` (see Appendix E).
 
 ---
 
 ## 1. Introduction
 
-An **adapter** is an event-driven worker that reacts to cluster lifecycle events, creates Kubernetes resources, and reports status back to the HyperFleet API. You don't write Go code to build an adapter — you write **YAML configuration** that the adapter framework binary executes.
+An **adapter** is an event-driven worker that reacts to lifecycle events of a HyperFleet resource kind (clusters, node pools, ...), creates Kubernetes resources, and reports status back to the HyperFleet API. You don't write Go code to build an adapter — you write **YAML configuration** that the adapter framework binary executes.
 
 Your custom logic lives in the Kubernetes objects created by adapters, the status conditions of these Kubernetes objects will be reported back by the adapter to the HyperFleet API offering external visibility to the managed objects.
 
-This document uses "clusters" as an example of the entities modified by the user through the HyperFleet API, but the concepts apply to other entities, like node pools.
+The framework is type-agnostic: the same task config structure works for any resource kind the HyperFleet API exposes. This guide's examples manage clusters, and parameters use generic names (`resourceId`, `resourceStatusPayload`) so they carry over to other kinds. What is kind-specific is the API path (`/clusters/{{ .resourceId }}`), the status endpoint and labels such as `hyperfleet.io/cluster-id`; change those together for another kind. [NodePool Adapters](#11-nodepool-adapters) shows a second kind, whose events also carry the parent cluster.
 
 The flow of events goes like this:
 
-customer updates cluster -> event -> adapter task -> k8s object performs work -> adapter reports status
+customer updates a resource (for example a cluster) -> event -> adapter task -> k8s object performs work -> adapter reports status
 
 ### What you produce
 
@@ -22,11 +24,11 @@ Every adapter requires configuring 3 main elements:
 
 | Concern |  Purpose |
 |-------|---------|
-| Adapter Config | Deployment settings: API client config, broker subscription, timeouts, retries |
+| Adapter Config | Deployment settings: API client config, broker subscription, timeouts, retries, named stores and transports |
 | Adapter Task Config | Business logic: what to extract, check, create, and report |
 | Broker config |  Broker configuration: Configures broker system (pubsub, rabbitmq) |
 
-The `AdapterConfig` is pretty straightforward, it defines the name of the adapter as well as client configs to interact with HyperFleet API, Kubernetes or Maestro.
+The `AdapterConfig` is pretty straightforward, it defines the name of the adapter, the client configs to interact with the HyperFleet API and Kubernetes, and, for remote delivery, the named stores and transports. See the [Configuration Reference](configuration.md).
 
 Your main authoring effort goes into the `AdapterTaskConfig` which configures the tasks to execute for every object changed by the customer
 
@@ -36,7 +38,7 @@ Create a new adapter when you need to:
 
 - Provision a new type of infrastructure per cluster (namespace, RBAC, DNS, certificates)
 - Validate cluster prerequisites before provisioning
-- Manage resources on a remote cluster via Maestro/ManifestWork
+- Manage resources on a remote target cluster through a remote transport
 
 ### Development workflow
 
@@ -63,7 +65,7 @@ flowchart LR
     P3 --> P4[4. Report Status]
 ```
 
-Post-actions (phase 4) **always execute**, even when preconditions are not met or resources fail. This ensures the adapter always reports its state back to the API.
+Post-actions (phase 4) execute even when preconditions are not met or resources fail, so the adapter can report its state back to the API. Two cases end the event before phase 4 and send no report: a required param that cannot be resolved, and a resource-not-found response from a precondition `api_call` (for example, when the cluster no longer exists). Other precondition API errors, including a 404 from a broken endpoint, continue to post-actions so the adapter can report the failure (see [Error Handling](#7-error-handling)).
 
 ### Generation-based reconciliation
 
@@ -113,7 +115,7 @@ Three languages appear in adapter configs, each for a different purpose:
 
 | Language | Syntax | Use for |
 |----------|--------|---------|
-| Go Templates | `{{ .clusterId }}` | String interpolation in URLs, manifest fields, direct values |
+| Go Templates | `{{ .resourceId }}` | String interpolation in URLs, manifest fields, direct values |
 | CEL | `expression: "..."` | Logic evaluation in preconditions, status conditions, computed values |
 | JSONPath | `field: "path"` | Simple field extraction from API responses |
 
@@ -126,6 +128,7 @@ Three languages appear in adapter configs, each for a different purpose:
 ### File skeleton
 
 ```yaml
+schema_version: "2.0"  # Declares a v2 task. Required when a resource names a transport
 params: []            # Phase 1: Extract variables from event and environment
 preconditions: []     # Phase 2: Evaluate conditions against extracted params
 resources: []         # Phase 3: Create/update Kubernetes resources
@@ -139,9 +142,11 @@ post:                 # Phase 4: Report status
 ```mermaid
 flowchart TD
     START([CloudEvent received]) --> PARAMS[Phase 1: Extract Params]
-    PARAMS -->|required param missing| FAIL_PARAMS[Set adapter.executionError]
-    FAIL_PARAMS --> POST
+    PARAMS -->|required param fails| FAIL_PARAMS[Event fails: status failed]
+    FAIL_PARAMS --> END([Event ends without post-actions])
     PARAMS -->|success| PRECOND[Phase 2: Preconditions]
+    PRECOND -->|API 404, resource not found| NOTFOUND[Set adapter.resourcesSkipped=true, skipReason=ResourceNotFound]
+    NOTFOUND --> END
     PRECOND -->|condition error| FAIL_PRECOND[Set adapter.executionError]
     FAIL_PRECOND --> POST
     PRECOND -->|conditions not met| SKIP[Set adapter.resourcesSkipped=true]
@@ -178,7 +183,7 @@ Parameters are variables extracted from the CloudEvent, the environment, or the 
 ```yaml
 params:
   # From the CloudEvent data
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
     type: "string"
     required: true
@@ -195,25 +200,25 @@ params:
     default: "us-east-1"
 
   # From the HyperFleet API — stores the full JSON response
-  - name: "clusterData"
+  - name: "resourceStatus"
     source:
       api_call:
         method: "GET"
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
         timeout: 10s
         retry_attempts: 3
         retry_backoff: "exponential"
 
   # Dot-notation derivation from an api_call param
   - name: "generationId"
-    source: "clusterData.generation"
+    source: "resourceStatus.generation"
 
   # CEL expression over previously resolved params
   - name: "reconciledStatus"
     source:
       expression: |
-        clusterData.status.conditions.filter(c, c.type == "Reconciled").size() > 0
-          ? clusterData.status.conditions.filter(c, c.type == "Reconciled")[0].status
+        resourceStatus.status.conditions.filter(c, c.type == "Reconciled").size() > 0
+          ? resourceStatus.status.conditions.filter(c, c.type == "Reconciled")[0].status
           : "False"
 ```
 
@@ -224,18 +229,19 @@ params:
 | `event.` | CloudEvent data fields | `event.id`, `event.generation`, `event.kind` |
 | `env.` | Environment variables | `env.REGION`, `env.NAMESPACE` |
 | `config.` | Adapter deployment config fields | `config.adapter.name` |
-| `<param>.` | Dot-notation into an earlier api_call param | `clusterData.generation`, `clusterData.status.phase` |
+| `<param>.` | Dot-notation into an earlier api_call param | `resourceStatus.generation`, `resourceStatus.status.phase` |
+| `adapter.` | Built-in adapter metadata | `adapter.name`, `adapter.version` |
 
 **Structured sources** - use a mapping value under `source:`:
 
 `api_call` - fetches data from the HyperFleet API and stores the full JSON response as a `map` under the param name. The URL is a Go Template rendered against all params resolved so far.
 
 ```yaml
-- name: "clusterData"
+- name: "resourceStatus"
   source:
     api_call:
       method: "GET"
-      url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
+      url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
       timeout: 10s
       retry_attempts: 3
       retry_backoff: "exponential"   # also: linear, constant
@@ -247,8 +253,8 @@ params:
 - name: "reconciledStatus"
   source:
     expression: |
-      clusterData.status.conditions.filter(c, c.type == "Reconciled").size() > 0
-        ? clusterData.status.conditions.filter(c, c.type == "Reconciled")[0].status
+      resourceStatus.status.conditions.filter(c, c.type == "Reconciled").size() > 0
+        ? resourceStatus.status.conditions.filter(c, c.type == "Reconciled")[0].status
         : "False"
 ```
 
@@ -265,11 +271,11 @@ params:
 File-sourced params can be referenced in `api_call` headers via Go Templates:
 
 ```yaml
-- name: "clusterData"
+- name: "resourceStatus"
   source:
     api_call:
       method: "GET"
-      url: "/clusters/{{ .clusterId }}"
+      url: "/clusters/{{ .resourceId }}"
       headers:
         - name: "Authorization"
           value: "Bearer {{ .k8sToken }}"
@@ -292,7 +298,7 @@ If type conversion fails on a **required** param, execution stops. On an optiona
 
 ### Common parameters
 
-Most adapters need at least `clusterId` from the event and a `clusterData` api_call param to fetch the current cluster state. From `clusterData`, derive any fields you need as separate params using dot-notation or expression sources.
+Most adapters need at least `resourceId` from the event and a `resourceStatus` api_call param to fetch the current resource state. From `resourceStatus`, derive any fields you need as separate params using dot-notation or expression sources.
 
 ---
 
@@ -318,7 +324,7 @@ Two syntaxes are available:
 
 ```yaml
     expression: |
-      reconciledStatus == "False" && clusterData.generation > 0
+      reconciledStatus == "False" && resourceStatus.generation > 0
 ```
 
 > **Scope:** Conditions see all resolved params and adapter metadata.
@@ -335,9 +341,8 @@ Two syntaxes are available:
 | `greaterThan` | Numeric greater than |
 | `lessThan` | Numeric less than |
 | `exists` | Field exists (no value needed) |
-| `notExists` | Field does not exist (no value needed) |
-| `greaterThanOrEqual` | Numeric greater than or equal |
-| `lessThanOrEqual` | Numeric less than or equal |
+
+These eight are the complete set; config validation rejects any other operator. For "does not exist", "greater than or equal" or "less than or equal", use a CEL `expression` instead (for example `!has(resourceStatus.deleted_time)` or `resourceStatus.generation >= 2`).
 
 ### Chaining preconditions
 
@@ -345,25 +350,27 @@ Preconditions execute in order. All params (including those from api_call source
 
 ```yaml
 params:
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
-  - name: "clusterData"
+  - name: "resourceStatus"
     source:
       api_call:
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
-  - name: "clusterName"
-    source: "clusterData.name"
+        method: "GET"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
+  - name: "resourceName"
+    source: "resourceStatus.name"
   - name: "statusesData"
     source:
       api_call:
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+        method: "GET"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
   - name: "lzReconciled"
     source:
       expression: |
         statusesData.items.filter(i, i.adapter == "landing-zone")[0].data.namespace.status
 
 preconditions:
-  - name: "clusterReady"
+  - name: "resourceReady"
     conditions:
       - field: "lzReconciled"
         operator: "equals"
@@ -386,21 +393,22 @@ A condition-only precondition (e.g., "only run when cluster is NOT Reconciled") 
 ```yaml
 # Condition-only pattern - INCOMPLETE
 params:
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
-  - name: "clusterData"
+  - name: "resourceStatus"
     source:
       api_call:
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
+        method: "GET"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
   - name: "reconciledStatus"
     source:
       expression: |
-        clusterData.status.conditions.filter(c, c.type == "Reconciled").size() > 0
-          ? clusterData.status.conditions.filter(c, c.type == "Reconciled")[0].status
+        resourceStatus.status.conditions.filter(c, c.type == "Reconciled").size() > 0
+          ? resourceStatus.status.conditions.filter(c, c.type == "Reconciled")[0].status
           : "False"
 
 preconditions:
-  - name: "checkCluster"
+  - name: "checkResource"
     conditions:
       - field: "reconciledStatus"
         operator: "equals"
@@ -429,24 +437,25 @@ To implement time-based stability checks, you need to know how long a cluster ha
 
 ```yaml
 params:
-  - name: "clusterId"
+  - name: "resourceId"
     source: "event.id"
-  - name: "clusterData"
+  - name: "resourceStatus"
     source:
       api_call:
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
-  - name: "clusterNotReconciled"
+        method: "GET"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
+  - name: "resourceNotReconciled"
     source:
       expression: |
-        clusterData.status.conditions.filter(c, c.type == "Reconciled").size() > 0
-          ? clusterData.status.conditions.filter(c, c.type == "Reconciled")[0].status != "True"
+        resourceStatus.status.conditions.filter(c, c.type == "Reconciled").size() > 0
+          ? resourceStatus.status.conditions.filter(c, c.type == "Reconciled")[0].status != "True"
           : true
-  - name: "clusterReconciledTTL"
+  - name: "resourceReconciledTTL"
     source:
       expression: |
         (timestamp(now()) - timestamp(
-          clusterData.status.conditions.filter(c, c.type == "Reconciled").size() > 0
-            ? clusterData.status.conditions.filter(c, c.type == "Reconciled")[0].last_transition_time
+          resourceStatus.status.conditions.filter(c, c.type == "Reconciled").size() > 0
+            ? resourceStatus.status.conditions.filter(c, c.type == "Reconciled")[0].last_transition_time
             : now()
         )).getSeconds() > 300
 
@@ -454,33 +463,36 @@ preconditions:
   - name: "validationCheck"
     # Precondition passes if cluster is NOT Reconciled OR if cluster is Reconciled and stable for >300 seconds since last transition (enables self-healing)
     expression: |
-      clusterNotReconciled || clusterReconciledTTL
+      resourceNotReconciled || resourceReconciledTTL
 ```
 
 **What this does:**
 
-- `clusterNotReconciled` → Captures whether the cluster is NOT Reconciled (true when Reconciled condition is missing or not "True")
-- `clusterReconciledTTL` → Captures whether the cluster has been Reconciled for >5 minutes (300 seconds) since the last status transition
+- `resourceNotReconciled` → Captures whether the cluster is NOT Reconciled (true when Reconciled condition is missing or not "True")
+- `resourceReconciledTTL` → Captures whether the cluster has been Reconciled for >5 minutes (300 seconds) since the last status transition
 - `validationCheck` → Evaluates both conditions: run resource phase when cluster is NOT Reconciled OR when cluster has been Reconciled and stable for >5 minutes (self-healing)
 
-**Simplified version** using domain-specific CEL helpers:
+**Deprecated compatibility example** using domain-specific CEL helpers (existing configs only):
+
+Direct `preconditions[].api_call` remains accepted but triggers a deprecation warning. For new tasks, put the API call in `params[].source.api_call` and evaluate the fetched values in a precondition; see [Parameter Extraction](#4-parameter-extraction).
 
 ```yaml
 preconditions:
-  - name: "checkClusterState"
+  - name: "checkResourceState"
     api_call:
-      url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
+      method: "GET"
+      url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
     capture:
-      - name: "clusterNotReconciled"
+      - name: "resourceNotReconciled"
         expression: |
           conditionStatus(status.conditions, "Reconciled") != "True"
-      - name: "clusterReconciledTTL"
+      - name: "resourceReconciledTTL"
         expression: |
           stableFor(status.conditions, "Reconciled", 300)
 
   - name: "validationCheck"
     expression: |
-      clusterNotReconciled || clusterReconciledTTL
+      resourceNotReconciled || resourceReconciledTTL
 ```
 
 **Important notes:**
@@ -493,56 +505,70 @@ preconditions:
 
 ## 6. Resources
 
-Resources define the Kubernetes objects your adapter creates on the management cluster. They execute **sequentially** in the order listed — a namespace defined first is available for resources defined after it.
+Resources define the Kubernetes objects your adapter delivers. Each entry is a plain Kubernetes manifest plus a `discovery` that reads the live object back. A resource can also name a [transport](#transports) that decides where the manifest goes, and a `lifecycle` that gates its creation and deletion. Resources are processed **sequentially in the order listed**; [Ordering resources](#ordering-resources) describes the model.
 
-**Important**: Include an annotation `hyperfleet.io/generation: {{ .generation }}` to the kubernetes resources to create. This will be used by adapters to know if the object is in current generation or must be updated.
+**Important**: add the annotation `hyperfleet.io/generation: "{{ .generation }}"` to every manifest. The adapter compares it with the annotation on the live object to decide between create, update and skip, and a remote transport rejects a manifest that does not carry it.
+
+### Resource fields
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `name` | yes | The resource's alias in CEL: `resources.<name>` and `resource_states.<name>`. Starts with a lowercase letter and contains only letters, numbers and underscores |
+| `manifest` | yes | The Kubernetes object to deliver: an inline mapping, an inline block scalar, or a `ref` to a file. `apiVersion` and `kind` must be literal values, not templates, because the loader reads them without rendering |
+| `discovery` | yes | How to read the live object back: `by_name` or `by_selectors` |
+| `transport` | no | Name of a transport. Omit it to apply to the cluster the adapter is configured for (see [Transports](#transports)) |
+| `lifecycle` | no | `create.when` and `delete.when` gates (see [Ordering resources](#ordering-resources)) |
+| `recreate_on_change` | no | Local transport only. Delete and recreate the object instead of updating it when its generation changes |
 
 ### Inline manifests
 
+The snippets in this section omit `transport`, so the resources are applied to the local cluster.
+
 ```yaml
 resources:
-  - name: "clusterNamespace"
-    transport:
-      client: "kubernetes"
+  - name: "namespace"
     manifest:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ .clusterId }}"
+        name: "{{ .resourceId }}"
         labels:
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
           hyperfleet.io/managed-by: "{{ .adapter.name }}"
           hyperfleet.io/resource-type: "namespace"
         annotations:
           hyperfleet.io/generation: "{{ .generation }}"
     discovery:
-      by_name: "{{ .clusterId }}"
+      by_name: "{{ .resourceId }}"
 ```
 
 Inline manifests are parsed as YAML before template rendering, so they support `{{ .var }}` substitution in values but **not** structural directives (`{{ if }}`, `{{ range }}`). To use structural Go templates inline, use a YAML block scalar (`|`):
 
 ```yaml
 resources:
-  - name: "clusterConfig"
-    transport:
-      client: "kubernetes"
+  - name: "configMap"
     manifest: |
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: "{{ .clusterId }}-config"
+        name: "{{ .resourceId }}-config"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
       data:
-        cluster_id: "{{ .clusterId }}"
+        cluster_id: "{{ .resourceId }}"
       {{ if eq .platformType "gcp" }}
         platform_tier: "cloud"
       {{ else }}
         platform_tier: "onprem"
       {{ end }}
     discovery:
-      by_name: "{{ .clusterId }}-config"
+      namespace: "default"
+      by_name: "{{ .resourceId }}-config"
 ```
 
 The `|` block scalar tells YAML to treat the content as a raw string, which preserves Go template directives for rendering at execution time.
+
+Keep `apiVersion` and `kind` out of conditionals. Each must appear once at the top level of the manifest, so declaring them in both branches of an `{{ if }}`/`{{ else }}` fails at load time with `apiVersion is set more than once`, even when both branches use the same values. Conditionals in other fields are fine.
 
 ### External manifest files
 
@@ -551,53 +577,70 @@ For larger manifests, reference an external YAML file:
 ```yaml
 resources:
   - name: "validationJob"
-    transport:
-      client: "kubernetes"
     manifest:
-      ref: "/etc/adapter/job.yaml"
+      ref: "job.yaml"
     discovery:
-      namespace: "{{ .clusterId }}"
+      namespace: "{{ .resourceId }}"
       by_selectors:
         label_selector:
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
           hyperfleet.io/resource-type: "job"
 ```
 
-Note that the location of the referenced file is a path of the adapter pod, so it has to be mounted from a ConfigMap in the adapter deployment.
+A relative `ref` resolves against the directory of the task config file, and the resolved path must stay inside that directory. In a deployment, mount the manifest file next to the task config, for example from the same ConfigMap.
 
 The referenced file is a Go template and has access to all resolved params.
 
-### Resource lifecycle
+### Resource operations
 
-The framework determines the operation automatically:
+The adapter decides the operation for each resource from the generation annotation:
 
 | Operation | When | Behavior |
 |-----------|------|----------|
-| `create` | Resource doesn't exist | Apply the manifest |
-| `update` | Resource exists, generation changed | Patch the resource |
-| `skip` | Resource exists and generation unchanged, **or** resource doesn't exist and `lifecycle.create.when` evaluates to `false` | No-op; the latter case also sets `adapter.resourcesSkipped` to `true` |
-| `recreate` | `recreate_on_change: true` is set | Delete then create |
-| `delete` | `lifecycle.delete.when` expression evaluates to `true` | Delete the resource; remaining resources still processed |
+| `create` | The resource does not exist | Apply the manifest |
+| `update` | The resource exists and its generation differs from the manifest's | Apply the changed manifest |
+| `skip` | The resource exists and its generation is unchanged, **or** the resource does not exist and `lifecycle.create.when` evaluates to `false` | No-op; the latter case also sets `adapter.resourcesSkipped` to `true` |
+| `recreate` | The generation differs and `recreate_on_change: true` is set (local transport only) | Delete then create |
+| `delete` | `lifecycle.delete.when` evaluates to `true` | Delete the resource; remaining resources are still processed |
 
 ### Discovery
 
-After applying a resource, the framework **discovers** it to read its server-populated state (status, uid, resourceVersion). This state is then available in post-action CEL expressions via `resources.<name>`.
+After applying a resource, the adapter **discovers** it: it reads the whole live object back. The object is then available in CEL as `resources.<name>`, with its `metadata`, `spec`, `status` and every other field, exactly as the cluster returns it. Its discovery outcome is available as `resource_states.<name>`.
 
-Two discovery modes:
+Two discovery modes. Set exactly one of `by_name` and `by_selectors`:
 
 ```yaml
 # By name (direct lookup)
 discovery:
-  by_name: "{{ .clusterId }}"
+  by_name: "{{ .resourceId }}"
 
 # By label selector
 discovery:
-  namespace: "{{ .clusterId }}"       # omit or "*" for cluster-scoped
+  namespace: "{{ .resourceId }}"       # omit for cluster-scoped kinds
   by_selectors:
     label_selector:
-      hyperfleet.io/cluster-id: "{{ .clusterId }}"
+      hyperfleet.io/cluster-id: "{{ .resourceId }}"
       hyperfleet.io/resource-type: "namespace"
 ```
+
+When a selector matches several objects, the one with the highest `hyperfleet.io/generation` annotation is used.
+
+Read the discovered object directly. There is no copying or promotion of fields:
+
+```cel
+resources.?namespace.?status.?phase.orValue("")
+resources.?validationJob.?status.?conditions.orValue([]).exists(c, c.type == "Complete" && c.status == "True")
+```
+
+When the Resources phase runs and any resource configures `lifecycle.create` or `lifecycle.delete`, the executor pre-discovers all resources before the apply loop. A resource may therefore have a discovery state and object in context even if its apply is not reached; a resource that was not discovered in the pass has no state:
+
+| `resource_states.<name>` | Meaning | `resources.<name>` |
+|--------------------------|---------|--------------------|
+| `present` | The object was read back | The object |
+| `confirmed_deleted` | The object was not found, and nothing suggests it is still on its way | Absent |
+| `unsynced` | The read-back cannot say yet whether the object exists (remote transports only) | The last known object, or an empty placeholder when there is none |
+
+`confirmed_deleted` means "not found". It is also the state of a resource that was never created. Use `resource_states` for presence decisions: `resources.?X.hasValue()` is `true` for the empty placeholder of an `unsynced` resource, so it is not a presence check.
 
 ### Labeling conventions
 
@@ -610,208 +653,139 @@ Always label your resources for discovery and traceability:
 | `hyperfleet.io/resource-type` | Resource category for discovery |
 | `hyperfleet.io/generation` | Generation that created/updated this resource (annotation) |
 
-### Transport types
+### Transports
 
-Different transport types are available for resources:
+A resource's `transport` selects how its manifest is delivered and read back. The task config only names a transport. The transport itself is declared in the deployment config, and naming one requires `schema_version: "2.0"` in the task config.
 
-- Kubernetes: makes use of an active Kubernetes configuration to create k8s objects using the Kubernetes API
-  - The credentials can be specified using a custom KubeConfigPath in the `AdapterConfig`
-  - Or using in-cluster configuration to deploy to the same cluster the Adapter is running
-- Maestro: connects to a maestro server to send manifestworks which can contain many resources as manifests
+| Transport | Declared | Delivery |
+|-----------|----------|----------|
+| `kubernetes` | Implicit. The default when `transport` is omitted. The name is reserved for the local transport | Applied directly to the cluster the adapter is configured for |
+| A remote name, for example `remote-primary` | In the deployment config under `transports`, with `type: remote`, a `store`, a `target_cluster` and `resource_plurals` | Written to a store. The remote cluster side applies it and mirrors the live object back, which discovery reads |
 
-#### Kubernetes (direct)
+Both transports use the same resource fields. Only `transport` selects between them. The behavior differences are listed under [Remote transports](#remote-transports).
 
-The default. Resources are applied directly to the management cluster's API server.
+#### Local Kubernetes
+
+The default. The adapter applies the manifest directly through the Kubernetes API. Set the credentials with `clients.kubernetes.kube_config_path` in the deployment config, or leave it empty to use the in-cluster configuration of the cluster the adapter runs in.
 
 ```yaml
 resources:
   - name: "myResource"
-    transport:
-      client: "kubernetes"
+    # transport omitted: local Kubernetes. "transport: kubernetes" means the same.
     manifest:
       # ... standard K8s manifest
 ```
 
-#### Maestro (remote clusters via ManifestWork)
+#### Remote transports
 
-For resources that need to land on a remote spoke cluster managed through Open Cluster Management / Maestro. The manifest is a `ManifestWork` that wraps the actual resources.
-
-<details>
-
-<summary>Maestro adapter-task-config example</summary>
-
-```yaml
-resources:
-  - name: "clusterSetup"
-    transport:
-      client: "maestro"
-      maestro:
-        target_cluster: "{{ .placementClusterName }}"
-    manifest:
-      apiVersion: work.open-cluster-management.io/v1
-      kind: ManifestWork
-      metadata:
-        name: "manifestwork-{{ .clusterId }}"
-        labels:
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
-      spec:
-        workload:
-          manifests:
-            - apiVersion: v1
-              kind: Namespace
-              metadata:
-                name: "{{ .clusterId }}"
-                labels:
-                  hyperfleet.io/cluster-id: "{{ .clusterId }}"
-                  hyperfleet.io/resource-type: "namespace"
-            - apiVersion: v1
-              kind: ConfigMap
-              metadata:
-                name: "{{ .clusterId }}-config"
-                namespace: "{{ .clusterId }}"
-              data:
-                cluster_id: "{{ .clusterId }}"
-        manifestConfigs:
-          - resourceIdentifier:
-              group: ""
-              resource: "namespaces"
-              name: "{{ .clusterId }}"
-            updateStrategy:
-              type: "ServerSideApply"
-            feedbackRules:
-              - type: "JSONPaths"
-                jsonPaths:
-                  - name: "phase"
-                    path: ".status.phase"
-    discovery:
-      by_selectors:
-        label_selector:
-          hyperfleet.io/cluster-id: "{{ .clusterId }}"
-```
-
-</details>
-
-#### Nested discovery (Maestro)
-
-A ManifestWork bundles multiple sub-resources. To inspect those sub-resources individually in your post-action CEL expressions without traversing the whole resources tree, you can use `nested_discoveries`:
-
-```yaml
-    nested_discoveries:
-      - name: "namespace0"
-        discovery:
-          by_selectors:
-            label_selector:
-              hyperfleet.io/resource-type: "namespace"
-      - name: "configmap0"
-        discovery:
-          by_name: "{{ .clusterId }}-config"
-```
-
-Nested discoveries are **promoted to top-level keys** in the `resources` map. Access them as `resources.namespace0`, not `resources.clusterSetup.namespace0`. This keeps CEL expressions clean.
-
-Beside this shortcut, the nested Discovery also allows accessing status data from the resource such as statusFeedback and conditions.
-
-**statusFeedback** — Maestro populates `statusFeedback.values` when `feedbackRules` are configured on the ManifestWork. Use it to read individual field values from the sub-resource without traversing the full ManifestWork tree:
-
-```yaml
-# Available when the namespace phase (reported via feedbackRules) is Active
-status:
-  expression: |
-    resources.?namespace0.?statusFeedback.?values.orValue([])
-      .filter(v, v.name == "phase").size() > 0
-    ? resources.namespace0.statusFeedback.values
-        .filter(v, v.name == "phase")[0].fieldValue.string == "Active"
-      ? "True" : "False"
-    : "Unknown"
-```
-
-**conditions** — If the sub-resource reports a standard Kubernetes `conditions` array (e.g., a CRD managed by an operator on the spoke cluster), access it the same way you would on a directly discovered resource:
-
-```yaml
-# Available when the nested resource reports Ready=True
-status:
-  expression: |
-    resources.?namespace0.?status.?conditions.orValue([])
-      .exists(c, c.type == "Ready" && c.status == "True")
-    ? "True" : "False"
-```
-
-#### Desire transport (remote reads)
-
-The **desire transport** delivers resources by recording declarative intent into a backend store rather than applying directly. Instead of writing to a cluster's API server, the adapter records an *apply desire* — the intent for the resource — into the store. The [applier](https://github.com/openshift-hyperfleet/hyperfleet-applier) reconciles that desire against the backend, and the resulting live object is mirrored back through a *read desire* that discovery consumes.
+A remote resource names a transport declared under `transports`:
 
 ```yaml
 resources:
   - name: "remoteConfig"
-    transport:
-      client: "remote-primary"
-      desire:
-        target_cluster: "{{ .clusterId }}"
-        resource: "configmaps"
+    transport: remote-primary
     manifest:
-      # ... standard manifest; discovery reads the mirrored object
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ .resourceId }}-config"
+        namespace: "{{ .resourceId }}-remote"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
+      data:
+        cluster_id: "{{ .resourceId }}"
     discovery:
-      by_name: "{{ .clusterId }}-config"
+      namespace: "{{ .resourceId }}-remote"
+      by_name: "{{ .resourceId }}-config"
 ```
 
-For desire-transport resources, discovery returns the **full mirrored object** from the read desire — status and all — in `resources.<name>` with the same shape a locally discovered object would have. The mirror is eventually consistent and may be stale; see the contract below. You write CEL against it exactly as you would for a Kubernetes-direct resource; no `statusFeedback` traversal or feedback rules are involved.
+The deployment-side fields (`store`, `target_cluster`, `resource_plurals`) and what the operator must provision are in [Configuration Reference: Transports and stores](configuration.md#transports-and-stores).
+
+Discovery returns the **full mirrored object**, status and all, in `resources.<name>`, with the same shape a local object has. The mirror is eventually consistent and can be stale; see [the contract below](#the-eventual-consistency-contract-for-remote-reads).
+
+**Constraints the loader enforces.** A violation fails at load time. `hyperfleet-adapter config-dump` reports it without a broker or a cluster (see [Testing and Validation](#12-testing-and-validation)):
+
+- Every manifest kind needs an entry in the transport's `resource_plurals`.
+- `lifecycle.delete` needs `discovery.by_name`. A selector cannot identify which object to delete.
+- `target_cluster` may use only built-in variables, params and precondition captures.
+- The transport name must exist: `kubernetes` or a name declared under `transports`.
+
+The generation annotation is checked when the resource is applied. A manifest without a valid `hyperfleet.io/generation` annotation fails the resources phase.
+
+**Behavior that differs from the local transport:**
+
+- `propagationPolicy` has no effect on a remote delete.
+- `recreate_on_change` has no effect. The loader does not warn about it, and a dry run still reports `recreate`.
+- A successful apply means the write was accepted. It does not mean the remote cluster has converged. Dependent resources can need another event before their gates open.
 
 ### The eventual-consistency contract for remote reads
 
-Remote reads through the desire path are **eventually consistent**. The object you read is not a live query against the backend — it is the last state the applier mirrored back. This section states what you can rely on when writing CEL against a desire-transport resource.
+Remote reads are **eventually consistent**. The object you read is not a live query against the target cluster. It is the last state the remote side mirrored back. This section states what you can rely on when writing CEL against a remote resource.
 
 #### Reads return the last mirrored state, not a live query
 
-When discovery reads a desire-transport resource, it returns the object as of the last time the applier mirrored it — not the state at the instant of reads. There is a lag between the moment you record an apply desire and the moment the read-desire mirror reflects the applier's work. During that window, discovery returns the *previous* mirrored state, or nothing at all if the resource has never synced.
+When discovery reads a remote resource, it returns the object as of the last time the remote side mirrored it, not the state at the instant of the read. There is a lag between the moment the adapter writes the requested manifest and the moment the mirror reflects the remote side's work. During that window, discovery returns the *previous* mirrored state, or reports `unsynced` if the resource has never been mirrored.
 
 Treat every remote read as **potentially stale**. Do not assume a change you just applied is visible on the next line of CEL.
 
 #### Staleness is visible through a generation mismatch
 
-The `hyperfleet.io/generation` annotation is written once on the manifest and **round-trips through the mirror** into the mirrored live object. This is the staleness signal:
+The `hyperfleet.io/generation` annotation is written once on the manifest and **round-trips through the mirror** into the mirrored object. This is the staleness signal:
 
-For desire transport, the adapter validates this annotation and compares it with the stored apply desire before writing. An unchanged generation causes no store write when the paired read desire exists, even if the mirror still shows an older generation. The mirror may veto an older incoming generation; when it is ahead of the stored apply desire, an incoming generation equal to the mirror can repair that desire. A missing read pair is recreated on an equal-generation pass.
+- When the generation on the mirrored object **matches** the generation you applied, the mirror is current. The remote side has caught up with your request.
+- When they **differ**, the mirror is stale. The remote side has not yet reconciled your latest request.
 
-- When the generation on the mirrored object **matches** the generation you applied, the mirror is current — the applier has caught up with your intent.
-- When they **differ**, the mirror is stale — the applier has not yet reconciled your latest apply desire.
+On a mismatch the adapter does not block on a live read. It reports the mirrored state it has, and the next event reads it again. Design your status conditions to say *"not converged yet"* on a mismatch instead of treating it as a failure.
 
-On a generation mismatch the adapter does not block on a live read. It reports the mirrored state it has, while the surrounding reconciliation system is expected to trigger another reconciliation as the mirror advances. Design your status conditions to say *"not converged yet"* on a mismatch instead of treating it as a failure.
+The adapter validates the annotation and compares it with the last request it wrote before writing again. What you observe:
+
+- The same generation as the last write causes no write (`skip`), even if the mirror still shows an older generation.
+- A lower generation than the last write, or than the mirror, is refused (`skip`, with a reason that starts `stale generation`). An old event cannot roll a resource back.
+- A higher generation is written (`update`). A resource that was never written is a `create`.
+- If the mirror is ahead of the last write, an incoming generation equal to the mirror's is written instead of refused.
+- The adapter re-establishes the read-back of a resource on every pass, including a skipped one. A read-back removed from outside returns on the next event.
 
 ```mermaid
 sequenceDiagram
     participant Adapter
-    participant Store as Desire store
-    participant Applier
-    participant Mirror as Read-desire mirror
+    participant Store
+    participant Remote as Remote cluster side
+    participant Mirror as Mirrored state
 
-    Adapter->>Store: record apply desire (generation N+1)
+    Adapter->>Store: write requested manifest (generation N+1)
     Adapter->>Mirror: discover → still shows generation N
     Note over Adapter: generation mismatch → report not converged; do not block
-    Applier->>Store: reconcile desire
-    Applier->>Mirror: mirror live object (generation N+1)
-    Note over Adapter: next reconcile: mirror matches → converged
+    Remote->>Store: reconcile the request
+    Remote->>Mirror: mirror live object (generation N+1)
+    Note over Adapter: next event: mirror matches → converged
 ```
 
 #### Not-synced-yet and not-found are distinct outcomes
 
-Three states are distinguishable downstream, and they mean different things:
+Three states are distinguishable in `resource_states`, and they mean different things:
 
 | State | Meaning | What it tells the author |
 |-------|---------|--------------------------|
-| **Unsynced** | The read mirror has not synced yet, or an apply or delete is still in flight, so a missing or NotFound mirror is not conclusive | Transient. Do not treat it as confirmed absence |
-| **Present** | The mirror holds an object | Read its fields; check the mirrored generation before trusting freshness |
-| **Confirmed deleted** | No apply or delete is in flight, and the mirror reports NotFound or no desire exists for the target at all (never created, or already cleaned up). During deletion, `DeleteDesire=Deleted` also confirms absence while the read mirror is still stale | The object is absent and no transport work is pending. It does not prove the object once existed |
+| **Unsynced** | The read-back has not synced yet, or a write or delete is still in flight, so a missing or not-found mirror is not conclusive | Transient. Do not treat it as confirmed absence |
+| **Present** | The mirror holds an object | Read its fields. Check the mirrored generation before trusting freshness |
+| **Confirmed deleted** | No write or delete is in flight and the mirror reports not found, or nothing was ever requested for the target. After this resource's own delete step in the pass, the remote side's delete confirmation also counts, even while the mirror still shows the object. Discovery alone never reports `confirmed_deleted` while the mirror holds the object | The object is absent and no work is pending. It does not prove the object once existed |
 
-The critical distinction is **unsynced vs. confirmed deleted**: an absent mirror ("I have not seen it yet") is not the same as a confirmed-gone resource ("it does not exist"). Use `resource_states` to make that distinction. Reporting `Ready=False` because a mirror has not synced is a bug — the resource may be seconds from appearing. A confirmed deletion is a separate terminal outcome.
+The critical distinction is **unsynced vs. confirmed deleted**: an absent mirror ("I have not seen it yet") is not the same as a confirmed-gone resource ("it does not exist"). Reporting `Available=False` because a mirror has not synced is a bug, because the resource may be seconds from appearing. A confirmed deletion is a separate terminal outcome.
+
+A selector (`by_selectors`) result comes from mirrors only. It is `unsynced` while an unsynced mirror remains in the selector's scope, and an empty result is otherwise `confirmed_deleted`. A selector cannot see a write that has not reached a mirror yet, so use `discovery.by_name` for resources that gates depend on.
+
+#### The same CEL works on both transports
+
+Local discovery produces only `present` or `confirmed_deleted`. A remote transport can also produce `unsynced`. CEL written against `resource_states` and full objects therefore behaves the same on both transports. On a local resource, the `unsynced` branch never fires.
 
 #### Writing CEL against remote reads
 
-Use `resource_states` to distinguish a present mirror from an unsynced or confirmed-deleted resource. Use `resources` to read object fields only after discovery reports `present`:
+Use `resource_states` to distinguish a present mirror from an unsynced or confirmed-deleted resource. Read object fields only after discovery reports `present`:
 
 ```cel
 // The mirror contains an object and it reflects this generation
 resource_states.?remoteConfig.orValue("") == "present"
-  && resources.remoteConfig.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+  && resources.remoteConfig.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
 
 // Confirmed absence is different from an unavailable mirror
 resource_states.?remoteConfig.orValue("") == "confirmed_deleted"
@@ -820,73 +794,91 @@ resource_states.?remoteConfig.orValue("") == "confirmed_deleted"
 resource_states.?remoteConfig.orValue("") == "unsynced"
 ```
 
-`resources.?remoteConfig.hasValue()` reports whether the alias has a non-null value in the CEL context. It is `true` for a present object and for the empty placeholder used for `unsynced`; it is `false` for confirmed deletion or an unprocessed resource. Use `resource_states` for presence and lifecycle decisions.
+`resources.?remoteConfig.hasValue()` reports whether the alias has a non-null value in the CEL context. It is `true` for a present object and for the empty placeholder of an `unsynced` resource. It is `false` for a confirmed deletion or an unprocessed resource. Use `resource_states` for presence and lifecycle decisions.
 
-Guidance for status conditions:
+Guidance for status conditions (see also [Remote-backed conditions](#remote-backed-conditions)):
 
-- Default a remote-backed condition to `"Unknown"` while `resource_states.X` is `unsynced` or missing — it is not evidence of failure.
-- Only trust a mirrored object's status once its `hyperfleet.io/generation` matches the `generation` you applied; otherwise you are reading a stale snapshot.
-- Reserve `"False"`/failure for a confirmed-gone resource or an actual bad status on a current mirror, never for staleness.
+- Default a remote-backed condition to `"Unknown"` while `resource_states.X` is `unsynced` or missing. It is not evidence of failure.
+- Only trust a mirrored object's status once its `hyperfleet.io/generation` matches the `generation` you applied. Otherwise you are reading a stale snapshot.
+- Reserve `"False"` for a confirmed-gone resource or an actual bad status on a current mirror, never for staleness.
 
-> **See also:** [ADR-0015 — Eventual consistency for the read path](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/adrs/0015-eventual-consistency-for-read-path.md) for general background on the API read path (transaction-free GET/LIST reads and polling mitigation). It does not define the desire transport, the read-desire mirror, or generation matching described above. Reconciliation scheduling is owned by the surrounding event/reconciliation system.
+> **See also:** [ADR-0015: Eventual consistency for the read path](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/adrs/0015-eventual-consistency-for-read-path.md) for general background on the API read path (transaction-free GET/LIST reads and polling mitigation). It does not define the remote mirror or the generation matching described above. Reconciliation scheduling is owned by the surrounding event/reconciliation system.
 
-### Conditional creation (lifecycle.create)
+### Ordering resources
 
-Resources can gate their **initial creation** on a CEL expression using the `lifecycle.create` block. This lets you apply a resource only once some runtime condition holds (a feature flag param, a sibling resource's discovered state, an event payload field) without blocking the rest of the resources phase — unlike preconditions, which are all-or-nothing for the entire phase.
+The adapter has no `order` or `depends_on` field. Ordering is a small model made of list position and `lifecycle.*.when` gates. The decision behind it is recorded in the [DSL v2 resource ordering spike](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/docs/dsl-v2-resource-ordering-spike.md).
 
-#### Configuring lifecycle.create
+**The model:**
+
+- **Apply runs in list order and fails fast.** The first failed apply stops the resources phase. Resources applied before it stay applied, and later ones are not processed. Post-actions still run, with `adapter.executionStatus` set to `"failed"`.
+- **Delete is best-effort.** Every delete is attempted, even after one fails. All errors are collected and reported together.
+- **Every resource is pre-discovered before any `when` is evaluated.** Gates can therefore read the state of a sibling listed later in the same list. Pre-discovery runs when any resource in the list has a `lifecycle` block. A discovery error that is neither "not found" nor "not synced" fails the phase instead of being read as absence.
+- **`lifecycle.create.when` gates creation only.** It is evaluated for a resource that is not found, and ignored once the resource exists. A resource whose read-back is `unsynced` counts as not found.
+- **`lifecycle.delete.when` gates deletion.** It is evaluated on every pass. A resource whose delete gate is `false` is applied normally, **even while the cluster is being deleted**.
+- **A gate is evaluated in a fixed order for each resource:** the create gate first (only when the resource is not found), then the delete gate, then the apply.
+- **There is no checkpoint.** Every event is a full pass from the top, and every `when` is evaluated again from scratch. A resource deferred in one pass resolves on a later pass, once the state of its dependency changes.
+- **Ordering guarantees attempts, not convergence.** A gate sees the state read at the start of the pass, plus whatever earlier resources in the list changed during it. On a remote transport a dependent can need another event before its gate opens.
+
+#### Conditional creation (lifecycle.create)
+
+Resources can gate their **initial creation** on a CEL expression using the `lifecycle.create` block. This lets you apply a resource only once some runtime condition holds (a feature flag param, a sibling resource's discovered state, an event payload field) without blocking the rest of the resources phase. Preconditions, by contrast, are all-or-nothing for the entire phase.
 
 ```yaml
 resources:
   - name: "optionalFeatureConfig"
-    transport:
-      client: "kubernetes"
     manifest:
       # ...
-    discovery:                              # required: needed to check whether the resource already exists
-      by_name: "{{ .clusterId }}-feature"
+    discovery:                              # required on every resource
+      by_name: "{{ .resourceId }}-feature"
     lifecycle:
       create: # optional block; when present, `when` is required
         when:
-          expression: "params.?enableOptionalFeature.orValue(false)"
+          expression: "enableOptionalFeature"
 ```
+
+Here `enableOptionalFeature` is a param (params are top-level CEL names, not `params.<name>`).
 
 **Requirements:**
 
-- `discovery` must be configured on the same resource — without it the executor cannot tell whether the resource already exists, and validation rejects the config.
-- `lifecycle.create` itself is optional. But when present, `when.expression` is required and must be a valid CEL expression — config validation rejects a `lifecycle.create` block with a missing or empty `when.expression`.
+- `lifecycle.create` itself is optional. When present, `when.expression` is required and must be a valid CEL expression. Config validation rejects a `lifecycle.create` block with a missing or empty `when.expression`.
+- `discovery` must be configured on the same resource. Without it the executor cannot tell whether the resource already exists.
 
-#### Behavior
+**Behavior:**
 
-- **Resource doesn't exist yet**: the `when` expression is evaluated. `false` skips creation (operation `skip`, `adapter.resourcesSkipped` set to `true`); `true` proceeds with the normal create flow. Resources with no `lifecycle.create` configured at all are always created normally.
-- **Resource already exists**: the `when` expression is **ignored** — the resource is applied normally (update flow). This makes `lifecycle.create.when` a one-time gate on initial creation, not a recurring condition; once created, the resource is reconciled like any other on subsequent events.
-- **CEL evaluation error**: the resource execution fails with a descriptive error (referencing the failing expression) and the resource is neither applied nor silently skipped — the same fail-closed behavior as `lifecycle.delete.when`.
+- **Resource not found**: the `when` expression is evaluated. `false` skips creation (operation `skip`, `adapter.resourcesSkipped` set to `true`). `true` proceeds with the normal create flow. Resources with no `lifecycle.create` are always created normally.
+- **Resource already exists**: the `when` expression is **ignored** and the resource is applied normally (update flow). This makes `lifecycle.create.when` a one-time gate on initial creation, not a recurring condition.
+- **CEL errors**: an expression that does not compile is rejected when the config loads. An expression that compiles but fails at runtime, for example because it reads a param that was never set, counts as `false`: `lifecycle.create.when` skips the resource and `lifecycle.delete.when` applies it normally. Nothing is logged at the default level, so guard optional values with `.?`/`orValue()` and derive booleans such as `is_deleting` with an `expression` source.
 
-#### Skipping without blocking siblings
-
-Because the skip is scoped to a single resource, other resources in the list still execute. This lets you write dependency conditions the same way as with deletion:
+**Skipping without blocking siblings.** The skip is scoped to a single resource, so other resources in the list still execute. Gate a child on its parent being present:
 
 ```yaml
 resources:
-  - name: "resourceA"
-    # ... no lifecycle.create — always applied
+  - name: "parent"
+    # ... no lifecycle.create: always applied
 
-  - name: "resourceB"
+  - name: "child"
     # ...
     discovery:
-      by_name: "{{ .clusterId }}-b"
+      by_name: "{{ .resourceId }}-child"
     lifecycle:
       create:
         when:
-          # Only create resourceB once resourceA has been discovered
-          expression: "resources.?resourceA.hasValue()"
+          # Create the child only once the parent has been read back as present
+          expression: 'resource_states.?parent.orValue("") == "present"'
 ```
 
-Resources are pre-discovered before any `lifecycle.create.when` or `lifecycle.delete.when` expression is evaluated, so `resources.?resourceA.hasValue()` reflects state from prior reconciliations regardless of list order.
+Use `resource_states`, not `resources.?parent.hasValue()`. The `hasValue()` form is also `true` for the placeholder of an unsynced remote parent, so the child would be created before its parent is mirrored.
 
-#### Reporting skipped resources in post-actions
+**Create gates during deletion.** When the cluster is being deleted, a resource that is already gone is "not found", so its create gate is evaluated before its delete gate. A `false` create gate skips the resource and sets `adapter.resourcesSkipped`. The standard `Health` condition reads that flag, and so does the `Finalized` boilerplate in [Appendix A](#appendix-a-cel-quick-reference). `Health` reports `False` and `Finalized` cannot become `True`. Let the create gate pass during deletion and let the delete gate handle the resource:
 
-Because `adapter.resourcesSkipped` is shared with the precondition-level skip flag, a post-action `when` gate can react the same way regardless of which phase produced the skip:
+```yaml
+        when:
+          expression: 'is_deleting || resource_states.?parent.orValue("") == "present"'
+```
+
+With `is_deleting` true, `lifecycle.delete.when` (also `is_deleting`) takes over and reports the resource as already deleted. The apply never runs. This form is safe only when the resource's `lifecycle.delete.when` is true whenever `is_deleting` is true. If the delete gate also waits on something else, as a parent's gate waits for its child, the create gate passes while the delete gate is false, and the resource is applied again during deletion. The [worked example](#worked-example-two-resources-remote-and-local) uses this form.
+
+**Reporting skipped resources in post-actions.** `adapter.resourcesSkipped` is shared with the precondition-level skip flag, so a post-action `when` gate can react the same way regardless of which phase produced the skip:
 
 ```cel
 adapter.?resourcesSkipped.orValue(false)
@@ -894,111 +886,411 @@ adapter.?resourcesSkipped.orValue(false)
   : "All resources processed successfully"
 ```
 
-### Conditional deletion (lifecycle.delete)
+#### Conditional deletion (lifecycle.delete)
 
-Resources can be conditionally deleted using the `lifecycle.delete` block. This enables the adapter to clean up managed resources when a deletion event occurs, with CEL expressions controlling deletion order between dependent resources.
-
-#### Configuration
+Resources can be conditionally deleted using the `lifecycle.delete` block. This lets the adapter clean up managed resources when a deletion event occurs, with CEL expressions controlling the deletion order between dependent resources.
 
 ```yaml
 resources:
-  - name: "clusterNamespace"
-    transport:
-      client: "kubernetes"
+  - name: "namespace"
     manifest:
       # ...
     discovery:                    # required: needed to locate the resource for deletion
-      by_name: "{{ .clusterId }}"
+      by_name: "{{ .resourceId }}"
     lifecycle:
       delete:
         propagationPolicy: Background   # optional: Background (default), Foreground, Orphan
         when:
-          expression: "is_deleting"     # required: CEL expression evaluated each reconciliation
+          expression: "is_deleting"     # required: CEL expression evaluated on every pass
 ```
 
 **Requirements:**
 
-- `discovery` must be configured on the same resource — without it the executor cannot locate the resource to delete.
-- `when.expression` is required — the resource is deleted only when the expression evaluates to `true`.
+- `discovery` must be configured on the same resource. Without it the executor cannot locate the resource to delete. For a remote transport it must be `by_name`.
+- `when.expression` is required. The resource is deleted only when the expression evaluates to `true`.
 
-#### The is_deleting pattern
-
-The standard way to detect pending deletion is to derive a boolean from the cluster API response in the params phase using an `expression` source:
+**The is_deleting pattern.** The standard way to detect a pending deletion is to derive a boolean from the cluster API response in the params phase using an `expression` source:
 
 ```yaml
 params:
-  - name: "clusterData"
+  - name: "resourceStatus"
     source:
       api_call:
         method: "GET"
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}"
   - name: "is_deleting"
     source:
-      expression: "clusterData.?deleted_time.hasValue()"
+      expression: "resourceStatus.?deleted_time.hasValue()"
 ```
 
 Then reference `is_deleting` in `lifecycle.delete.when.expression`.
 
-> **Why not `source: "clusterData.deleted_time"`?** The dot-notation string source logs a `WARN` when the field is absent — which is ~99% of the time when the cluster is not being deleted. The `expression` source with `hasValue()` returns `false` cleanly when the field is absent, with no log noise.
+> **Why not `source: "resourceStatus.deleted_time"`?** While the resource is not being deleted the field is absent, and an optional dot-notation source then leaves the param unset without logging anything. Every CEL expression that reads `is_deleting` then fails at runtime: a lifecycle gate counts it as `false`, and payload expressions log `cel evaluation failed`. The `expression` source with `hasValue()` returns a real `false`.
 
-#### Dependency ordering
-
-When multiple resources must be deleted in a specific order, use `resource_states.?X.orValue("") == "confirmed_deleted"` to check whether a dependency has been confirmed gone. This also keeps an unsynced remote mirror from looking like confirmed absence:
+**Dependency ordering.** When resources must be deleted in a specific order, gate the parent's delete on the child being confirmed gone with `resource_states.?X.orValue("") == "confirmed_deleted"`. This also keeps an unsynced remote mirror from looking like confirmed absence:
 
 ```yaml
 resources:
-  - name: "configMapResource"
+  - name: "namespaceResource"       # parent, listed first so it is applied first
+    # ...
+    lifecycle:
+      delete:
+        when:
+          # Delete the namespace only once configMapResource is confirmed gone
+          expression: 'is_deleting && resource_states.?configMapResource.orValue("") == "confirmed_deleted"'
+
+  - name: "configMapResource"       # child
     # ...
     lifecycle:
       delete:
         when:
           expression: "is_deleting"
-
-  - name: "namespaceResource"
-    # ...
-    lifecycle:
-      delete:
-        when:
-          # Delete namespace only once configMapResource is confirmed gone
-          expression: 'is_deleting && resource_states.?configMapResource.orValue("") == "confirmed_deleted"'
 ```
 
-How this works across reconciliation cycles:
+How this plays out across events when the parent is listed first:
 
 ```text
-Reconciliation 1 (is_deleting=true):
-  → Delete configMapResource                  ✓ (condition met)
-  → Skip namespaceResource deletion           ✗ (configMapResource still present)
+Event 1 (is_deleting=true):
+  → Delete configMapResource                   (its gate is true)
+  → namespaceResource gate is false             (configMapResource was present when the pass began)
 
-Reconciliation 2 (configMapResource gone):
-  → resource_states.configMapResource == "confirmed_deleted" ✓
-  → Delete namespaceResource                               ✓ (condition met)
+Event 2 (configMapResource gone):
+  → resource_states.configMapResource == "confirmed_deleted"
+  → Delete namespaceResource                    (its gate is true)
 ```
 
-> **Note**: `resources.?X.hasValue()` is not a confirmed-presence check: it is also `true` for an unsynced resource's empty placeholder. For lifecycle ordering across Kubernetes and remote resources, use `resource_states.?X.orValue("") == "confirmed_deleted"`. A remote selector result comes from read mirrors only: it is `unsynced` while an unsynced mirror remains in the selector's scope, and otherwise an empty result is `confirmed_deleted`. A selector cannot see an apply or delete that has not reached a mirror yet, so use `discovery.by_name` for resources that lifecycle conditions depend on. Desire-transport lifecycle deletion requires `discovery.by_name`; selector-based deletion is rejected because it cannot identify all desires to clean up. Selector discovery remains available for reads. Do not use `has()` (returns `true` even for nil-valued keys) or `== null` (fails if the key was never added due to a mid-loop executor failure).
+Gates read the state recorded so far. A parent listed *after* its child sees the child's delete result in the same pass, so a local delete can cascade within one event. A parent listed *before* its child sees the child's state from the start of the pass and waits for the next event, whatever the transport.
 
-#### Post-delete context
+> **Note**: `resources.?X.hasValue()` is not a presence check, because it is also `true` for an unsynced resource's empty placeholder. For lifecycle ordering across local and remote resources, use `resource_states.?X.orValue("") == "confirmed_deleted"`. Do not use `has(resources.X)` either: like `hasValue()`, it is `true` for the empty placeholder of an unsynced remote resource. Do not use `== null`, which fails if the key was never added because the pass stopped early.
 
-After deleting a resource, the executor rediscovers it to determine its actual state and updates `resources.X` accordingly. Desire-transport resources are confirmed by the applier's delete desire status instead of rediscovery, because the read mirror can lag the deletion:
+**Post-delete context.** After deleting a resource, the executor updates `resources.X` and `resource_states.X`. A local delete is checked by reading the object again. A remote delete is confirmed by the remote side instead, because the mirror can lag the deletion:
 
-| Post-delete state | `resources.X` | `resource_states.X` | Effect on dependents |
+| Situation after the delete request | `resources.X` | `resource_states.X` | Effect on dependents |
 |---|---|---|---|
-| Resource confirmed gone (NotFound, or the desire transport's delete confirmed) and desire cleanup succeeded | absent from context | `confirmed_deleted` | Dependents later in the list can cascade in the same reconciliation |
-| Resource still present (finalizers, Maestro async, or an unconfirmed desire delete) | existing object | `present` | Dependents wait for the next reconciliation |
-| Desire delete not yet confirmed and no mirrored object | empty placeholder | `unsynced` | Dependents wait for a later reconciliation |
-| Desire cleanup failed after confirmation | last mirrored object, or empty placeholder | `unsynced` | Dependents wait; execution fails |
+| Local: not found on re-read | absent | `confirmed_deleted` | Dependents later in the list can proceed in the same pass |
+| Local: still present (finalizers) | the object | `present` | Dependents wait for the next event |
+| Remote: delete confirmed by the remote side and cleanup succeeded | absent | `confirmed_deleted` | Dependents later in the list can proceed in the same pass |
+| Remote: delete not yet confirmed, mirror still shows the object | the mirrored object | `present` | Dependents wait |
+| Remote: delete not yet confirmed and no mirrored object | empty placeholder | `unsynced` | Dependents wait |
+| Remote: delete confirmed but cleanup of the adapter's records failed | last mirrored object, or empty placeholder | `unsynced` | Dependents wait; execution fails |
 
-This means same-reconciliation cascading works for Kubernetes resources without finalizers, and for desire-transport resources whose delete the applier has confirmed and whose desire cleanup succeeded. A cleanup failure does not retract the applier's confirmation, but it keeps dependent gates closed in that execution. Resources with finalizers or Maestro ManifestWorks defer to the next reconciliation. A dependent listed before the resource it waits for sees the result on the next reconciliation, whatever the transport. Once a confirmed deletion's desires are cleaned up, later reconciliations find no desire records and report `confirmed_deleted` again.
+A cleanup failure does not retract the remote side's confirmation, but it keeps dependent gates closed in that pass. Once a confirmed deletion has been cleaned up, later events find nothing recorded for the target and report `confirmed_deleted` again.
 
-#### propagationPolicy
-
-Controls how Kubernetes removes dependent objects. Ignored for Maestro transport.
+**propagationPolicy.** Controls how Kubernetes removes dependent objects. It has no effect on remote transports.
 
 | Value | Behavior |
 |---|---|
 | `Background` (default) | Kubernetes GC runs asynchronously after the resource is deleted |
 | `Foreground` | API call blocks until all dependents are gone before removing the owner |
 | `Orphan` | Owner is deleted immediately; dependents are left behind (no GC) |
+
+#### Edge cases
+
+- **Partial failure mid-list.** Apply stops at the first failure and the earlier resources stay applied. There is no rollback. Delete failures do not stop the pass; see [Partial delete failures](#partial-delete-failures).
+- **Retry.** There is no resume. The next event runs the whole list again. Resources whose generation is unchanged are skipped, so a retry repeats the work only where the previous pass did not finish it.
+- **Different transports in one adapter.** Each resource is routed by its own `transport`, so one list can mix local and remote resources. Gates read `resource_states` the same way for both. They differ only in speed: a local delete is confirmed within the pass, while a remote delete usually takes further events, so dependents of a remote resource wait longer.
+- **Delete symmetry.** Applying parents first and deleting children first is a convention, not something the adapter enforces. You express it with the gates above. Parents-first lists, as in the worked example below, delete in two events. A children-first list with a `lifecycle.create` gate on the children lets a local delete cascade in one event.
+
+---
+
+## Worked Example: Two Resources, Remote and Local
+
+This example delivers a Namespace and a ConfigMap through a remote transport, orders them, and reports tri-state conditions. It then shows the same task on the local transport as a two-line change. It follows the shipped [`charts/examples/remote-two-resources`](https://github.com/openshift-hyperfleet/hyperfleet-adapter/tree/main/charts/examples/remote-two-resources) example with three differences: the manifests are inline, the condition expressions are trimmed, and the ConfigMap has a create gate that the shipped file does not have. Open the shipped task config for the full condition expressions.
+
+### Deployment config
+
+The deployment config declares one store and one remote transport. `target_cluster` is rendered for every event, so each HyperFleet cluster is its own target. `resource_plurals` lists both kinds the task delivers.
+
+```yaml
+adapter:
+  name: two-resources
+
+clients:
+  hyperfleet_api:
+    base_url: http://hyperfleet-api:8000
+    timeout: 10s
+  broker:
+    subscription_id: two-resources
+    topic: hyperfleet-clusters
+  kubernetes:
+    api_version: v1
+
+# Remote delivery needs a store and a remote cluster side, deployed separately.
+stores:
+  remote-store:
+    type: redis
+    url: rediss://CHANGE_ME:6379
+transports:
+  remote-primary:
+    type: remote
+    store: remote-store
+    target_cluster: "{{ .resourceId }}"
+    resource_plurals:
+      "v1/Namespace": namespaces
+      "v1/ConfigMap": configmaps
+```
+
+An operator has to provision the store and the remote cluster side; see [Configuration Reference: Transports and stores](configuration.md#transports-and-stores).
+
+### Task config
+
+```yaml
+schema_version: "2.0"
+
+params:
+  - name: resourceId
+    source: event.id
+    type: string
+    required: true
+  - name: resourceStatus
+    source:
+      api_call:
+        method: GET
+        url: /clusters/{{ .resourceId }}
+        timeout: 10s
+  - name: generation
+    source: resourceStatus.generation
+    type: int
+  - name: is_deleting
+    source:
+      expression: "resourceStatus.?deleted_time.hasValue()"
+
+resources:
+  # Applied first. On delete it waits until the ConfigMap is confirmed gone.
+  - name: namespace
+    transport: remote-primary
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ .resourceId }}-remote"
+        labels:
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
+    discovery:
+      by_name: "{{ .resourceId }}-remote"
+    lifecycle:
+      delete:
+        when:
+          expression: |
+            is_deleting && resource_states.?configMap.orValue("") == "confirmed_deleted"
+
+  # Applied second, and only once the Namespace has been read back as present.
+  # Deleted first.
+  - name: configMap
+    transport: remote-primary
+    manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cluster-config
+        namespace: "{{ .resourceId }}-remote"
+        labels:
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
+      data:
+        cluster_id: "{{ .resourceId }}"
+    discovery:
+      namespace: "{{ .resourceId }}-remote"
+      by_name: cluster-config
+    lifecycle:
+      create:
+        when:
+          expression: 'is_deleting || resource_states.?namespace.orValue("") == "present"'
+      delete:
+        when:
+          expression: "is_deleting"
+```
+
+How the model applies:
+
+- **Apply order.** `namespace` is first in the list, so it is applied first. `configMap` is applied second.
+- **Create gate.** The ConfigMap is created only once `resource_states.namespace` is `present`. On a remote transport that waits for the Namespace to be mirrored back, which can take another event. The `is_deleting ||` part keeps the gate from skipping a ConfigMap that is already gone during deletion; see [Create gates during deletion](#conditional-creation-lifecyclecreate).
+- **Delete order.** On deletion the ConfigMap goes first. The Namespace's delete gate waits for `resource_states.configMap` to be `confirmed_deleted`. Until it opens, the Namespace is applied like any other resource.
+
+The conditions complete the file. Each one has three outcomes: `Unknown` while a mirror is missing or behind, `False` only for confirmed absence or a bad current status, `True` once both objects carry the requested generation and the Namespace is `Active`. The messages are static in this trimmed version. `Health` is the [standard boilerplate](#the-health-condition-boilerplate).
+
+<details>
+<summary>Task config, continued: the status conditions</summary>
+
+```yaml
+post:
+  payloads:
+    - name: resourceStatusPayload
+      build:
+        adapter: "{{ .adapter.name }}"
+        conditions:
+          - type: Applied
+            status:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "False"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                    ? "True" : "Unknown"
+            reason:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "ResourceNotFound"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                    ? "ResourcesObserved" : "MirrorNotSynced"
+            message: "Namespace and ConfigMap read from the target cluster"
+          - type: Available
+            status:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "False"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                      && resources.namespace.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
+                      && resources.configMap.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
+                    ? (resources.namespace.?status.?phase.orValue("") == "Active" ? "True" : "False")
+                    : "Unknown"
+            reason:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "ResourceNotFound"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                      && resources.namespace.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
+                      && resources.configMap.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
+                    ? (resources.namespace.?status.?phase.orValue("") == "Active" ? "LiveResourcesReady" : "NamespaceNotActive")
+                    : "GenerationPending"
+            message: "Both resources must be at the requested generation"
+          - type: Health
+            status:
+              expression: |
+                adapter.?executionStatus.orValue("") == "success"
+                  && !adapter.?resourcesSkipped.orValue(false)
+                ? "True" : "False"
+            reason:
+              expression: |
+                adapter.?executionStatus.orValue("") != "success"
+                ? "ExecutionFailed:" + adapter.?executionError.?phase.orValue("unknown")
+                : adapter.?resourcesSkipped.orValue(false)
+                  ? "ResourcesSkipped" : "Healthy"
+            message:
+              expression: |
+                adapter.?executionStatus.orValue("") != "success"
+                ? "Adapter failed at phase [" + adapter.?executionError.?phase.orValue("unknown")
+                    + "] step [" + adapter.?executionError.?step.orValue("unknown") + "]: "
+                    + adapter.?executionError.?message.orValue(adapter.?errorMessage.orValue("no details"))
+                : adapter.?resourcesSkipped.orValue(false)
+                  ? "Resources skipped: " + adapter.?skipReason.orValue("unknown reason")
+                  : "Adapter execution completed successfully"
+          - type: Finalized
+            status:
+              expression: |
+                is_deleting
+                  && adapter.?executionStatus.orValue("") == "success"
+                  && !adapter.?resourcesSkipped.orValue(false)
+                  && resource_states.?configMap.orValue("") == "confirmed_deleted"
+                  && resource_states.?namespace.orValue("") == "confirmed_deleted"
+                ? "True" : "False"
+            reason:
+              expression: |
+                !is_deleting ? "NotDeleting"
+                  : adapter.?executionStatus.orValue("") != "success" ? "AdapterUnhealthy"
+                  : adapter.?resourcesSkipped.orValue(false) ? "ResourcesSkipped"
+                  : resource_states.?namespace.orValue("") == "confirmed_deleted"
+                      && resource_states.?configMap.orValue("") == "confirmed_deleted"
+                    ? "CleanupConfirmed" : "CleanupInProgress"
+            message: "Both resources must be confirmed deleted"
+        observed_generation:
+          expression: generation
+  post_actions:
+    - name: reportResourceStatus
+      api_call:
+        method: PUT
+        url: /clusters/{{ .resourceId }}/statuses
+        headers:
+          - name: Content-Type
+            value: application/json
+        body: "{{ .resourceStatusPayload }}"
+```
+
+</details>
+
+### Running the passes
+
+Save the deployment config as `adapter-config.yaml` and the two task config blocks, one after the other, as `adapter-task-config.yaml`. Then run a dry run for each pass. The repository's dry-run inputs supply the event and the API responses; the mirrors come from a discovery file ([Section 10](#10-dry-run-mode)):
+
+```bash
+HYPERFLEET_TRACING_ENABLED=false hyperfleet-adapter serve \
+  --config adapter-config.yaml \
+  --task-config adapter-task-config.yaml \
+  --dry-run-event test/testdata/dryrun/event.json \
+  --dry-run-api-responses test/testdata/dryrun/dryrun-api-responses.json \
+  --dry-run-discovery mirrors.json \
+  --dry-run-output json
+```
+
+The create passes use `dryrun-api-responses.json`, where the cluster is at generation 77. The delete passes use `dryrun-delete-api-responses.json`, where the cluster has a `deleted_time` and is at generation 78. Start `mirrors.json` from the shipped `charts/examples/remote-two-resources/dryrun-discovery.json`: it holds the Namespace (phase `Active`) and the ConfigMap, both at generation `"77"`.
+
+| # | Event and mirrors | Operations | Applied | Available | Finalized |
+|---|-------------------|------------|---------|-----------|-----------|
+| 1 | Create. Mirrors at 77, cluster at 77 | apply Namespace, apply ConfigMap | `True` `ResourcesObserved` | `True` `LiveResourcesReady` | `False` `NotDeleting` |
+| 2 | Create. Both mirrors edited to generation `"76"`, cluster at 77 | apply Namespace, apply ConfigMap | `True` `ResourcesObserved` | `Unknown` `GenerationPending` | `False` `NotDeleting` |
+| 3 | Delete. Mirrors at 77, cluster at 78 | apply Namespace, delete ConfigMap | `True` `ResourcesObserved` | `Unknown` `GenerationPending` | `False` `CleanupInProgress` |
+| 4 | Delete. The `cluster-config` entry removed from the mirrors | delete Namespace (the ConfigMap is reported as already deleted) | `False` `ResourceNotFound` | `False` `ResourceNotFound` | `False` `CleanupInProgress` |
+| 5 | Delete. Mirrors are `{}` | none (both reported as already deleted) | `False` `ResourceNotFound` | `False` `ResourceNotFound` | `True` `CleanupConfirmed` |
+
+`Health` is `True` with reason `Healthy` in all five passes.
+
+What each pass shows:
+
+1. **Create.** Both resources are applied in list order. Both mirrors carry generation 77 and the Namespace is `Active`, so `Available` is `True`.
+2. **Stale mirror.** The mirrors are at 76 and the requested generation is 77. `Available` is `Unknown` with reason `GenerationPending`, not `False`. The next event reads the mirrors again.
+3. **Delete requested.** The ConfigMap's gate is true, so it is deleted. The Namespace's gate is false, because the ConfigMap was `present` when the pass began, so the Namespace is applied again. `Available` is `Unknown` because the cluster moved to generation 78 and the mirrors are still at 77.
+4. **ConfigMap gone.** `resource_states.configMap` is `confirmed_deleted`, so the Namespace's gate opens and its delete is requested. `Finalized` stays `False`: a remote delete is not confirmed within the pass, and the Namespace is still `present` after the request.
+5. **Both gone.** Both resources are `confirmed_deleted`, so `Finalized` is `True` and the adapter reports cleanup as confirmed.
+
+A dry run replaces the remote cluster side with a mock that mirrors writes instantly. It never produces `unsynced`, so these five passes cannot show the first pass of a real remote deployment. On a real remote transport, right after the Namespace is first written its read-back is typically not synced yet. Whenever `resource_states.namespace` is not `present`, the ConfigMap's create gate is closed. The ConfigMap is skipped, `adapter.resourcesSkipped` is `true` with the skip reason `configMap: lifecycle.create.when condition evaluated to false`, and the standard `Health` condition reports `False`. Because the ConfigMap has never been written, it is `confirmed_deleted`, not `unsynced`, so `Applied` and `Available` report `False` with reason `ResourceNotFound` until a later event creates it. A later event creates the ConfigMap once the Namespace is mirrored. If your dashboards must not show `False` here, map `confirmed_deleted` to `Unknown` while `!is_deleting`.
+
+### The local variant
+
+To run the same task against the local cluster, drop `transport: remote-primary` from both resources, and drop `transports` and `stores` from the deployment config. Nothing else changes, and every CEL expression stays as it is:
+
+```diff
+   - name: namespace
+-    transport: remote-primary
+     manifest:
+  ...
+   - name: configMap
+-    transport: remote-primary
+     manifest:
+```
+
+```diff
+     api_version: v1
+-
+-# Remote delivery needs a store and a remote cluster side, deployed separately.
+-stores:
+-  remote-store:
+-    type: redis
+-    url: rediss://CHANGE_ME:6379
+-transports:
+-  remote-primary:
+-    type: remote
+-    store: remote-store
+-    target_cluster: "{{ .resourceId }}"
+-    resource_plurals:
+-      "v1/Namespace": namespaces
+-      "v1/ConfigMap": configmaps
+```
+
+Running the same five dry-run inputs against the local variant gives the same four condition types, and `MirrorNotSynced` never appears. Passes 1 and 2 are identical. Local deletes are confirmed within the pass, so passes 3 and 4 finish sooner:
+
+| # | Applied | Available | Finalized |
+|---|---------|-----------|-----------|
+| 3 | `False` `ResourceNotFound` | `False` `ResourceNotFound` | `False` `CleanupInProgress` |
+| 4 | `False` `ResourceNotFound` | `False` `ResourceNotFound` | `True` `CleanupConfirmed` |
+| 5 | `False` `ResourceNotFound` | `False` `ResourceNotFound` | `True` `CleanupConfirmed` |
+
+In pass 3 the local ConfigMap is gone immediately, so `Available` is `False` instead of `Unknown`. In pass 4 the Namespace delete is also confirmed within the pass, so `Finalized` is already `True`. The Namespace is still deleted one event after the ConfigMap, because it is listed first and its gate reads the state from the start of the pass. Listing the ConfigMap first would let a local delete finish in one event.
 
 ---
 
@@ -1017,27 +1309,20 @@ This means a list containing both apply and delete operations behaves predictabl
 
 ### Resource not found (404 handling)
 
-When a params-phase API call returns `404 Not Found`, it can mean the resource no longer exists (e.g., deleted externally, incorrect ID in the event, direct DB removal) or that the API call URL itself is misconfigured. The adapter distinguishes between two types of 404:
+How a `404 Not Found` from the HyperFleet API is handled depends on the phase that made the call:
 
-- **Resource not found** (default): any 404 is treated as a legitimate "resource does not exist" unless proven otherwise. This includes responses with specific error codes (`HYPERFLEET-NTF-001`, `HYPERFLEET-NTF-002`, `HYPERFLEET-NTF-003`), as well as 404s where the response body was stripped by a proxy or gateway. The adapter handles this gracefully — resources are skipped and post-actions still execute.
-- **Broken endpoint** (error code `HYPERFLEET-NTF-000`): the catch-all 404 handler confirms no route matched the URL. The adapter treats this as a configuration error and reports failure status.
+- **Params phase.** There is no special handling. If the param is `required`, the failed call ends the event with status `failed` and no post-actions run. If the param is optional, it stays unset (or takes its `default`) and execution continues.
+- **Precondition `api_call`.** A 404 can mean the resource no longer exists (e.g., deleted externally, incorrect ID in the event) or that the API call URL itself is misconfigured. The adapter distinguishes between the two:
+  - **Resource not found** (default): any 404 is treated as a legitimate "resource does not exist" unless proven otherwise, including 404s where a proxy or gateway stripped the response body.
+  - **Broken endpoint** (error code `HYPERFLEET-NTF-000`): the catch-all 404 handler confirms no route matched the URL. The adapter treats this as a configuration error and reports failure status.
+- **Post-action `api_call`.** The same distinction applies. A resource-not-found 404 skips the remaining post-actions without marking the event as failed. A broken-endpoint 404 fails.
 
-When the adapter detects a resource-not-found 404:
+When a precondition `api_call` returns resource-not-found:
 
 - `adapter.resourcesSkipped` is set to `true`
 - `adapter.skipReason` is set to `"ResourceNotFound"`
 - The resources phase is skipped entirely
-- Post-actions still execute, so the adapter can report the skip back to the API
-
-This means your post-action CEL expressions can detect the missing resource and report an appropriate status:
-
-```cel
-adapter.?skipReason.orValue("") == "ResourceNotFound"
-  ? "Resource does not exist"
-  : adapter.?skipReason.orValue("unknown reason")
-```
-
-The same 404 handling applies during post-action execution: a post-action 404 is treated as resource-not-found and remaining post-actions are skipped gracefully, unless the response contains error code `HYPERFLEET-NTF-000` indicating a misconfigured URL.
+- The event ends with status `success` and **no post-actions run**, so nothing is reported to the API for it
 
 ### Partial delete failures
 
@@ -1058,7 +1343,7 @@ Use `adapter.executionError` in Health/Finalized conditions to detect any failur
 Adapters that handle deletion must report a `Finalized` condition that signals to the HyperFleet API when cleanup is complete. The condition must guard against three failure modes:
 
 1. **Not yet deleting** — `is_deleting` prevents reporting `Finalized=True` before deletion is requested
-2. **Executor failed mid-loop** — `adapter.executionStatus == "success"` prevents `Finalized=True` when some resources were never processed (their context keys are absent, making absence checks return `true` incorrectly)
+2. **Executor failed mid-loop or skipped resources** — `adapter.executionStatus == "success"` and `!adapter.resourcesSkipped` prevent `Finalized=True` when some resources were never processed or were skipped (their state is not a confirmed deletion)
 3. **Resources still present** — `resource_states.?X.orValue("") == "confirmed_deleted"` confirms the resource is actually gone
 
 ```yaml
@@ -1067,26 +1352,32 @@ Adapters that handle deletion must report a `Finalized` condition that signals t
     expression: |
       is_deleting
         && adapter.?executionStatus.orValue("") == "success"
-        && resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
-      ? "True" : "False"
+        && !adapter.?resourcesSkipped.orValue(false)
+        && resource_states.?namespace.orValue("") == "confirmed_deleted"
+      ? "True"
+      : "False"
   reason:
     expression: |
       !is_deleting
       ? "NotDeleting"
       : adapter.?executionStatus.orValue("") != "success"
         ? "AdapterUnhealthy"
-        : resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
-          ? "CleanupConfirmed"
-          : "CleanupInProgress"
+        : adapter.?resourcesSkipped.orValue(false)
+          ? "ResourcesSkipped"
+          : resource_states.?namespace.orValue("") == "confirmed_deleted"
+            ? "CleanupConfirmed"
+            : "CleanupInProgress"
   message:
     expression: |
       !is_deleting
       ? "No pending deletion for this adapter instance"
       : adapter.?executionStatus.orValue("") != "success"
         ? "Cannot confirm cleanup while adapter is unhealthy"
-        : resource_states.?clusterNamespace.orValue("") == "confirmed_deleted"
-          ? "All managed resources deleted and verified"
-          : "Resource cleanup in progress"
+        : adapter.?resourcesSkipped.orValue(false)
+          ? "Cannot confirm cleanup while resources are skipped"
+          : resource_states.?namespace.orValue("") == "confirmed_deleted"
+            ? "All managed resources deleted and verified"
+            : "Resource cleanup in progress"
 ```
 
 When an adapter does not handle deletion, use a static `Finalized=False`:
@@ -1120,10 +1411,10 @@ adapter.?executionError.?message.orValue("no details")
 
 ```cel
 # Check if a specific resource failed
-adapter.?resourceErrors.?clusterNamespace.hasValue()
+adapter.?resourceErrors.?namespace.hasValue()
 
 # Include the failing resource's error in a status message
-adapter.?resourceErrors.?clusterNamespace.?message.orValue("")
+adapter.?resourceErrors.?namespace.?message.orValue("")
 ```
 
 The standard Health condition (Section 9 boilerplate) already incorporates these fields.
@@ -1153,7 +1444,7 @@ sequenceDiagram
     Adapter->>API: PUT /statuses {Applied, Available, Health}
 ```
 
-The adapter does **not** wait for the workload to complete. It reads whatever status is available at discovery time and reports it. If the object is still pending, the adapter reports `Available=False`. The Sentinel will trigger another reconciliation cycle later, and the adapter will read the updated status then.
+The adapter does **not** wait for the workload to complete. It reads whatever status is available at discovery time and reports it. If the object is still pending, the adapter reports whatever your expressions say for that state, typically `Unknown`. The Sentinel will trigger another reconciliation cycle later, and the adapter will read the updated status then.
 
 More information about the adapter contract can be found in [Architecture repository - HyperFleet Adapter Status Contract](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/components/adapter/framework/adapter-status-contract.md)
 
@@ -1163,7 +1454,7 @@ The adapter reads status from the standard Kubernetes status subresource. The th
 
 | Adapter Condition | What it maps to on the K8s object | Example |
 |-------------------|-----------------------------------|---------|
-| **Applied** | Does the resource exist? Was it accepted by the API server? | `has(resources.myJob)` — the manifest was applied successfully |
+| **Applied** | Does the resource exist? Was it accepted by the API server? | `resource_states.?myJob.orValue("") == "present"`: the object was read back after the apply |
 | **Available** | Is the workload operational? Has it completed or reached a ready state? | Job: `status.conditions` contains `type=Complete, status=True`. Namespace: `status.phase == "Active"`. Deployment: `status.availableReplicas > 0` |
 | **Health** | Did the adapter framework itself execute without errors? | This comes from `adapter.*` metadata, not from the K8s object |
 
@@ -1174,7 +1465,7 @@ The `Unknown` value is used when there the condition value is still pending and 
 - If there are errors applying the resources
 - If conditions from resources are not conclusive
 
-When the HyperFleet API receives an status update with any of the mandatory condition's status to `Unknown` value, the API will not update the internal state. Therefore, Sentinel will keep emitting reconciliation events for status updates.
+The API treats `Available=Unknown` specially. If your adapter has never reported for the resource, a report with `Available=Unknown` is stored but does not trigger aggregation. Once any report from your adapter exists for the resource, a new report with `Available=Unknown` is discarded whole, including every other condition in it (such as `Finalized`). Other conditions may be `Unknown` freely. `Available`, `Applied` and `Health` are mandatory; a report missing one is rejected. While the aggregated state is not reconciled, Sentinel keeps emitting reconciliation events.
 
 **Applied** and **Available** are derived from your K8s object's status. **Health** reflects the adapter framework's own execution and uses the standard boilerplate (see section 9).
 
@@ -1190,9 +1481,11 @@ Namespaces have a simple `status.phase` field:
 # Available when namespace is Active
 status:
   expression: |
-    resources.?clusterNamespace.?status.?phase.orValue("") == "Active"
+    resources.?namespace.?status.?phase.orValue("") == "Active"
       ? "True" : "False"
 ```
+
+On a remote transport, an `unsynced` mirror would read as `"False"` here. Use the pattern in [Remote-backed conditions](#remote-backed-conditions) instead.
 
 #### Job
 
@@ -1226,32 +1519,28 @@ status:
     ? "True" : "False"
 ```
 
-#### ManifestWork (Maestro)
+#### Remote-backed conditions
 
-ManifestWork status is richer — it includes both top-level conditions and per-manifest `statusFeedback`. Use nested discoveries to access individual sub-resource status:
+A remote resource is read through a mirror that can lag behind the cluster (see [the eventual-consistency contract](#the-eventual-consistency-contract-for-remote-reads)), so a status condition has to separate "not known yet" from "wrong". Apply this pattern to any condition that reads a remote resource:
+
+- `Unknown` while the resource is `unsynced`, missing, or still at an older generation than the one you applied.
+- `False` only when the resource is `confirmed_deleted`, or when a current mirror (one whose `hyperfleet.io/generation` matches `generation`) shows a bad status.
+- `True` only when a current mirror shows the good status.
 
 ```yaml
-# Available from the ManifestWork's own conditions
+# Available when the remote Namespace is current and Active
 status:
   expression: |
-    resources.?clusterSetup.?status.?conditions.orValue([])
-      .filter(c, c.type == "Available").size() > 0
-    ? resources.clusterSetup.status.conditions
-        .filter(c, c.type == "Available")[0].status
-    : "False"
-
-# Or from a nested discovery's statusFeedback
-status:
-  expression: |
-    has(resources.namespace0)
-      && has(resources.namespace0.statusFeedback)
-      && has(resources.namespace0.statusFeedback.values)
-      && resources.namespace0.statusFeedback.values
-          .filter(v, v.name == "phase").size() > 0
-      && resources.namespace0.statusFeedback.values
-          .filter(v, v.name == "phase")[0].fieldValue.string == "Active"
-    ? "True" : "False"
+    resource_states.?namespace.orValue("") == "confirmed_deleted" ? "False"
+      : resource_states.?namespace.orValue("") == "present"
+          && resources.namespace.?metadata.?annotations[?"hyperfleet.io/generation"].orValue("") == string(generation)
+        ? (resources.namespace.?status.?phase.orValue("") == "Active" ? "True" : "False")
+        : "Unknown"
 ```
+
+Because the API discards a report whose `Available` is `Unknown` once your adapter has reported before (see [What your Kubernetes objects must expose](#what-your-kubernetes-objects-must-expose)), a stale or unsynced pass changes nothing in the API: the last `True`/`False` report stands until a pass can decide.
+
+The same expression works for a local resource. A local resource is never `unsynced`, so the `Unknown` branch is reached only for an object at an older generation, or for a resource that was not processed.
 
 ### Designing your workload for observability
 
@@ -1260,7 +1549,6 @@ When building the Kubernetes objects that your adapter manages, keep these guide
 - **Use standard Kubernetes condition conventions** (`type`, `status`, `reason`, `message`). The adapter's CEL expressions are designed to work with this pattern.
 - **Set conditions on your CRDs.** If you control the workload (e.g., a custom operator), have it report `Available`, `Ready`, or `Complete` conditions so the adapter can read them directly.
 - **For Jobs, use success/failure exit codes.** Kubernetes automatically sets `Complete` or `Failed` conditions based on container exit codes. The adapter reads these without extra work.
-- **For Maestro, configure `feedbackRules`.** Without them, the ManifestWork status won't include sub-resource state, and your nested discoveries will have no data to report on.
 
 ### The reconciliation loop
 
@@ -1296,7 +1584,7 @@ post_actions:
       expression: "adapter.?executionStatus.orValue('') == 'success'"
     api_call:
       method: "PUT"
-      url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+      url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
       body: "{{ .successPayload }}"
 
   - name: "reportFailure"
@@ -1304,11 +1592,13 @@ post_actions:
       expression: "adapter.?executionStatus.orValue('') != 'success'"
     api_call:
       method: "PUT"
-      url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+      url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
       body: "{{ .failurePayload }}"
 ```
 
 The `when` expression has access to the full execution context: all `adapter.*` metadata, extracted params, and `resources.*`. If `when` is omitted, the action always executes (existing behavior). If the expression fails to parse or evaluate, the action is marked as **failed**.
+
+Post-actions run in list order and **stop at the first failure**: a failed `when` or a failed API call ends the post phase, and later post-actions do not run.
 
 ### Conditional payloads (`when`)
 
@@ -1322,7 +1612,7 @@ post:
         expression: "!adapter.resourcesSkipped"
       build:
         namespace:
-          expression: 'resources.?clusterNamespace.?status.?phase.orValue("Pending")'
+          expression: 'resources.?namespace.?status.?phase.orValue("Pending")'
 
     - name: "skippedStatusPayload"
       when:
@@ -1335,17 +1625,19 @@ post:
     - name: "reportStatus"
       api_call:
         method: "PUT"
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
         body: "{{ .statusPayload }}"
 
     - name: "reportSkipped"
       api_call:
         method: "PUT"
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
         body: "{{ .skippedStatusPayload }}"
 ```
 
-The `when` expression has access to the full execution context: all `adapter.*` metadata, extracted params, and `resources.*`. If `when` is omitted, the payload is always built (existing behavior). If the expression fails to parse or evaluate, the payload build is marked as **failed**. Evaluation order: payload `when` → build → post-action `when` → execute. Both gates are independent.
+The `when` expression has access to the full execution context: all `adapter.*` metadata, extracted params, and `resources.*`. If `when` is omitted, the payload is always built (existing behavior). If a payload's `when` fails to parse or evaluate, or a payload fails to build, payload building stops and **no post-action runs**, so no status is reported for that event. Test payload expressions with a dry run before deploying.
+
+Evaluation order: every payload is evaluated first (its `when`, then its build), in list order. Then each post-action runs in order: it is skipped if it references a skipped payload, otherwise its `when` is evaluated and the action executes. Both gates are independent.
 
 ### Common `when` patterns
 
@@ -1355,7 +1647,7 @@ The `when` expression has access to the full execution context: all `adapter.*` 
 | Success-only | `adapter.?executionStatus.orValue('') == 'success'` | Run only when all phases succeeded |
 | Failure-only | `adapter.?executionStatus.orValue('') != 'success'` | Send a different status report on failure |
 | Deletion path | `is_deleting` | Run only during cluster deletion (requires `is_deleting` param) |
-| Resource exists | `resources.?myResource.hasValue()` | Gate on whether a specific resource was discovered |
+| Resource present | `resource_states.?myResource.orValue('') == 'present'` | Gate on whether a specific resource was read back |
 
 #### Combining `when` on payloads and post-actions
 
@@ -1370,14 +1662,16 @@ post:
       build: { ... }
 
   post_actions:
-    - name: "reportClusterStatus"
+    - name: "reportResourceStatus"
       when:
         expression: "!adapter.resourcesSkipped"    # explicit gate — also auto-skipped via payload
       api_call:
+        method: "PUT"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
         body: "{{ .statusPayload }}"
 ```
 
-> For a complete working example of conditional payloads and post-actions, see the `adapter1` configuration in [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra/tree/main/helmfile/configs/base/adapters/adapter1/adapter-task-config.yaml).
+> For a complete working example of conditional payloads and post-actions, see the `adapter1` configuration in [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra/tree/main/helmfile/configs/base/adapters/adapter1/adapter-task-config.yaml). It is still an unversioned (v1) task: its `transport: {client: kubernetes}` blocks must be removed and `schema_version: "2.0"` added before it loads as v2 (see [Appendix E](#appendix-e-concepts-changed-in-v2)).
 
 ### Building payloads
 
@@ -1413,28 +1707,28 @@ post:
           - type: "Applied"
             status:
               expression: |
-                has(resources.clusterNamespace) ? "True" : "False"
+                resource_states.?namespace.orValue("") == "present" ? "True" : "False"
             reason:
               expression: |
-                has(resources.clusterNamespace) ? "Applied" : "Pending"
+                resource_states.?namespace.orValue("") == "present" ? "Applied" : "Pending"
             message:
               expression: |
-                has(resources.clusterNamespace)
+                resource_states.?namespace.orValue("") == "present"
                   ? "Resources applied successfully"
                   : "Resources pending"
 
           - type: "Available"
             status:
               expression: |
-                resources.?clusterNamespace.?status.?phase.orValue("") == "Active"
+                resources.?namespace.?status.?phase.orValue("") == "Active"
                   ? "True" : "False"
             reason:
               expression: |
-                resources.?clusterNamespace.?status.?phase.orValue("") == "Active"
+                resources.?namespace.?status.?phase.orValue("") == "Active"
                   ? "NamespaceReady" : "NamespaceNotReady"
             message:
               expression: |
-                resources.?clusterNamespace.?status.?phase.orValue("") == "Active"
+                resources.?namespace.?status.?phase.orValue("") == "Active"
                   ? "Namespace is active" : "Namespace not yet active"
 
           - type: "Health"
@@ -1448,7 +1742,7 @@ post:
     - name: "reportStatus"
       api_call:
         method: "PUT"
-        url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
+        url: "/api/hyperfleet/v1/clusters/{{ .resourceId }}/statuses"
         body: "{{ .statusPayload }}"
 ```
 
@@ -1515,20 +1809,20 @@ Optionally attach adapter-specific metrics extracted from your resources:
           namespace:
             name:
               expression: |
-                resources.?clusterNamespace.?metadata.?name.orValue("")
+                resources.?namespace.?metadata.?name.orValue("")
             phase:
               expression: |
-                resources.?clusterNamespace.?status.?phase.orValue("")
+                resources.?namespace.?status.?phase.orValue("")
 ```
 
 ### How status aggregation works
 
-When your adapter reports status, the API aggregates across **all registered adapters**:
+When your adapter reports status, the API aggregates across the **required adapters** of the entity kind:
 
-- **Available** = all adapters report `Available=True` at *any* generation (last known good)
-- **Reconciled** = all adapters report `Available=True` at the *current* generation (fully reconciled)
+- **Reconciled** = every required adapter reports `Available=True` at the *current* generation (fully reconciled)
+- **LastKnownReconciled** = every required adapter reports `Available=True` for a common `observed_generation` (last known good)
 
-Your adapter name must be registered in the `HYPERFLEET_CLUSTER_ADAPTERS` environment variable on the API for it to participate in aggregation.
+Your adapter takes part in aggregation only when its name is listed under `required_adapters` for the entity kind (`Cluster` or `NodePool`) in the API configuration (Helm `config.entities`). See the HyperFleet API operator guide.
 
 ---
 
@@ -1539,7 +1833,7 @@ Dry-run mode simulates the full execution pipeline locally. No Kubernetes cluste
 ### Running a dry-run
 
 ```bash
-hyperfleet-adapter serve \
+HYPERFLEET_TRACING_ENABLED=false hyperfleet-adapter serve \
   --config ./adapter-config.yaml \
   --task-config ./adapter-task-config.yaml \
   --dry-run-event ./event.json \
@@ -1549,9 +1843,11 @@ hyperfleet-adapter serve \
   --dry-run-output text    # or "json"
 ```
 
+The binary enables tracing by default. Set `HYPERFLEET_TRACING_ENABLED=false` to stop it from trying to export spans when no collector is running.
+
 ### Mock input files
 
-You need three files to simulate the environment.
+You need three files to simulate the environment. Working examples are in `test/testdata/dryrun/`.
 
 #### 1. Event file (`event.json`)
 
@@ -1622,17 +1918,18 @@ Mock responses matched by HTTP method and URL regex. Supports sequential respons
 
 #### 3. Discovery overrides (`discovery-overrides.json`)
 
-Simulates the server-populated fields (uid, resourceVersion, status) that Kubernetes would add after creating resources. Keys are the **rendered resource names**:
+Simulates the objects the cluster would hold: the server-populated fields (uid, resourceVersion, status) that Kubernetes adds, or the mirrored state of a remote resource. Keys are the **rendered `metadata.name`** of each object, and each value is a complete object that includes at least `apiVersion` and `kind`:
 
 ```json
 {
-  "abc123": {
+  "abc123-remote": {
     "apiVersion": "v1",
     "kind": "Namespace",
     "metadata": {
-      "name": "abc123",
-      "uid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "resourceVersion": "100"
+      "name": "abc123-remote",
+      "annotations": {
+        "hyperfleet.io/generation": "77"
+      }
     },
     "status": {
       "phase": "Active"
@@ -1641,9 +1938,17 @@ Simulates the server-populated fields (uid, resourceVersion, status) that Kubern
 }
 ```
 
+The overrides work like this:
+
+- The objects are loaded into the mock cluster before the run. When any resource has a `lifecycle` block, every resource is discovered before the first apply, so a listed object starts as `present` and a resource with no entry starts as `confirmed_deleted`. Without any `lifecycle` block, resources are discovered only after their apply.
+- An override is matched by name only, not by kind or namespace, so give each object a distinct name.
+- The mock does not model the remote side's delete confirmation: a remote delete in a dry run is checked by reading the object again, as a local delete is.
+- When a resource is applied, its override replaces the rendered manifest. That is how `status` and the `hyperfleet.io/generation` annotation come from the file. To simulate a stale mirror, put an older generation in the override.
+- Overrides feed local and remote resources alike.
+
 ### Reading the trace output
 
-The trace walks through each phase showing what happened:
+The trace walks through each phase showing what happened. This is the text trace of the [worked example](#worked-example-two-resources-remote-and-local) with its remote transport, abridged:
 
 <details><summary>Example of a Dry-run execution</summary>
 
@@ -1653,28 +1958,41 @@ Dry-Run Execution Trace
 Event: id=abc123 type=io.hyperfleet.cluster.updated
 
 Phase 1: Parameter Extraction .............. SUCCESS
-  clusterId             = "abc123"
-  generation            = 5
-  region                = "us-east-1"
-  clusterData           = {...}  (API Call: GET /api/hyperfleet/v1/clusters/abc123 -> 200)
-  clusterName           = "my-cluster"
-  reconciledStatus      = "False"
+  resourceId       = "abc123"
+  resourceStatus   = {"generation":77,"href":"/api/hyperfleet/v1/clusters/abc123","id":"abc-123",...}
+  generation       = 77
+  is_deleting      = false
+  API Call: GET /api/hyperfleet/v1/clusters/abc123 -> 200
 
-Phase 2: Preconditions ..................... SUCCESS (MET)
-  [1/1] clusterStatus                      PASS
+Phase 2: Preconditions ..................... SUCCESS
 
 Phase 3: Resources ........................ SUCCESS
-  [1/2] namespace0                         CREATE
-    Kind: Namespace    Namespace:            Name: abc123
-  [2/2] configmap0                         CREATE
-    Kind: ConfigMap    Namespace: abc123     Name: abc123-config
+  [1/2] namespace                      UPDATE
+    Kind: Namespace    Namespace:              Name: abc123-remote
+    Target: cluster abc123, resource namespaces
+  [2/2] configMap                      UPDATE
+    Kind: ConfigMap    Namespace: abc123-remote Name: cluster-config
+    Target: cluster abc123, resource configmaps
 
 Phase 3.5: Discovery Results ................. (available as resources.* in payload)
-  namespace0:
-    {"apiVersion":"v1","kind":"Namespace","metadata":{"name":"abc123",...},"status":{"phase":"Active"}}
+  namespace:
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "metadata": {
+        "annotations": {
+          "hyperfleet.io/generation": "77"
+        },
+        "name": "abc123-remote"
+      },
+      "status": {
+        "phase": "Active"
+      }
+    }
+  ...
 
 Phase 4: Post Actions ..................... SUCCESS
-  [1/1] update-status                      EXECUTED
+  [1/1] reportResourceStatus            EXECUTED
     API Call: PUT /api/hyperfleet/v1/clusters/abc123/statuses -> 200
 
 Result: SUCCESS
@@ -1682,7 +2000,19 @@ Result: SUCCESS
 
 </details>
 
-Use `--dry-run-verbose` to see rendered manifests and full API request/response bodies. Use `--dry-run-output json` for machine-readable output you can pipe into `jq`.
+The operation shows `UPDATE` here because the discovery file already held both objects. A resource with no override shows `CREATE`. A remote resource also prints the `Target:` line: the rendered `target_cluster` and the plural resource name from `resource_plurals`.
+
+Use `--dry-run-verbose` to see rendered manifests and full API request/response bodies. Use `--dry-run-output json` for machine-readable output you can pipe into `jq`. The JSON trace has these top-level keys: `status`, `event`, `params`, `resources`, `discoveredResources`, `transportOperations`, `apiRequests` and `postActions`. `transportOperations` lists every `get`, `apply` and `delete` the mock transport saw, with the object's `kind`, `name` and, for a remote resource, its `targetCluster` and `targetResource`.
+
+### Dry-running remote transports
+
+A dry run never connects to a store or to a remote cluster. A mock transport stands in for it, which has three consequences:
+
+- **No `unsynced`.** The mock mirrors every write instantly, so a dry run never produces `unsynced`. Simulate lag by putting an older generation in the discovery file; you cannot simulate a mirror that has not synced yet.
+- **The generation annotation is checked.** A remote manifest without a valid `hyperfleet.io/generation` annotation fails the dry run, as it fails the real transport.
+- **Deletes stay visible.** A local delete removes the object at once. A remote delete leaves the object in place with a deletion timestamp, so dependents wait for the next event, as they would against a real remote transport.
+
+The mock honors `recreate_on_change` for remote resources, which the real remote transport does not.
 
 ### Development loop
 
@@ -1690,7 +2020,7 @@ Use `--dry-run-verbose` to see rendered manifests and full API request/response 
 2. Create mock files for a representative cluster
 3. Run dry-run, inspect the trace
 4. Fix config issues, re-run
-5. Test edge cases: change mock API responses to simulate different cluster states (Reconciled=True, missing fields, error responses)
+5. Test edge cases: change mock API responses to simulate different cluster states (Reconciled=True, missing fields, error responses), and edit the discovery file to simulate stale, missing or deleted objects
 6. Deploy when the trace shows the expected behavior
 
 ---
@@ -1731,6 +2061,7 @@ params:
   - name: "nodepoolData"
     source:
       api_call:
+        method: "GET"
         url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/nodepools/{{ .nodepoolId }}"
   - name: "generation"
     source: "nodepoolData.generation"
@@ -1743,6 +2074,7 @@ params:
   - name: "clusterStatuses"
     source:
       api_call:
+        method: "GET"
         url: "/api/hyperfleet/v1/clusters/{{ .clusterId }}/statuses"
   - name: "clusterNamespaceStatus"
     source:
@@ -1780,7 +2112,7 @@ post_actions:
       body: "{{ .nodepoolStatusPayload }}"
 ```
 
-Register NodePool adapters in `HYPERFLEET_NODEPOOL_ADAPTERS` (not `HYPERFLEET_CLUSTER_ADAPTERS`).
+List NodePool adapters under `required_adapters` for the `NodePool` entity in the API configuration, not for `Cluster`.
 
 ---
 
@@ -1796,6 +2128,7 @@ The framework validates your config at load time in two passes:
 - Valid operator values
 - Mutual exclusivity (`field` vs `expression`, `build` vs `build_ref`)
 - Valid Kubernetes resource names
+- Every resource has a `manifest` and a `discovery` with exactly one of `by_name` and `by_selectors`
 
 **Semantic validation** — checked by default (can be skipped):
 
@@ -1803,7 +2136,21 @@ The framework validates your config at load time in two passes:
 - Go template variables reference defined params or captures
 - `in`/`notIn` operators have array values
 
-> **Note:** K8s structural validation (required fields like `apiVersion`, `kind`, `metadata.name`) is deferred to execution time since all manifests are rendered as Go templates. Invalid manifests will be caught when the adapter applies them.
+**Routing validation** — checked always, even when semantic validation is skipped:
+
+- `schema_version` is `"2.0"` when a resource names a transport
+- Each resource names `kubernetes` or a transport declared in the deployment config
+- A remote resource has a `resource_plurals` entry for its kind, uses `discovery.by_name` when it has `lifecycle.delete`, and builds `target_cluster` from defined variables
+
+To check a pair of config files without a broker, a cluster or an API server, run `config-dump`. It loads and validates both files exactly as `serve` does, prints the merged result as YAML, and exits non-zero on error:
+
+```bash
+HYPERFLEET_TRACING_ENABLED=false hyperfleet-adapter config-dump \
+  --config ./adapter-config.yaml \
+  --task-config ./adapter-task-config.yaml
+```
+
+> **Note:** K8s structural validation (required fields like `metadata.name`) is deferred to execution time since all manifests are rendered as Go templates. Invalid manifests will be caught when the adapter applies them. The exception is `apiVersion` and `kind`: the loader reads them without rendering, so they must be literal values, and the rendered manifest must not change them.
 
 ### No-op adapter pattern
 
@@ -1819,28 +2166,28 @@ The adapter will run preconditions, skip straight to post-actions, and report st
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `required field missing` | Param without `name` or `source` | Add the required field |
-| `mutually exclusive` | Both `field` and `expression` on a condition | Use only one |
-| `CEL parse error` | Invalid CEL syntax | Check parentheses, string escaping |
-| `template variable not found` | `{{ .foo }}` where `foo` is not a defined param | Define it in params |
-| `invalid operator` | Typo in operator name | Use one from the supported list |
+| `params[N].name is required`, `params[N].source is required` | Param without `name` or `source` | Add the required field |
+| `'field' and 'expression' are mutually exclusive` | Both `field` and `expression` on the same capture or value | Use only one |
+| `CEL parse error: ...` | Invalid CEL syntax | Check parentheses, string escaping |
+| `undefined template variable "foo"` | `{{ .foo }}` where `foo` is not a defined param or capture | Define it in params |
+| `invalid operator "x", must be one of: ...` | Operator not in the [supported list](#supported-operators) | Use a supported operator, or a CEL `expression` |
+| `value must be a list for operator "in"` | `in`/`notIn` with a scalar `value` | Use a YAML list |
+
+Every error starts with the path of the offending field. Structural validation stops at the first error; semantic validation (CEL, template variables, operator values) reports all its errors together under `validation failed with N error(s):`.
 
 ---
 
 ## 13. Deployment Checklist
 
-1. **Register your adapter name** in the HyperFleet API's `HYPERFLEET_CLUSTER_ADAPTERS` (or `HYPERFLEET_NODEPOOL_ADAPTERS`) environment variable. Without this, the API won't include your adapter in status aggregation.
+1. **Register your adapter name** under `required_adapters` for the entity kind (`Cluster` or `NodePool`) in the HyperFleet API configuration (Helm `config.entities`). Without this, the API won't include your adapter in status aggregation. The API sets the managed object's `Reconciled` condition once every required adapter reports `Available=True` at the current generation.
 
-- The API will compute the `Reconciled` condition of the managed object as when all registered adapters have reported `True` as their `Available` condition status.
-
-1. **Create the AdapterConfig** with your environment's API endpoint, broker subscription, and client settings:
+2. **Create the AdapterConfig** with your environment's API endpoint, broker subscription, and client settings:
 
 <details><summary>Example minimal adapter-config</summary>
 
 ```yaml
 adapter:
   name: my-adapter
-  version: "0.1.0"
 clients:
   hyperfleet_api:
     base_url: "http://hyperfleet-api:8000"
@@ -1856,7 +2203,7 @@ clients:
 
 </details>
 
-1. **Configure the broker connection** — the Helm chart creates a `broker.yaml` ConfigMap from the `broker.*` Helm values. For RabbitMQ, set `broker.rabbitmq.exchange` to the value of the sentinel's `clients.broker.topic` — this is the exchange the sentinel publishes to and the only coupling point between them.
+3. **Configure the broker connection** — the Helm chart creates a `broker.yaml` ConfigMap from the `broker.*` Helm values. For RabbitMQ, set `broker.rabbitmq.exchange` to the value of the sentinel's `clients.broker.topic` — this is the exchange the sentinel publishes to and the only coupling point between them.
 
    ```yaml
    # Helm values
@@ -1865,10 +2212,10 @@ clients:
      rabbitmq:
        url: "amqp://<user>:<password>@rabbitmq.<rabbitmq-namespace>.svc.cluster.local:5672/<vhost>" # namespace is where RabbitMQ is deployed
        exchange: "hyperfleet-clusters"   # must match sentinel's clients.broker.topic
-       exchange_type: "topic"
+       exchangeType: "topic"
    ```
 
-1. **Deploy using the Helm chart** — the generic `adapter/` chart mounts your task config as a ConfigMap and sets the environment variables.
+4. **Deploy using the Helm chart** — the adapter chart (`charts/` in this repo, published as `hyperfleet-adapter-chart`) mounts your task config as a ConfigMap and sets the environment variables.
 
    ```bash
    helm install my-adapter oci://quay.io/redhat-services-prod/hyperfleet-tenant/hyperfleet/hyperfleet-adapter-chart \
@@ -1883,15 +2230,13 @@ clients:
 
    Where `my-values.yaml` contains image and adapter config (see [Deployment Guide](deployment.md) for full values reference).
 
-2. **Set up broker subscription** — for Google Pub/Sub, ensure your adapter has a dedicated subscription on the cluster events topic so it receives events independently of other adapters (fan-out pattern). For RabbitMQ, fan-out is achieved automatically by giving each adapter a unique `subscription_id` — the broker library creates a separate queue per adapter.
+5. **Set up broker subscription** — for Google Pub/Sub, ensure your adapter has a dedicated subscription on the cluster events topic so it receives events independently of other adapters (fan-out pattern). For RabbitMQ, fan-out is achieved automatically by giving each adapter a unique `subscription_id` — the broker library creates a separate queue per adapter.
 
-3. Set permissions for the adapter to read from the broker subscription. This is cloud provider specific.
+6. **Set permissions** for the adapter to read from the broker subscription. This is cloud provider specific. For example, in GCP you can use Workload Identity Federation to assign `role/pubsub.subscriber` directly to the adapter's Kubernetes service account.
 
-- E.g. In GCP you can use Workload Identity Federation to assign `role/pubsub.subscriber` directly to the k8s service account for the adapters.
+7. **Verify broker metrics** — the adapter automatically exposes broker metrics on the `/metrics` endpoint (port 9090). No additional configuration is needed. See [Metrics](metrics.md) for the full list of available metrics.
 
 More information about deployment can be found in [Architecture repository - HyperFleet Adapter Framework - Deployment Guide](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/components/adapter/framework/adapter-deployment.md)
-
-1. **Verify broker metrics** — the adapter automatically exposes broker metrics on the `/metrics` endpoint (port 9090). No additional configuration is needed. See [Metrics](metrics.md) for the full list of available metrics.
 
 ---
 
@@ -1903,9 +2248,9 @@ More information about deployment can be found in [Architecture repository - Hyp
 
 | Namespace | Description | Example |
 |---|---|---|
-| _(param names)_ | Extracted params as top-level names — write `clusterID`, not `params.clusterID` | `clusterID`, `region` |
-| `resources.*` | Discovered K8s resources by alias (empty during precondition phase) | `resources.managedCluster.status` |
-| `resource_states.*` | Discovery outcome by resource alias: `present`, `confirmed_deleted` or `unsynced` (empty during precondition phase) | `resource_states.?managedCluster.orValue("") == "present"` |
+| _(param names)_ | Extracted params as top-level names — write `resourceId`, not `params.resourceId` | `resourceId`, `region` |
+| `resources.*` | Full live objects by alias (empty during precondition phase). A `present` resource exposes its object. An `unsynced` resource exposes its last known object, or an empty placeholder. Confirmed-deleted and unprocessed resources are absent | `resources.namespace.status` |
+| `resource_states.*` | Discovery outcome by resource alias: `present`, `confirmed_deleted` or `unsynced` (empty during precondition phase) | `resource_states.?namespace.orValue("") == "present"` |
 | `adapter.*` | Adapter name and version, plus execution metadata that is meaningful only in post-phase expressions | `adapter.name`, `adapter.executionStatus`, `adapter.errorMessage` |
 | `env.*` | OS environment variables accessible to the process | `env.REGION`, `env.NAMESPACE` |
 | `event.*` | Triggering CloudEvent payload fields | `event.id`, `event.kind` |
@@ -1915,10 +2260,10 @@ See [CEL Conventions — Variables](conventions/cel.md#variables) for per-contex
 
 ```cel
 # Optional chaining — safe access to fields that may not exist
-resources.?clusterNamespace.?status.?phase.orValue("")
+resources.?namespace.?status.?phase.orValue("")
 
-# Existence check
-has(resources.clusterNamespace)
+# Presence check — the resource was read back from the cluster
+resource_states.?namespace.orValue("") == "present"
 
 # Array filtering — find a condition by type
 status.conditions.filter(c, c.type == "Reconciled")
@@ -1940,9 +2285,6 @@ stableFor(conditions, "Reconciled", 300)
 # Tri-state mapping — "True" / "False" / "Unknown"
 triState(isReady, isFailed)
 
-# Maestro statusFeedback value extraction
-statusFeedbackValue(statusFeedback, "phase")
-
 # Condition age in seconds (-1 if absent)
 conditionAge(conditions, "Reconciled")
 
@@ -1950,7 +2292,7 @@ conditionAge(conditions, "Reconciled")
 condition ? "yes" : "no"
 
 # String concatenation
-"prefix-" + clusterId + "-suffix"
+"prefix-" + resourceId + "-suffix"
 
 # Numeric comparison (use expression for observed_generation)
 generation
@@ -1967,7 +2309,7 @@ The CEL environment registers `ext.Strings()`, making the following methods avai
 
 ```cel
 # Lowercase a cluster name
-clusterName.lowerAscii()
+resourceName.lowerAscii()
 
 # Split a comma-separated list and check membership
 "us-east-1,us-west-2".split(",").exists(r, r == region)
@@ -1996,32 +2338,11 @@ resources.?myResource.?status.?conditions.orValue([])
 </details>
 
 <details>
-<summary>Check ManifestWork statusFeedback for a namespace phase</summary>
-
-```cel
-# Using statusFeedbackValue() helper (preferred):
-has(resources.namespace0) && has(resources.namespace0.statusFeedback)
-  ? statusFeedbackValue(resources.namespace0.statusFeedback, "phase")
-  : ""
-
-# Equivalent verbose form:
-has(resources.namespace0)
-  && has(resources.namespace0.statusFeedback)
-  && has(resources.namespace0.statusFeedback.values)
-  && resources.namespace0.statusFeedback.values
-      .filter(v, v.name == "phase").size() > 0
-? resources.namespace0.statusFeedback.values
-    .filter(v, v.name == "phase")[0].fieldValue.string
-: ""
-```
-
-</details>
-
-<details>
 <summary>Build a composite status from multiple resources</summary>
 
 ```cel
-has(resources.namespace0) && has(resources.configmap0)
+resource_states.?namespace.orValue("") == "present"
+  && resource_states.?configMap.orValue("") == "present"
   ? "True"
   : "False"
 ```
@@ -2029,24 +2350,27 @@ has(resources.namespace0) && has(resources.configmap0)
 </details>
 
 <details>
-<summary>has() vs hasValue() vs orValue() — when to use each</summary>
+<summary>resource_states vs resources vs orValue() — when to use each</summary>
 
-| Function | Use when | Returns |
-|----------|----------|---------|
-| `has(resources.X)` | Check if a key exists in the CEL map (standard CEL) | `bool` |
-| `resources.?X.hasValue()` | Check if an optional value is present (works after `?` chaining) | `bool` |
-| `resources.?X.orValue(default)` | Get value or fallback if absent | value or default |
+| Expression | Use when | Returns |
+|------------|----------|---------|
+| `resource_states.?X.orValue("")` | Presence and lifecycle decisions: `present`, `confirmed_deleted` or `unsynced` | `string` |
+| `resources.?X.orValue(default)` | Get a discovered value or a fallback if absent | value or default |
+| `has(resources.X)` | Guard field access on a discovered object. Not a presence test: it is also `true` for the placeholder of an `unsynced` remote resource | `bool` |
+
+`resources.?X.hasValue()` is **not a presence check**: it is also `true` for the empty placeholder of an `unsynced` remote resource. Use `resource_states`.
 
 ```cel
-# has() — use for top-level existence checks and guards
-has(resources.namespace) && has(resources.namespace.status)
-
-# hasValue() — use in deletion checks (deleted resources are removed from the map)
-!resources.?namespace.hasValue()    # true when resource was deleted or never created
+# resource_states — presence, absence and deletion checks
+resource_states.?namespace.orValue("") == "present"
+resource_states.?namespace.orValue("") == "confirmed_deleted"   # deleted, or never created
 
 # orValue() — use for safe field access with a fallback
 resources.?namespace.?status.?phase.orValue("")    # "" if any level is missing
 adapter.?resourcesSkipped.orValue(false)           # false if not set
+
+# has() — guard a field of a discovered object
+has(resources.namespace) && has(resources.namespace.status)
 ```
 
 </details>
@@ -2055,21 +2379,22 @@ adapter.?resourcesSkipped.orValue(false)           # false if not set
 <summary>Deletion guard — check if a resource has been deleted</summary>
 
 ```cel
-# Capture is_deleting in preconditions (recommended pattern):
+# Derive is_deleting in the params phase (recommended pattern):
 #   - name: "is_deleting"
-#     expression: "has(clusterStatus.deleted_time)"
+#     source:
+#       expression: "resourceStatus.?deleted_time.hasValue()"
 
 # Single resource: delete when cluster is being deleted
 is_deleting
 
-# Dependency ordering: delete configmap only after namespace is gone
-is_deleting && !resources.?configMapManifestWork.hasValue()
+# Dependency ordering: delete the namespace only after the configmap is confirmed gone
+is_deleting && resource_states.?configMap.orValue("") == "confirmed_deleted"
 
 # Finalized condition: all resources confirmed deleted
 is_deleting
   && adapter.?executionStatus.orValue("") == "success"
   && !adapter.?resourcesSkipped.orValue(false)
-  && !resources.?namespace.hasValue()
+  && resource_states.?namespace.orValue("") == "confirmed_deleted"
 ? "True" : "False"
 ```
 
@@ -2134,37 +2459,39 @@ when:
 <summary>Finalized condition boilerplate (copy-paste ready, with deletion)</summary>
 
 ```yaml
-# Requires: is_deleting captured in preconditions
-# Replace resources.?myResource with your actual resource names
+# Requires: is_deleting derived in params
+# Replace myResource with your actual resource names (combine several with &&)
 - type: "Finalized"
   status:
     expression: |
       is_deleting
         && adapter.?executionStatus.orValue("") == "success"
         && !adapter.?resourcesSkipped.orValue(false)
-        && !resources.?myResource.hasValue()
+        && resource_states.?myResource.orValue("") == "confirmed_deleted"
       ? "True"
       : "False"
   reason:
     expression: |
       !is_deleting
-      ? ""
+      ? "NotDeleting"
       : adapter.?executionStatus.orValue("") != "success"
         ? "AdapterUnhealthy"
         : adapter.?resourcesSkipped.orValue(false)
           ? "ResourcesSkipped"
-          : !resources.?myResource.hasValue()
+          : resource_states.?myResource.orValue("") == "confirmed_deleted"
             ? "CleanupConfirmed"
             : "CleanupInProgress"
   message:
     expression: |
       !is_deleting
-      ? ""
+      ? "No pending deletion for this adapter instance"
       : adapter.?executionStatus.orValue("") != "success"
         ? "Cannot confirm cleanup while adapter is unhealthy"
-        : !resources.?myResource.hasValue()
-          ? "All managed resources deleted and verified"
-          : "Resource cleanup in progress"
+        : adapter.?resourcesSkipped.orValue(false)
+          ? "Cannot confirm cleanup while resources are skipped"
+          : resource_states.?myResource.orValue("") == "confirmed_deleted"
+            ? "All managed resources deleted and verified"
+            : "Resource cleanup in progress"
 ```
 
 </details>
@@ -2177,11 +2504,16 @@ when:
 
 ```
 {{ .variableName }}                              Variable interpolation
-{{ .clusterId | lower }}                         Lowercase filter
+{{ .resourceId | lower }}                         Lowercase filter
 {{ now | date "2006-01-02T15:04:05Z07:00" }}     Current timestamp (RFC 3339)
 {{ .adapter.name }}                              Adapter name from config
 {{ .adapter.version }}                           Adapter version from config
+{{ .event.id }}                                  Field of the triggering event
+{{ .config.adapter.name }}                       Field of the merged config (sensitive values are redacted)
+{{ .env.REGION }}                                Environment variable
 ```
+
+Go templates read params, precondition captures and payloads, plus `adapter`, `config`, `env` and `event`, with the same shapes as in CEL. Only CEL reads `resources` and `resource_states`.
 
 ### Structural syntax
 
@@ -2224,8 +2556,8 @@ Use `range` to iterate over list-type params resolved via CEL expressions:
 >   - name: "subnets"
 >     source:
 >       expression: |
->         has(clusterData.spec.platform.gcp.subnets)
->           ? clusterData.spec.platform.gcp.subnets
+>         has(resourceStatus.spec.platform.gcp.subnets)
+>           ? resourceStatus.spec.platform.gcp.subnets
 >           : []
 > ```
 
@@ -2247,11 +2579,10 @@ See also [Preconditions — Supported operators](#supported-operators).
 | `notIn` | array | `value: ["deprecated-region"]` |
 | `contains` | string | `value: "prod"` |
 | `greaterThan` | numeric | `value: 0` |
-| `greaterThanOrEqual` | numeric | `value: 0` |
 | `lessThan` | numeric | `value: 100` |
-| `lessThanOrEqual` | numeric | `value: 100` |
 | `exists` | (none) | Field must exist, no value needed |
-| `notExists` | (none) | Field must not exist, no value needed |
+
+No other operator is accepted. Express negated existence and inclusive comparisons with a CEL `expression`.
 
 ---
 
@@ -2261,8 +2592,39 @@ See also [Preconditions — Supported operators](#supported-operators).
 |---------|-------------|----------|
 | Resources skipped, Health=False with "ResourcesSkipped" | Precondition not met | Check precondition conditions — the cluster may not be in the expected state yet. This is often normal; the Sentinel will retry. |
 | Status update rejected by API | Stale `observed_generation` | Your adapter is reporting an older generation than what's already stored. Ensure `observed_generation` uses the generation from the API response, not the event. |
-| `template variable not found` | Variable referenced in `{{ .foo }}` but never defined | Add `foo` to params. Check spelling. |
-| `CEL expression parse error` | Invalid CEL syntax | Verify parentheses, string quoting, and optional chaining syntax (`?.` for safe field access). |
+| `undefined template variable "foo"` | Variable referenced in `{{ .foo }}` but never defined | Add `foo` to params. Check spelling. |
+| `CEL parse error: ...` | Invalid CEL syntax | Verify parentheses, string quoting, and optional chaining syntax (`?.` for safe field access). |
+| `resources[N].manifest GVK <apiVersion/Kind> has no resource_plurals mapping in transport "<name>"` | A remote manifest's kind is missing from the transport | Add `"<apiVersion>/<Kind>": <plural>` to the transport's `resource_plurals` in the deployment config |
+| `resources[N].lifecycle.delete: selector-based lifecycle deletion is unsupported for remote transport; use discovery.by_name` | A remote resource uses `by_selectors` with `lifecycle.delete` | Use `discovery.by_name` |
+| `resources[N].transport "<name>" target_cluster uses undefined variable "<var>"` | The transport's `target_cluster` template names a variable the task does not define | Define the param, or fix the template |
+| `resources[N].transport references unknown transport "<name>"; available: [...]` | The transport is not declared | Declare it under `transports` in the deployment config, or fix the name |
+| `resources[N].transport: schema_version is required for named transport references; use "2.0"` | The task names a transport without `schema_version` | Add `schema_version: "2.0"` to the task config |
+| `resources[N].discovery is required` | A resource has no `discovery` | Add `by_name` or `by_selectors` |
+| `"<name>" is a reserved variable name` | A param or capture uses `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rename it |
+| `resources[N].manifest: line N: <field> must be a literal value` | `<field>` is `apiVersion` or `kind` and is templated | Write a literal value for that field |
+| Resources phase fails with `missing hyperfleet.io/generation annotation` | A remote manifest has no generation annotation (checked when the resource is applied, and in a dry run) | Add `hyperfleet.io/generation: "{{ .generation }}"` to the manifest |
+| Remote resource stays `unsynced` for several events | The mirror has not synced, or a write or delete is still in flight | Check that the store and the remote cluster side are running. Do not report `False` for it; see [Remote-backed conditions](#remote-backed-conditions) |
 | Discovery returns empty | Labels don't match or wrong namespace | Verify `discovery.namespace` is correct. Use `by_name` for a simpler lookup. Check resource labels match the selector exactly. |
 | `observed_generation` is a string | Using Go Template instead of CEL expression | Use `expression: "generation"` instead of `"{{ .generation }}"`. |
 | Post-action API call returns 404 with error status | Wrong status endpoint path (error code `HYPERFLEET-NTF-000`) | Cluster statuses: `/clusters/{id}/statuses`. NodePool statuses: `/clusters/{id}/nodepools/{id}/statuses`. |
+
+---
+
+## Appendix E: Concepts changed in v2
+
+This is a summary of what changed from the v1 task config, not a migration procedure. Each row names a removed or changed key and what replaces it. For a v1 guide, see the [v0.3.1 guide](https://github.com/openshift-hyperfleet/hyperfleet-adapter/blob/v0.3.1/docs/adapter-authoring-guide.md).
+
+| Removed or changed in v1 | Replacement in v2 |
+|---|---|
+| `transport: {client: kubernetes}` | Omit `transport`, or write `transport: kubernetes` |
+| `transport: {client: maestro, maestro: {target_cluster: ...}}` | `transport: <name>`, with a `transports.<name>` entry of `type: remote` in the deployment config. The loader rejects the object form of `transport` in a v2 task |
+| `clients.maestro` (and the `--maestro-*` flags and `HYPERFLEET_MAESTRO_*` variables) | `stores` and `transports` in the deployment config. The loader rejects `clients.maestro` when `transports` is set |
+| `nested_discoveries` | One resource per object, each with its own `discovery`. The loader rejects `nested_discoveries` in a v2 task |
+| Fields copied onto nested results (`statusFeedback`, promoted keys) | The object's own `status`, read from `resources.<name>` |
+| `statusFeedbackValue()` | Read `resources.<name>.status...` directly. The function is still registered for v1 configs, but nothing in v2 produces `statusFeedback` |
+| `!resources.?X.hasValue()` as an absence test | `resource_states.?X.orValue("") == "confirmed_deleted"`. `hasValue()` is also `true` for the placeholder of an `unsynced` remote resource |
+| `resources.?X.hasValue()` or `has(resources.X)` as a presence test | `resource_states.?X.orValue("") == "present"`. Both forms are `true` for the placeholder of an `unsynced` remote resource; on a local transport they keep working |
+| No `schema_version` | `schema_version: "2.0"`. An unversioned task that names a transport is rejected |
+| Params named `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rejected at load time, in unversioned tasks too. Rename the param |
+| Templated `apiVersion` or `kind` in a manifest | Write literal values. The loader reads them without rendering and rejects a template (`apiVersion must be a literal value` or `kind must be a literal value`), in unversioned tasks too |
+| One manifest bundling several resources, applied atomically | One resource per object, delivered individually. Use list order and `lifecycle.*.when` gates; see [Ordering resources](#ordering-resources) |

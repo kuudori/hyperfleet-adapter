@@ -428,7 +428,7 @@ Process execution errors are captured in `ExecutionResult` with:
 
 ### Error and Status Reporting
 
-Post-actions always execute (even on failure) to allow comprehensive status reporting:
+Post-actions still execute after a precondition evaluation error or a resource failure, to allow comprehensive status reporting. They do not run when a required param fails to extract, or when a precondition `api_call` returns 404 (the event ends as `ResourceNotFound`); see `Execute` in `executor.go`:
 
 <details>
 <summary>Comprehensive status reporting example</summary>

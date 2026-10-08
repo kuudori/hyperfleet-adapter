@@ -54,7 +54,7 @@ See [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra)
 
 ### For Adapter Authors (writing task configurations)
 
-- **[Adapter Authoring Guide](docs/adapter-authoring-guide.md)** — params, preconditions, resources, CEL expressions, status reporting
+- **[Adapter Authoring Guide](docs/adapter-authoring-guide.md)** — params, preconditions, resources, named transports, ordering, remote reads, CEL expressions, status reporting
 
 ### For Developers
 

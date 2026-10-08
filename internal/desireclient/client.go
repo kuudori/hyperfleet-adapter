@@ -3,8 +3,9 @@
 // It is the producer half of desire-based delivery: the adapter writes intent
 // (apply/delete desires) and reads mirrored status (read desires) through the
 // store, while a separate applier reconciles that intent against the target
-// cluster. See docs/adapter-authoring-guide.md's "Desire transport" section
-// for the contract this client implements.
+// cluster. See docs/adapter-authoring-guide.md's "Transports" section
+// and "The eventual-consistency contract for remote reads" for the contract
+// this client implements.
 package desireclient
 
 import (

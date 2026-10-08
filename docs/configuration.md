@@ -15,7 +15,8 @@ You can point the adapter at a deployment config file with either:
 - Env: `HYPERFLEET_ADAPTER_CONFIG`
 
 Task config is separate (`--task-config` / `HYPERFLEET_TASK_CONFIG`) and is pure YAML.
-Its `schema_version` and resource transport rules are described below.
+Its `schema_version` and resource transport rules are described below. To write one, see the
+[Adapter Authoring Guide](adapter-authoring-guide.md).
 
 ## YAML options (AdapterConfig)
 
@@ -24,7 +25,7 @@ All fields use **snake_case** naming.
 ```yaml
 adapter:
   name: example-adapter
-  version: "0.1.0"
+  # version: "X.Y.Z"   # optional; when set, MAJOR.MINOR must match the running binary
 
 debug_config: false
 
@@ -99,6 +100,26 @@ transport uses local Kubernetes. A local-only deployment can omit both maps.
 Every declared store must be used by a remote transport. Store connection settings
 belong in deployment config; task config has no environment or flag overrides.
 
+#### Remote transport prerequisites
+
+A remote transport does not apply resources to the target cluster itself. The adapter
+writes the requested manifests to the store and reads back the state that a remote
+applier mirrors from the target cluster. The store and the remote applier
+([hyperfleet-applier](https://github.com/openshift-hyperfleet/hyperfleet-applier)) are
+deployed and operated separately from the adapter, so provision them before you
+declare a `type: remote` transport.
+
+- `target_cluster` is rendered for every event. A template such as `{{ .resourceId }}`
+  selects a different target for each HyperFleet cluster, so the remote side needs one
+  target for each value the template can render. The rendered value must be a Kubernetes
+  DNS-1123 label, and a template may use only built-in variables, task params and
+  precondition captures.
+- `resource_plurals` must list every `apiVersion/Kind` that tasks deliver through the
+  transport. A task manifest of an unlisted kind is rejected when the config loads.
+- Keep the store URL out of the ConfigMap when it carries credentials: set it from the
+  environment with `HYPERFLEET_STORES_<NAME>_URL` (see
+  [Environment variables](#environment-variables)).
+
 ### Task schema version
 
 Every v2 task declares the YAML string `schema_version: "2.0"`. For example:
@@ -121,9 +142,10 @@ values are rejected.
 
 ### Legacy Maestro client (`clients.maestro`)
 
-These settings remain available for unversioned legacy tasks until the Maestro
-cutover. Do not combine `clients.maestro` with named `transports`. V2 tasks use
-the named `kubernetes` and `remote` transports described above.
+**Transitional.** These settings remain available for unversioned legacy tasks until
+the Maestro cutover, and HYPERFLEET-1504 removes them. Do not combine `clients.maestro`
+with named `transports`. V2 tasks use the named `kubernetes` and `remote` transports
+described above.
 
 ```yaml
 clients:
@@ -277,7 +299,7 @@ URL can be set from the environment (see [Environment variables](#environment-va
 - `--log-format` -> `log.format`
 - `--log-output` -> `log.output`
 
-**Legacy Maestro**
+**Legacy Maestro** (transitional; HYPERFLEET-1504 removes these)
 
 - `--maestro-grpc-server-address` -> `clients.maestro.grpc_server_address`
 - `--maestro-http-server-address` -> `clients.maestro.http_server_address`
@@ -329,7 +351,7 @@ Task `schema_version` has no environment override.
 - `LOG_FORMAT` -> `log.format`
 - `LOG_OUTPUT` -> `log.output`
 
-**Legacy Maestro**
+**Legacy Maestro** (transitional; HYPERFLEET-1504 removes these)
 
 - `HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS` -> `clients.maestro.grpc_server_address`
 - `HYPERFLEET_MAESTRO_HTTP_SERVER_ADDRESS` -> `clients.maestro.http_server_address`
@@ -389,8 +411,13 @@ Legacy broker environment variables (used only if the prefixed version is unset)
 
 ## V2 concepts changed
 
-V2 resources name a transport declared in the deployment config instead of
-embedding a transport object in each resource. Remote routing and its store
-move to the deployment maps. V2 discovery describes plain live resources;
-`nested_discoveries` entries are a v1 resource shape. Use `discovery` on each
-resource and declare the task's `schema_version: "2.0"`.
+A v2 task declares `schema_version: "2.0"`. The loader rejects these v1 shapes:
+
+| v1 shape | v2 replacement |
+| --- | --- |
+| `transport: {client: ...}` object on a resource | `transport: <name>` naming a `transports` entry, or no `transport` for local Kubernetes |
+| `nested_discoveries` on a resource | One resource per object, each with its own `discovery` |
+| `clients.maestro` next to `transports` | `stores` and `transports` in the deployment config |
+
+The authoring guide lists every removed key and its replacement in
+[Appendix E: Concepts changed in v2](adapter-authoring-guide.md#appendix-e-concepts-changed-in-v2).

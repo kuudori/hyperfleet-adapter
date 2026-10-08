@@ -1,69 +1,52 @@
 # HyperFleet Adapter
 
-Event-driven Kubernetes resource manager. Consumes CloudEvents from a message broker, executes configured actions (K8s resource apply, HyperFleet API calls, Maestro ManifestWork), and reports status back.
+<!-- Maintainers: this file loads into every agent session (CLAUDE.md imports it, and it
+imports docs/conventions/). Keep it short, link to README.md and docs/ instead of copying
+their tables, and keep only what an agent can't learn by reading the Makefile and docs. -->
 
-Go 1.26.0 · Cobra CLI · Viper config · golangci-lint (pinned in tools/go.mod) · Tekton CI (Konflux)
+## What this repo is
 
-## Setup (fresh clone)
+An event-driven Kubernetes resource manager in Go. The adapter consumes CloudEvents from a message broker, runs the configured pipeline (params → preconditions → resources → post-actions), and reports status to the HyperFleet API.
+
+Go 1.26, Cobra CLI, Viper config. `make help` lists every target, and `README.md` indexes the docs.
+
+## Validation commands
 
 ```bash
-make install-hooks    # Install pre-commit hooks (secret scanning, linting, etc.)
-make build            # Build binary → bin/hyperfleet-adapter
+make install-hooks    # pre-commit: secret scan, commitlint, gofmt, golangci-lint, go vet, file hygiene
+make fmt              # goimports -w .
+make lint             # golangci-lint, pinned in tools/go.mod, config in .golangci.yml
+make test             # promtool alert tests (test/alerts/) + unit tests with -race, excluding test/
+make test-integration # testcontainers + envtest suites in test/integration/ (needs Docker or Podman)
+make test-helm        # helm-docs check, helm lint, then template + kubeconform for several value sets and each charts/examples/ overlay
+make build            # bin/hyperfleet-adapter
 ```
 
-## Verification Checklist
+`make test-all` runs `lint`, `test`, `test-integration` and `test-helm`. Run `make test-integration` locally before pushing when you change the config loader, the executor or a transport backend (`internal/*client/`); the Prow `presubmits-integration` job runs it too, but it is a slow feedback loop.
 
-```bash
-make fmt              # Format code + imports (golangci-lint fmt with gci)
-make lint             # golangci-lint (config: .golangci.yml)
-make test             # Unit tests with race detection (excludes test/ dir)
-make test-integration # Integration tests via testcontainers (needs Docker/Podman)
-make build            # Build binary → bin/hyperfleet-adapter
-```
+Dry run processes one event with mock clients and needs no broker, cluster or API: `adapter serve -c <config> -t <task> --dry-run-event event.json`. README.md's "Try Locally" has the full command. Each example in `charts/examples/` has a `dryrun.sh [create|delete]` that runs one event and checks the trace.
 
-`make test-all` runs `make lint`, `make test`, `make test-integration`, and `make test-helm`.
+## Two config files
 
-### Pre-commit Hooks
-Install: `make install-hooks`
+| | Deployment config | Task config |
+|--|--|--|
+| File | `adapter-config.yaml` | `adapter-task-config.yaml` |
+| Path | `-c` / `HYPERFLEET_ADAPTER_CONFIG` | `-t` / `HYPERFLEET_TASK_CONFIG` |
+| Holds | adapter identity, clients, logging, named `transports` and `stores` | `schema_version`, params, preconditions, resources, post-actions |
+| Overrides | CLI flag > env var > YAML > default | none, pure YAML |
 
-Hooks:
-- `leaktk.git.pre-commit` — secret scanning (open-source, no VPN required)
-- `hyperfleet-commitlint` — validates commit message format (commit-msg stage)
-- `hyperfleet-gofmt` — Go code formatting
-- `hyperfleet-golangci-lint` — linting
-- `hyperfleet-go-vet` — Go vet checks
-- `trailing-whitespace` — removes trailing whitespace
-- `end-of-file-fixer` — ensures files end with newline
-- `check-added-large-files` — prevents large files from being committed
+Templates live in `configs/`, and working examples in `charts/examples/`. `docs/configuration.md` is the reference for every field, flag and env var.
 
-## CLI
+Every example and template task in this repo declares `schema_version: "2.0"` (some legacy Go test fixtures do not). A v2 resource names a transport from the deployment config (`kubernetes` or `remote`), and a resource without one uses the local Kubernetes client. Unversioned legacy tasks still load until HYPERFLEET-1504 removes them. Write new configs and fixtures as v2.
 
-Subcommands: `adapter serve`, `adapter config-dump`, `adapter version`. Config paths via `-c`/`HYPERFLEET_ADAPTER_CONFIG` and `-t`/`HYPERFLEET_TASK_CONFIG`. All flags have env var equivalents — run `adapter serve --help`.
+Every flag except `--dry-run-*` has an env var equivalent. When you add a deployment config override, update `viperKeyMappings` and `cliFlags` in `internal/configloader/viper_loader.go`, register the flag in `cmd/adapter/main.go` with `Env: <VAR>` in its help text, and document both in `docs/configuration.md`.
 
-Dry-run mode: `adapter serve --dry-run-event event.json` processes a single event with mock clients, no broker or cluster needed.
-
-## Two Config Files
-
-Adapter loads two configs merged at startup: deployment config (`adapter-config.yaml` — infra, clients, logging) and task config (`adapter-task-config.yaml` — params, preconditions, resources, post-actions). Override rules differ — see Gotchas. Templates in `configs/`.
-
-## Source of Truth
-
-| Topic | Location |
-|-------|----------|
-| Configuration reference | `docs/configuration.md` |
-| Adapter authoring guide | `docs/adapter-authoring-guide.md` |
-| Metrics & Prometheus queries | `docs/metrics.md` |
-| Alerts | `docs/alerts.md` |
-| Runbook | `docs/runbook.md` |
-| Helm chart | `charts/` |
-| CI pipelines | `.tekton/` (Konflux/Tekton PipelineRuns) |
-
-## Code Conventions
+## Code conventions
 
 @docs/conventions/logging.md
 @docs/conventions/cel.md
 
-### Error Handling
+### Error handling
 
 `pkg/errors` provides ServiceError constructors for API-style errors with numeric codes and HTTP status:
 
@@ -72,27 +55,50 @@ errors.NotFound("cluster %s not found", clusterID)      // → *ServiceError
 errors.KubernetesError("failed to get resource: %v", err)
 ```
 
-IMPORTANT: These return `*ServiceError`, not `error`. Use `.AsError()` to convert.
+These return `*ServiceError`, not `error`. Use `.AsError()` to convert.
 
-## Boundaries
+## Packages
 
-- Every CLI flag must have a corresponding env var (Viper convention)
+- `internal/executor/`: the event pipeline (params → preconditions → resources → post-actions).
+- `internal/configloader/`: loads, merges and validates both configs, including CEL compilation at load time.
+- `internal/criteria/`: the CEL evaluator and the custom functions.
+- `internal/transportclient/`: the apply and discovery interface shared by every backend. `internal/transportregistry/` builds the named transport clients from deployment config.
+- Backends: `internal/k8sclient/` (local), `internal/desireclient/` (the `remote` transport) and `internal/maestroclient/` (legacy, removed by HYPERFLEET-1504).
+- `internal/dryrun/`: the mock API client, recording transport and trace output behind `--dry-run-*`.
+- `internal/logctx/`: adapter-specific log context keys and the stack-trace filter (see the logging conventions above).
 
-## Gotchas
+## Docs that change with the code
 
-- IMPORTANT: **Two config files, different override rules.** Deployment config supports env/flag overrides via Viper. Task config is pure YAML — env vars do nothing there. Mixing them up wastes debugging time.
-- IMPORTANT: **Naming conventions differ by layer.** Config YAML: `snake_case` (`subscription_id`). Go code: `CamelCase` (`SubscriptionID`). Helm values: `camelCase` (`subscriptionId`). Wrong casing silently drops values.
-- **Tracing default mismatch.** Binary defaults to tracing ON. Helm chart defaults to OFF. Local `adapter serve` will attempt OTLP export unless you set `HYPERFLEET_TRACING_ENABLED=false`.
-- **Integration tests build a container on first run.** `make test-integration` calls `make image-integration-test` if `INTEGRATION_ENVTEST_IMAGE` is unset. First run takes minutes.
+- Deployment config field, flag or env var: `docs/configuration.md`.
+- Task config or CEL behavior: `docs/adapter-authoring-guide.md`, plus `docs/conventions/cel.md` for CEL variables and functions.
+- Metric: `docs/metrics.md`, and the dashboard in `charts/dashboards/` if it should show there. Alert: `docs/alerts.md` and `docs/runbook.md`. A rule copied into `test/alerts/` for promtool tests must match its doc.
+- `charts/values.yaml`: annotate each key with `# --` and run `make helm-docs`. **Never edit `charts/README.md` by hand.** `verify-helm-docs` fails `test-helm` when it is stale.
 
-## Non-Obvious Packages
+## CI
 
-- `internal/executor/` — event execution pipeline (params → preconditions → resources → post-actions)
-- `internal/transportclient/` — unified apply interface abstracting K8s direct and Maestro ManifestWork
-- `internal/logctx/` — adapter-specific typed context keys and the stack-trace filter for the shared `hyperfleet-logger` handler (see `docs/conventions/logging.md`)
+Prow (`openshift/release`) runs the presubmits: `validate-commits` (commitlint), `lint`, `unit` (`make test`), `presubmits-integration` (`make test-integration`), `presubmits-images`, `helm-test` (only when `charts/` or the `Makefile` change) and an optional `risk-scorer`. Konflux (`.tekton/`) builds the image and chart on every push to `main` and on `vX.Y.Z[-rcN]` tags, and posts to Slack when a build fails. `OWNERS` enforces PR approval.
+
+## Common gotchas
+
+**Task config has no overrides.**
+Flags and env vars change only the deployment config. A task reads the environment only through `env.*` in CEL or a param with an `env.` source.
+
+**Naming differs by layer.**
+Config YAML and CEL `config.*` use `snake_case` (`subscription_id`), Go uses `CamelCase` (`SubscriptionID`), and Helm values use `camelCase` (`subscriptionId`). Both config decoders are strict, so a wrong key fails at load. Helm silently ignores a wrong values key, because `values.schema.json` does not forbid unknown keys.
+
+**Env var prefixes are not uniform.**
+Most deployment overrides use `HYPERFLEET_`, but logging uses `LOG_LEVEL`, `LOG_FORMAT` and `LOG_OUTPUT`, and unprefixed `BROKER_SUBSCRIPTION_ID` and `BROKER_TOPIC` still work as fallbacks.
+
+**Tracing is on in the binary and off in the chart.**
+Tracing is configured only through env vars. A local `adapter serve` tries to export over OTLP unless you set `HYPERFLEET_TRACING_ENABLED=false`.
+
+**First runs of the test targets are slow.**
+`make test` builds the pinned `promtool` from the Prometheus module into `bin/`. `make test-integration` builds the envtest image with `make image-integration-test` unless `INTEGRATION_ENVTEST_IMAGE` is set, which takes minutes.
 
 ## Links
 
-- [Architecture Docs](https://github.com/openshift-hyperfleet/architecture)
-- [HyperFleet API Spec](https://github.com/openshift-hyperfleet/hyperfleet-api-spec)
-- [Broker Library](https://github.com/openshift-hyperfleet/hyperfleet-broker)
+- [Architecture docs](https://github.com/openshift-hyperfleet/architecture)
+- [HyperFleet API spec](https://github.com/openshift-hyperfleet/hyperfleet-api-spec)
+- [Broker library](https://github.com/openshift-hyperfleet/hyperfleet-broker)
+- [hyperfleet-applier](https://github.com/openshift-hyperfleet/hyperfleet-applier): applies on the target cluster what `remote` transports write to the store
+- [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra): deploys the full stack (dev and e2e)
