@@ -156,6 +156,13 @@ func ValidateResourceTransports(config *Config) error {
 			(resource.Discovery == nil || resource.Discovery.ByName == "") {
 			return fmt.Errorf("%s.lifecycle.delete: %s", path, ErrMsgDesireSelectorDeleteUnsupported)
 		}
+		// The remote client never reads ApplyOptions, so recreate_on_change would be
+		// silently ignored there while dry runs still report a recreate. Fail at load
+		// instead. TODO(HYPERFLEET-1194): remove with recreate_on_change when
+		// lifecycle.recreate.when replaces it.
+		if resource.RecreateOnChange {
+			return fmt.Errorf("%s.recreate_on_change is unsupported for remote transport", path)
+		}
 		for _, match := range templateVarRegex.FindAllStringSubmatch(definition.TargetCluster, -1) {
 			if !isVariableDefinedIn(match[1], vars) {
 				return fmt.Errorf("%s.transport %q target_cluster uses undefined variable %q", path, name, match[1])

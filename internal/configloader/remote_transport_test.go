@@ -223,6 +223,11 @@ resources:
 			want: "resources[0].manifest is required",
 		},
 		{
+			name: "recreate on change", adapter: remoteAdapterYAML,
+			task: replaceTask("transport: Remote-Primary\n", "transport: Remote-Primary\n    recreate_on_change: true\n"),
+			want: "resources[0].recreate_on_change is unsupported for remote transport",
+		},
+		{
 			name: "dynamic GVK", adapter: remoteAdapterYAML,
 			task: replaceTask("kind: ConfigMap", `kind: "{{ .kind }}"`),
 			want: "resources[0].manifest: line 2: kind must be a literal value",

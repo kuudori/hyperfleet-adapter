@@ -518,7 +518,7 @@ Resources define the Kubernetes objects your adapter delivers. Each entry is a p
 | `discovery` | yes | How to read the live object back: `by_name` or `by_selectors` |
 | `transport` | no | Name of a transport. Omit it to apply to the cluster the adapter is configured for (see [Transports](#transports)) |
 | `lifecycle` | no | `create.when` and `delete.when` gates (see [Ordering resources](#ordering-resources)) |
-| `recreate_on_change` | no | Local transport only. Delete and recreate the object instead of updating it when its generation changes |
+| `recreate_on_change` | no | Local transport only; a remote resource that sets it fails to load. Delete and recreate the object instead of updating it when its generation changes |
 
 ### Inline manifests
 
@@ -709,13 +709,13 @@ Discovery returns the **full mirrored object**, status and all, in `resources.<n
 - `lifecycle.delete` needs `discovery.by_name`. A selector cannot identify which object to delete.
 - `target_cluster` may use only built-in variables, params and precondition captures.
 - The transport name must exist: `kubernetes` or a name declared under `transports`.
+- `recreate_on_change` is rejected. It works only on the local transport.
 
 The generation annotation is checked when the resource is applied. A manifest without a valid `hyperfleet.io/generation` annotation fails the resources phase.
 
 **Behavior that differs from the local transport:**
 
 - `propagationPolicy` has no effect on a remote delete.
-- `recreate_on_change` has no effect. The loader does not warn about it, and a dry run still reports `recreate`.
 - A successful apply means the write was accepted. It does not mean the remote cluster has converged. Dependent resources can need another event before their gates open.
 
 ### The eventual-consistency contract for remote reads
@@ -2012,8 +2012,6 @@ A dry run never connects to a store or to a remote cluster. A mock transport sta
 - **The generation annotation is checked.** A remote manifest without a valid `hyperfleet.io/generation` annotation fails the dry run, as it fails the real transport.
 - **Deletes stay visible.** A local delete removes the object at once. A remote delete leaves the object in place with a deletion timestamp, so dependents wait for the next event, as they would against a real remote transport.
 
-The mock honors `recreate_on_change` for remote resources, which the real remote transport does not.
-
 ### Development loop
 
 1. Write your `adapter-task-config.yaml`
@@ -2599,6 +2597,7 @@ No other operator is accepted. Express negated existence and inclusive compariso
 | `resources[N].transport "<name>" target_cluster uses undefined variable "<var>"` | The transport's `target_cluster` template names a variable the task does not define | Define the param, or fix the template |
 | `resources[N].transport references unknown transport "<name>"; available: [...]` | The transport is not declared | Declare it under `transports` in the deployment config, or fix the name |
 | `resources[N].transport: schema_version is required for named transport references; use "2.0"` | The task names a transport without `schema_version` | Add `schema_version: "2.0"` to the task config |
+| `resources[N].recreate_on_change is unsupported for remote transport` | A remote resource sets `recreate_on_change` | Remove it. It works only on the local transport |
 | `resources[N].discovery is required` | A resource has no `discovery` | Add `by_name` or `by_selectors` |
 | `"<name>" is a reserved variable name` | A param or capture uses `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rename it |
 | `resources[N].manifest: line N: <field> must be a literal value` | `<field>` is `apiVersion` or `kind` and is templated | Write a literal value for that field |
