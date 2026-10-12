@@ -1,5 +1,11 @@
 .DEFAULT_GOAL := help
 
+# CGO_ENABLED=0 is not FIPS compliant. large commercial vendors and FedRAMP require FIPS compliant crypto
+# Use ?= so callers can override on the command line, e.g. CGO_ENABLED=0 make build for a non-FIPS static binary
+CGO_ENABLED ?= 1
+GOEXPERIMENT ?= boringcrypto
+GOFIPS140 ?= off
+
 GO ?= go
 TOOL_MOD := tools/go.mod
 gotool = "$(GO)" tool -modfile="$(TOOL_MOD)" $(1)
@@ -56,11 +62,11 @@ help: ## Display this help
 .PHONY: build
 build: ## Build the adapter binary
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/adapter
+	CGO_ENABLED=$(CGO_ENABLED) GOEXPERIMENT=$(GOEXPERIMENT) GOFIPS140=$(GOFIPS140) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/adapter
 
 .PHONY: install
 install: build ## Build and install binary to GOPATH/bin
-	$(GO) install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/adapter
+	CGO_ENABLED=$(CGO_ENABLED) GOEXPERIMENT=$(GOEXPERIMENT) GOFIPS140=$(GOFIPS140) $(GO) install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/adapter
 
 .PHONY: clean
 clean: ## Remove build artifacts
