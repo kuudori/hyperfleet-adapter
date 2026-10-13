@@ -1,0 +1,35 @@
+aliases:
+  adapter-owners:
+  - rh-amarin
+  - rafabene
+  - kuudori
+  adapter-reviewers:
+  - Ruclo
+  - Mischulee
+  - mliptak0
+  - tirthct
+  desire-owners:
+  - kuudori
+  - rh-amarin
+  - pnguyen44
+  desire-reviewers:
+  - Ruclo
+  - ma-hill
+  - tirthct
+  observability-owners:
+  - pnguyen44
+  - kuudori
+  observability-reviewers:
+  - ldornele
+  - tirthct
+  - Ruclo
+  release-owners:
+  - ma-hill
+  - kuudori
+  release-reviewers:
+  - tirthct
+  - Mischulee
+  tech-leads:
+  - ciaranRoche
+  - rafabene
+  - rh-amarin
