@@ -14,8 +14,8 @@
    - [Config Loading Failures](#config-loading-failures)
    - [Event Processing Failures](#event-processing-failures)
    - [HyperFleet API Failures](#hyperfleet-api-failures)
-   - [Maestro Client Failures](#maestro-client-failures)
    - [Kubernetes Client Failures](#kubernetes-client-failures)
+   - [Remote Transport Failures](#remote-transport-failures)
 4. [Tracing / OpenTelemetry Issues](#tracing--opentelemetry-issues)
 5. [Recovery Procedures](#recovery-procedures)
 6. [Escalation Paths](#escalation-paths)
@@ -24,7 +24,7 @@
 
 ## Service Overview
 
-The hyperfleet-adapter consumes CloudEvents from a message broker (Google Pub/Sub or RabbitMQ), evaluates preconditions, applies Kubernetes resources or Maestro ManifestWorks, and reports status back to the HyperFleet API.
+The hyperfleet-adapter consumes CloudEvents from a message broker (Google Pub/Sub or RabbitMQ), evaluates preconditions, applies Kubernetes resources through its transports (the local Kubernetes API, or a remote store that an applier reads), and reports status back to the HyperFleet API.
 
 **Ports:**
 - `8080` — Health endpoints (`/healthz`, `/readyz`)
@@ -35,7 +35,7 @@ The hyperfleet-adapter consumes CloudEvents from a message broker (Google Pub/Su
 2. Initialize OpenTelemetry tracing
 3. Start health server and metrics server
 4. Create HyperFleet API client
-5. Create transport client (Maestro or Kubernetes)
+5. Create transport clients (local Kubernetes and any remote transports)
 6. Build executor
 7. Create broker subscriber and subscribe to topic
 8. Mark readiness (`/readyz` returns 200)
@@ -83,8 +83,6 @@ kubectl exec <pod> -- curl -s localhost:8080/readyz | jq .
 | `"unsupported apiVersion"` | Config version mismatch | Update config to match expected `apiVersion` |
 | `"adapter version mismatch"` | `spec.adapter.version` doesn't match binary version | Update config or redeploy matching binary version |
 | `"HyperFleet API base URL not configured"` | Missing `spec.clients.hyperfleetApi.baseUrl` | Set base URL in adapter config or `HYPERFLEET_API_BASE_URL` env |
-| `"maestro config is required"` | Maestro transport selected but no config | Add `spec.clients.maestro` section to adapter config |
-| `"maestro server address is required"` | Missing Maestro gRPC address | Set `grpcServerAddress` in maestro config |
 
 **Steps:**
 1. Check pod logs: `kubectl logs <pod> --previous`
@@ -130,7 +128,7 @@ kubectl exec <pod> -- curl -s localhost:8080/readyz | jq .
 | `"CEL parse error"` | Invalid CEL expression in preconditions | Fix CEL syntax in task config |
 | `"undefined template variable"` | Template references a variable not in params | Check param names match template variables |
 | `"mutually exclusive"` | Conflicting config options (e.g. `build` and `buildRef`) | Use only one of the mutually exclusive options |
-| `"manifest is required for maestro/kubernetes transport"` | Resource missing manifest definition | Add manifest to resource in task config |
+| `"manifest is required"` | Resource missing manifest definition | Add manifest to resource in task config |
 
 **Steps:**
 1. Check pod logs for the specific validation error
@@ -155,7 +153,7 @@ All event failures are ACKed (not retried) to avoid infinite loops on non-transi
 | `"Precondition[...] evaluated: FAILED"` | Preconditions | API precondition check returned failure | Check HyperFleet API state for the resource |
 | `"Precondition[...] evaluated: NOT_MET"` | Preconditions | Condition not satisfied (expected) | Normal flow — event skipped |
 | `"failed to render manifest"` | Resources | Template rendering error | Fix Go template syntax in task config |
-| `"failed to apply resource"` | Resources | Transport client error | See Maestro or K8s failure sections |
+| `"failed to apply resource"` | Resources | Transport client error | See [Kubernetes Client Failures](#kubernetes-client-failures) or [Remote Transport Failures](#remote-transport-failures) |
 | `"PostAction[...] processed: FAILED"` | Post Actions | Status report API call failed | Check HyperFleet API connectivity |
 
 **Steps:**
@@ -201,31 +199,6 @@ HTTP 401 and 403 failures are ACKed under the normal event-failure policy; they 
 
 ---
 
-### Maestro Client Failures
-
-**Symptoms:** Resource apply phase fails. Events fail with resource-related errors.
-
-| Log Pattern | Cause | Resolution |
-|-------------|-------|------------|
-| `"consumer ... is not registered in Maestro"` | Target cluster consumer not registered | Register the consumer in Maestro before sending events |
-| `"failed to create ManifestWork"` | Maestro API error | Check Maestro server health and logs |
-| `"failed to parse CA certificate"` | Invalid TLS CA certificate | Verify cert files mounted at configured paths |
-| `"failed to create Maestro work client"` | gRPC connection failure | Check Maestro gRPC endpoint connectivity |
-
-**Steps:**
-1. Verify Maestro server is running: `kubectl get pods -n maestro`
-2. Test gRPC connectivity from the adapter pod:
-   ```bash
-   kubectl exec <pod> -- grpcurl -plaintext maestro-grpc.maestro.svc.cluster.local:8090 grpc.health.v1.Health/Check
-   ```
-3. For TLS issues, verify cert secret is mounted and certs are valid:
-   ```bash
-   kubectl exec <pod> -- openssl x509 -in /etc/maestro/certs/grpc/ca.crt -noout -dates
-   ```
-4. Verify consumer registration in Maestro for the target cluster
-
----
-
 ### Kubernetes Client Failures
 
 **Symptoms:** Resource apply phase fails for Kubernetes transport tasks.
@@ -244,6 +217,30 @@ Non-retryable: forbidden, unauthorized, bad request, invalid, gone, method not s
 1. Check RBAC: `kubectl auth can-i --as=system:serviceaccount:<ns>:<sa> create <resource>`
 2. Check resource quotas: `kubectl describe resourcequota -n <namespace>`
 3. Check for finalizers blocking deletion: `kubectl get <resource> -o yaml | grep finalizers`
+
+---
+
+### Remote Transport Failures
+
+**Symptoms:** The adapter fails to start with a store or transport error, or the resources phase fails or stays pending for resources on a `type: remote` transport.
+
+| Log Pattern | Cause | Resolution |
+|-------------|-------|------------|
+| `"ping Redis"` in the `"failed to create transport registry"` error | The adapter cannot reach the Redis store at startup | Check that the store is running and reachable from the adapter pod |
+| `"url is invalid for redis store"` or `"redis URL is invalid"` | The store `url` is not a valid Redis URL | Fix `stores.<name>.url`, or `HYPERFLEET_STORES_<NAME>_URL` when the URL comes from the environment |
+| `"url must use rediss:// when credentials are configured"` | The store URL carries credentials over plain `redis://` | Use a `rediss://` URL |
+| `"references unknown store"` | A remote transport names a store that is not declared under `stores` | Declare the store, or fix the transport's `store` |
+| `"target_cluster is required for remote transport"` | A remote transport has no `target_cluster` | Set `transports.<name>.target_cluster` |
+| `"must be a Kubernetes DNS-1123 label"` | `target_cluster` is, or renders to, a value that is not a DNS-1123 label. A literal value fails when the config loads; a template fails on the event that renders it | Fix the literal value, or the param the template uses |
+| `"has no resource_plurals mapping"` | The transport's `resource_plurals` has no entry for the manifest's `apiVersion/Kind` | Add `"<apiVersion>/<Kind>": <plural>` to the transport's `resource_plurals` |
+| `"failed to create apply desire for"` or `"failed to update apply desire for"` | The store rejected or failed the apply write; the wrapped error gives the reason | When the store is unreachable, check it from the adapter pod |
+| `"ApplyResource: delete pending, retrying on next event"` | The store refused a new apply while a delete desire for the same resource is still active. The executor skips the apply for this event and records the resource as `unsynced` | If it persists across events, check that an applier for the rendered `target_cluster` reads the same store |
+| `"resource delete: waiting for transport confirmation"` | The adapter wrote a delete desire and the applier has not confirmed the deletion yet. The executor records the reason `desire deletion pending` and checks again on the next event | If it persists across events, check that an applier for the rendered `target_cluster` reads the same store |
+
+**Steps:**
+1. Check that the store is reachable from the adapter pod.
+2. Check that an applier for the rendered `target_cluster` reads the same store.
+3. Review the [Remote transport prerequisites](configuration.md#remote-transport-prerequisites).
 
 ---
 
@@ -337,7 +334,7 @@ kubectl exec <pod> -- curl -s localhost:9090/metrics | grep hyperfleet_adapter_e
 |-------|------|------|
 | L1 | On-call SRE | Initial triage, restart, basic recovery |
 | L2 | HyperFleet Adapter team | Config issues, event processing logic, transport client failures |
-| L3 | HyperFleet Platform team | Broker infrastructure, Maestro server, HyperFleet API issues |
+| L3 | HyperFleet Platform team | Broker infrastructure, HyperFleet API issues |
 
 ### How to escalate
 

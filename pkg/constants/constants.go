@@ -51,15 +51,3 @@ const (
 	// Example value: "hyperfleet-adapter"
 	AnnotationCreatedBy = "hyperfleet.io/created-by"
 )
-
-// OCM ManifestWork GVK constants
-const (
-	// ManifestWorkGroup is the API group for OCM ManifestWork resources.
-	ManifestWorkGroup = "work.open-cluster-management.io"
-
-	// ManifestWorkVersion is the API version for OCM ManifestWork resources.
-	ManifestWorkVersion = "v1"
-
-	// ManifestWorkKind is the Kind for OCM ManifestWork resources.
-	ManifestWorkKind = "ManifestWork"
-)

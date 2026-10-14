@@ -191,12 +191,6 @@ func (r *Resource) GetTransportName() string {
 	return r.Transport.Name
 }
 
-// IsMaestroTransport returns true if this resource uses the maestro transport client
-// TODO(HYPERFLEET-1504): remove with the Maestro transport.
-func (r *Resource) IsMaestroTransport() bool {
-	return r.GetTransportName() == TransportClientMaestro
-}
-
 // HasManifestRef returns true if the manifest uses a ref (single file reference)
 func (r *Resource) HasManifestRef() bool {
 	if r == nil || r.Manifest == nil {

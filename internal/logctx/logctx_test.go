@@ -28,9 +28,6 @@ func TestContextFields(t *testing.T) {
 		"k8s_kind":            {},
 		"k8s_name":            {},
 		"k8s_namespace":       {},
-		"observed_generation": {},
-		"maestro_consumer":    {},
-		"manifestwork":        {},
 		"owner_resource_type": {},
 		"owner_resource_id":   {},
 	}
@@ -59,8 +56,6 @@ func TestContextFieldRoundTrip(t *testing.T) {
 		{"k8s_kind", K8sKindKey, "Deployment"},
 		{"k8s_name", K8sNameKey, "my-app"},
 		{"k8s_namespace", K8sNamespaceKey, "default"},
-		{"maestro_consumer", MaestroConsumerKey, "consumer-1"},
-		{"manifestwork", ManifestWorkKey, "mw-1"},
 		{"owner_resource_type", OwnerResourceTypeKey, "Cluster"},
 		{"owner_resource_id", OwnerResourceIDKey, "cluster-1"},
 	}
@@ -77,15 +72,6 @@ func TestContextFieldRoundTrip(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.want, got)
 			}
 		})
-	}
-}
-
-func TestContextFieldRoundTripObservedGeneration(t *testing.T) {
-	ctx := hfl.Set(context.Background(), ObservedGenerationKey, int64(42))
-
-	got, ok := hfl.Get(ctx, ObservedGenerationKey)
-	if !ok || got != int64(42) {
-		t.Errorf("ObservedGenerationKey: got %d, ok=%v", got, ok)
 	}
 }
 

@@ -225,45 +225,6 @@ func customCELFunctions() []cel.EnvOption {
 				}),
 			),
 		),
-		cel.Function("statusFeedbackValue",
-			cel.Overload(
-				"statusFeedbackValue_dyn_string",
-				[]*cel.Type{cel.DynType, cel.StringType},
-				cel.StringType,
-				cel.BinaryBinding(func(feedbackArg ref.Val, nameArg ref.Val) ref.Val {
-					name, ok := nameArg.Value().(string)
-					if !ok {
-						return types.NewErr("statusFeedbackValue() name must be a string")
-					}
-					feedback, ok := unwrapCELValue(feedbackArg)
-					if !ok {
-						return types.String("")
-					}
-					feedbackMap, ok := feedback.(map[string]interface{})
-					if !ok {
-						return types.String("")
-					}
-					values, ok := feedbackMap["values"].([]interface{})
-					if !ok {
-						return types.String("")
-					}
-					for _, v := range values {
-						entry, ok := v.(map[string]interface{})
-						if !ok {
-							continue
-						}
-						if entry["name"] == name {
-							if fv, ok := entry["fieldValue"].(map[string]interface{}); ok {
-								if s, ok := fv["string"].(string); ok {
-									return types.String(s)
-								}
-							}
-						}
-					}
-					return types.String("")
-				}),
-			),
-		),
 		cel.Function("triState",
 			cel.Overload(
 				"triState_bool_bool",

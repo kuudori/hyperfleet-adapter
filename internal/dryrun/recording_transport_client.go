@@ -46,8 +46,6 @@ type TransportRecord struct {
 // routeTarget reports whether target is a remote route, and the cluster and
 // resource plural it routes to. A remote route passes a non-nil
 // *desireclient.TransportContext; the local Kubernetes route passes nil.
-// TODO(HYPERFLEET-1504): Maestro contexts are treated as local in dry runs,
-// omitting the consumer from traces and simulating deletion synchronously.
 func routeTarget(target transportclient.TransportContext) (cluster, resource string, remote bool) {
 	if tc, ok := target.(*desireclient.TransportContext); ok && tc != nil {
 		return tc.ManagementCluster, tc.Resource, true

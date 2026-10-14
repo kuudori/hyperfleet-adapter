@@ -70,6 +70,7 @@ echo "  Built: $ADAPTER_BIN"
 # Minimal task config (required by config-dump; task params are not under test here)
 TASK_CONFIG="$TMPDIR_TEST/task.yaml"
 cat > "$TASK_CONFIG" <<'YAML'
+schema_version: "2.0"
 params: []
 YAML
 
@@ -95,29 +96,6 @@ adapter:
   name: test-adapter
   version: "0.1.0"
 clients:
-YAML
-    printf '%s\n' "$@"
-  } > "$file"
-}
-
-# maestro_config <file> [extra yaml lines...]
-# Creates a minimal maestro-transport adapter config.
-# Extra args are appended verbatim after "  maestro:" so 4-space-indented args
-# become children of maestro.
-maestro_config() {
-  local file="$1"; shift
-  {
-    cat <<'YAML'
-adapter:
-  name: test-adapter
-  version: "0.1.0"
-clients:
-  hyperfleet_api:
-    base_url: "https://base.example.com"
-  broker:
-    subscription_id: "base-sub"
-    topic: "base-topic"
-  maestro:
 YAML
     printf '%s\n' "$@"
   } > "$file"
@@ -271,121 +249,6 @@ assert_contains "log.output [file]"    "$(cfg_dump "$CFG")"                     
 assert_contains "log.output [env]"     "$(LOG_OUTPUT=stdout cfg_dump "$CFG")"              "output: stdout"
 assert_contains "log.output [cli]"     "$(cfg_dump "$CFG" --log-output=stderr)"            "output: stderr"
 assert_contains "log.output [cli>env]" "$(LOG_OUTPUT=stdout cfg_dump "$CFG" --log-output=stderr)" "output: stderr"
-
-# ─────────────────────────────────────────────────────────────────────────────
-section "Maestro — addressing & identity"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# grpc_server_address
-maestro_config "$CFG" "    grpc_server_address: file-grpc:8090"
-assert_contains "maestro.grpc_server_address [file]"    "$(cfg_dump "$CFG")"                                                          "grpc_server_address: file-grpc:8090"
-assert_contains "maestro.grpc_server_address [env]"     "$(HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS=env-grpc:8090 cfg_dump "$CFG")"     "grpc_server_address: env-grpc:8090"
-assert_contains "maestro.grpc_server_address [cli]"     "$(cfg_dump "$CFG" --maestro-grpc-server-address=cli-grpc:8090)"              "grpc_server_address: cli-grpc:8090"
-assert_contains "maestro.grpc_server_address [cli>env]" "$(HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS=env-grpc:8090 cfg_dump "$CFG" --maestro-grpc-server-address=cli-grpc:8090)" "grpc_server_address: cli-grpc:8090"
-
-# http_server_address
-maestro_config "$CFG" "    http_server_address: http://file-http:8000"
-assert_contains "maestro.http_server_address [file]"    "$(cfg_dump "$CFG")"                                                               "http_server_address: http://file-http:8000"
-assert_contains "maestro.http_server_address [env]"     "$(HYPERFLEET_MAESTRO_HTTP_SERVER_ADDRESS=http://env-http:8000 cfg_dump "$CFG")"   "http_server_address: http://env-http:8000"
-assert_contains "maestro.http_server_address [cli]"     "$(cfg_dump "$CFG" --maestro-http-server-address=http://cli-http:8000)"            "http_server_address: http://cli-http:8000"
-assert_contains "maestro.http_server_address [cli>env]" "$(HYPERFLEET_MAESTRO_HTTP_SERVER_ADDRESS=http://env-http:8000 cfg_dump "$CFG" --maestro-http-server-address=http://cli-http:8000)" "http_server_address: http://cli-http:8000"
-
-# source_id
-maestro_config "$CFG" "    source_id: file-source-id"
-assert_contains "maestro.source_id [file]"    "$(cfg_dump "$CFG")"                                                "source_id: file-source-id"
-assert_contains "maestro.source_id [env]"     "$(HYPERFLEET_MAESTRO_SOURCE_ID=env-source-id cfg_dump "$CFG")"    "source_id: env-source-id"
-assert_contains "maestro.source_id [cli]"     "$(cfg_dump "$CFG" --maestro-source-id=cli-source-id)"             "source_id: cli-source-id"
-assert_contains "maestro.source_id [cli>env]" "$(HYPERFLEET_MAESTRO_SOURCE_ID=env-source-id cfg_dump "$CFG" --maestro-source-id=cli-source-id)" "source_id: cli-source-id"
-
-# client_id
-maestro_config "$CFG" "    client_id: file-client-id"
-assert_contains "maestro.client_id [file]"    "$(cfg_dump "$CFG")"                                                "client_id: file-client-id"
-assert_contains "maestro.client_id [env]"     "$(HYPERFLEET_MAESTRO_CLIENT_ID=env-client-id cfg_dump "$CFG")"    "client_id: env-client-id"
-assert_contains "maestro.client_id [cli]"     "$(cfg_dump "$CFG" --maestro-client-id=cli-client-id)"             "client_id: cli-client-id"
-assert_contains "maestro.client_id [cli>env]" "$(HYPERFLEET_MAESTRO_CLIENT_ID=env-client-id cfg_dump "$CFG" --maestro-client-id=cli-client-id)" "client_id: cli-client-id"
-
-# ─────────────────────────────────────────────────────────────────────────────
-section "Maestro — timeouts & retries"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# timeout
-maestro_config "$CFG" "    timeout: 11s"
-assert_contains "maestro.timeout [file]"    "$(cfg_dump "$CFG")"                                       "timeout: 11s"
-assert_contains "maestro.timeout [env]"     "$(HYPERFLEET_MAESTRO_TIMEOUT=22s cfg_dump "$CFG")"       "timeout: 22s"
-assert_contains "maestro.timeout [cli]"     "$(cfg_dump "$CFG" --maestro-timeout=33s)"                "timeout: 33s"
-assert_contains "maestro.timeout [cli>env]" "$(HYPERFLEET_MAESTRO_TIMEOUT=22s cfg_dump "$CFG" --maestro-timeout=33s)" "timeout: 33s"
-
-# server_healthiness_timeout
-maestro_config "$CFG" "    server_healthiness_timeout: 11s"
-assert_contains "maestro.server_healthiness_timeout [file]"    "$(cfg_dump "$CFG")"                                                                      "server_healthiness_timeout: 11s"
-assert_contains "maestro.server_healthiness_timeout [env]"     "$(HYPERFLEET_MAESTRO_SERVER_HEALTHINESS_TIMEOUT=22s cfg_dump "$CFG")"                    "server_healthiness_timeout: 22s"
-assert_contains "maestro.server_healthiness_timeout [cli]"     "$(cfg_dump "$CFG" --maestro-server-healthiness-timeout=33s)"                             "server_healthiness_timeout: 33s"
-assert_contains "maestro.server_healthiness_timeout [cli>env]" "$(HYPERFLEET_MAESTRO_SERVER_HEALTHINESS_TIMEOUT=22s cfg_dump "$CFG" --maestro-server-healthiness-timeout=33s)" "server_healthiness_timeout: 33s"
-
-# retry_attempts
-maestro_config "$CFG" "    retry_attempts: 11"
-assert_contains "maestro.retry_attempts [file]"    "$(cfg_dump "$CFG")"                                               "retry_attempts: 11"
-assert_contains "maestro.retry_attempts [env]"     "$(HYPERFLEET_MAESTRO_RETRY_ATTEMPTS=22 cfg_dump "$CFG")"         "retry_attempts: 22"
-assert_contains "maestro.retry_attempts [cli]"     "$(cfg_dump "$CFG" --maestro-retry-attempts=33)"                  "retry_attempts: 33"
-assert_contains "maestro.retry_attempts [cli>env]" "$(HYPERFLEET_MAESTRO_RETRY_ATTEMPTS=22 cfg_dump "$CFG" --maestro-retry-attempts=33)" "retry_attempts: 33"
-
-# insecure (boolean)
-# insecure: false is the zero value; yaml omitempty suppresses it in marshaled output
-maestro_config "$CFG" "    insecure: false"
-assert_not_contains "maestro.insecure [file=false]" "$(cfg_dump "$CFG")" "insecure: true"
-maestro_config "$CFG" "    insecure: true"
-assert_contains "maestro.insecure [file=true]"  "$(cfg_dump "$CFG")"                                        "insecure: true"
-maestro_config "$CFG" "    insecure: false"
-assert_contains "maestro.insecure [env=true]"   "$(HYPERFLEET_MAESTRO_INSECURE=true cfg_dump "$CFG")"      "insecure: true"
-assert_contains "maestro.insecure [cli=true]"   "$(cfg_dump "$CFG" --maestro-insecure)"                    "insecure: true"
-
-# ─────────────────────────────────────────────────────────────────────────────
-section "Maestro — keepalive"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# keepalive.time (tests that nested pointer struct is created from env/CLI)
-maestro_config "$CFG" "    keepalive:" "      time: 11s" "      timeout: 5s"
-assert_contains "maestro.keepalive.time [file]"    "$(cfg_dump "$CFG")"                                         "time: 11s"
-assert_contains "maestro.keepalive.time [env]"     "$(HYPERFLEET_MAESTRO_KEEPALIVE_TIME=22s cfg_dump "$CFG")"  "time: 22s"
-assert_contains "maestro.keepalive.time [cli]"     "$(cfg_dump "$CFG" --maestro-keepalive-time=33s)"           "time: 33s"
-assert_contains "maestro.keepalive.time [cli>env]" "$(HYPERFLEET_MAESTRO_KEEPALIVE_TIME=22s cfg_dump "$CFG" --maestro-keepalive-time=33s)" "time: 33s"
-
-# keepalive.timeout
-assert_contains "maestro.keepalive.timeout [file]"    "$(cfg_dump "$CFG")"                                            "timeout: 5s"
-assert_contains "maestro.keepalive.timeout [env]"     "$(HYPERFLEET_MAESTRO_KEEPALIVE_TIMEOUT=12s cfg_dump "$CFG")"  "timeout: 12s"
-assert_contains "maestro.keepalive.timeout [cli]"     "$(cfg_dump "$CFG" --maestro-keepalive-timeout=24s)"           "timeout: 24s"
-assert_contains "maestro.keepalive.timeout [cli>env]" "$(HYPERFLEET_MAESTRO_KEEPALIVE_TIMEOUT=12s cfg_dump "$CFG" --maestro-keepalive-timeout=24s)" "timeout: 24s"
-
-# ─────────────────────────────────────────────────────────────────────────────
-section "Maestro — auth"
-# ─────────────────────────────────────────────────────────────────────────────
-
-# auth.type
-maestro_config "$CFG" "    auth:" "      type: file-auth-type"
-assert_contains "maestro.auth.type [file]"    "$(cfg_dump "$CFG")"                                                "type: file-auth-type"
-assert_contains "maestro.auth.type [env]"     "$(HYPERFLEET_MAESTRO_AUTH_TYPE=env-auth-type cfg_dump "$CFG")"    "type: env-auth-type"
-assert_contains "maestro.auth.type [cli]"     "$(cfg_dump "$CFG" --maestro-auth-type=cli-auth-type)"             "type: cli-auth-type"
-assert_contains "maestro.auth.type [cli>env]" "$(HYPERFLEET_MAESTRO_AUTH_TYPE=env-auth-type cfg_dump "$CFG" --maestro-auth-type=cli-auth-type)" "type: cli-auth-type"
-
-# TLS cert fields — values are redacted in output; test that the field IS set (shows REDACTED)
-maestro_config "$CFG" "    auth:" "      type: tls" "      tls_config:" "        ca_file: /file/ca.crt" "        cert_file: /file/client.crt" "        key_file: /file/client.key" "        http_ca_file: /file/http-ca.crt"
-assert_contains "maestro.tls.ca_file   [file→redacted]"      "$(cfg_dump "$CFG")"  "ca_file: "
-assert_contains "maestro.tls.cert_file [file→redacted]"      "$(cfg_dump "$CFG")"  "cert_file: "
-assert_contains "maestro.tls.key_file  [file→redacted]"      "$(cfg_dump "$CFG")"  "key_file: "
-assert_contains "maestro.tls.http_ca_file [file→redacted]"   "$(cfg_dump "$CFG")"  "http_ca_file: "
-
-# TLS via env vars (also redacted)
-maestro_config "$CFG" "    auth:" "      type: tls"
-assert_contains "maestro.tls.ca_file   [env→redacted]"     "$(HYPERFLEET_MAESTRO_CA_FILE=/env/ca.crt cfg_dump "$CFG")"        "ca_file: "
-assert_contains "maestro.tls.cert_file [env→redacted]"     "$(HYPERFLEET_MAESTRO_CERT_FILE=/env/client.crt cfg_dump "$CFG")"  "cert_file: "
-assert_contains "maestro.tls.key_file  [env→redacted]"     "$(HYPERFLEET_MAESTRO_KEY_FILE=/env/client.key cfg_dump "$CFG")"   "key_file: "
-assert_contains "maestro.tls.http_ca_file [env→redacted]"  "$(HYPERFLEET_MAESTRO_HTTP_CA_FILE=/env/http.crt cfg_dump "$CFG")" "http_ca_file: "
-
-# TLS via CLI flags (also redacted)
-assert_contains "maestro.tls.ca_file   [cli→redacted]"     "$(cfg_dump "$CFG" --maestro-ca-file=/cli/ca.crt)"         "ca_file: "
-assert_contains "maestro.tls.cert_file [cli→redacted]"     "$(cfg_dump "$CFG" --maestro-cert-file=/cli/client.crt)"   "cert_file: "
-assert_contains "maestro.tls.key_file  [cli→redacted]"     "$(cfg_dump "$CFG" --maestro-key-file=/cli/client.key)"    "key_file: "
-assert_contains "maestro.tls.http_ca_file [cli→redacted]"  "$(cfg_dump "$CFG" --maestro-http-ca-file=/cli/http.crt)"  "http_ca_file: "
 
 # ─────────────────────────────────────────────────────────────────────────────
 section "debug_config flag"

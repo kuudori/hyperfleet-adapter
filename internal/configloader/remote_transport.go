@@ -126,15 +126,6 @@ func ValidateResourceTransports(config *Config) error {
 		if err != nil {
 			return fmt.Errorf("%s.manifest: %w", path, err)
 		}
-		if resource.Transport != nil && resource.Transport.Legacy {
-			maestro, err := validateLegacyTransport(config, resource, path, vars)
-			if err != nil {
-				return err
-			}
-			if maestro {
-				continue
-			}
-		}
 		name := resource.GetTransportName()
 		if NormalizeRegistryName(name) == "" {
 			return fmt.Errorf("%s.transport must name a transport; available: %v", path, available)

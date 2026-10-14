@@ -77,23 +77,6 @@ func TestResourceExecutor_ResolveTransport(t *testing.T) {
 	}
 }
 
-func TestResourceExecutor_ResolveTransport_RejectsCustomMaestroName(t *testing.T) {
-	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			configloader.TransportClientMaestro: {Type: configloader.TransportTypeRemote},
-		}},
-	})
-
-	client, target, err := re.resolveTransport(configloader.Resource{
-		Transport: configloader.NamedTransport(configloader.TransportClientMaestro),
-	}, NewExecutionContext(context.Background(), nil, nil))
-
-	require.Error(t, err)
-	assert.ErrorContains(t, err, `transport name "maestro" is reserved for the built-in maestro transport`)
-	assert.Nil(t, client)
-	assert.Nil(t, target)
-}
-
 func TestResourceExecutor_ExecuteAll_UnknownTransport(t *testing.T) {
 	re := newResourceExecutor(&ExecutorConfig{
 		TransportRegistry: testTransportRegistry(k8sclient.NewMockK8sClient()),
@@ -1753,7 +1736,7 @@ func TestResourceExecutor_LifecycleDelete_WhenTrue_ResourceFound_InstantDelete(t
 
 func TestResourceExecutor_LifecycleDelete_WhenTrue_ResourceFound_WithFinalizers(t *testing.T) {
 	// when.expression is true + resource exists, post-delete rediscovery still returns the resource
-	// (finalizers are running, or Maestro deletion is async).
+	// (finalizers are running).
 	// Expected: discovered object stored (non-nil) → dependent resources wait for next reconciliation.
 	discovered := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -2173,70 +2156,10 @@ func TestResourceExecutor_LifecycleDelete_DeleteError(t *testing.T) {
 	assert.Contains(t, execCtx.Adapter.ResourceErrors, resource.Name, "resource error should be keyed by resource name")
 }
 
-func TestResourceExecutor_LifecycleDelete_Maestro_AsyncDeletion(t *testing.T) {
-	// Maestro transport: when.expression is true → delete is sent with a non-nil TransportContext.
-	// Maestro deletion is async: the resource stays discoverable (deletionTimestamp set, not removed).
-	// Post-delete rediscovery still finds the resource → stored as non-nil → dependents wait.
-	discovered := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "work.open-cluster-management.io/v1",
-			"kind":       "ManifestWork",
-			"metadata":   map[string]interface{}{"name": "cluster-1-work", "namespace": "cluster-1"},
-		},
-	}
-
-	// keepOnDeleteMockClient does NOT remove from Resources on delete — simulates Maestro async cleanup.
-	mock := &keepOnDeleteMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
-	mock.Resources["cluster-1/cluster-1-work"] = discovered
-
-	re := newResourceExecutor(&ExecutorConfig{
-		TransportRegistry: transportclient.Registry{configloader.TransportClientMaestro: mock},
-	})
-
-	resource := configloader.Resource{
-		Name: "clusterWork",
-		Transport: &configloader.ResourceTransport{
-			Name:    "maestro",
-			Maestro: &configloader.MaestroTransportConfig{TargetCluster: "cluster-1"},
-		},
-		Manifest: map[string]interface{}{
-			"apiVersion": "work.open-cluster-management.io/v1",
-			"kind":       "ManifestWork",
-			"metadata":   map[string]interface{}{"name": "cluster-1-work", "namespace": "cluster-1"},
-		},
-		Discovery: &configloader.DiscoveryConfig{Namespace: "cluster-1", ByName: "cluster-1-work"},
-		Lifecycle: &configloader.ResourceLifecycle{
-			Delete: &configloader.LifecycleDelete{
-				When: &configloader.LifecycleWhen{Expression: "deleted_time != null"},
-			},
-		},
-	}
-
-	execCtx := NewExecutionContext(context.Background(), nil, nil)
-	execCtx.Params["deleted_time"] = testDeletedTime
-
-	results, err := re.ExecuteAll(context.Background(), []configloader.Resource{resource}, execCtx)
-
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	assert.Equal(t, StatusSuccess, results[0].Status)
-	assert.Equal(t, manifest.OperationDelete, results[0].Operation)
-
-	// Maestro transport must pass a non-nil TransportContext to DeleteResource.
-	assert.NotNil(t, mock.DeleteCalledWithTarget,
-		"Maestro transport must supply a non-nil TransportContext to DeleteResource")
-
-	// Resource stays non-nil in context: async cleanup → dependents wait for next reconciliation.
-	storedVal, exists := execCtx.Resources["clusterWork"]
-	assert.True(t, exists, "resource key must be present in execCtx after Maestro delete")
-	assert.NotNil(t, storedVal,
-		"non-nil stored: Maestro deletion is async — dependents must wait for next reconciliation")
-}
-
 // keepOnDeleteMockClient wraps MockK8sClient but intentionally does NOT remove resources on
-// DeleteResource — it only records the TransportContext that was passed. This simulates the
-// async Maestro deletion model: the resource stays discoverable after the delete call until
-// Maestro finishes cleaning up sub-resources.
+// DeleteResource — it only records the TransportContext that was passed. This simulates
+// asynchronous deletion: the resource stays discoverable after the delete call, as it does
+// while finalizers run.
 type keepOnDeleteMockClient struct {
 	*k8sclient.MockK8sClient
 	DeleteCalledWithTarget transportclient.TransportContext
@@ -2250,7 +2173,7 @@ func (m *keepOnDeleteMockClient) DeleteResource(
 	target transportclient.TransportContext,
 ) error {
 	m.DeleteCalledWithTarget = target
-	// Intentionally skip removal: resource remains discoverable (Maestro async behavior).
+	// Intentionally skip removal: resource remains discoverable (async deletion).
 	return nil
 }
 
@@ -2437,7 +2360,7 @@ func TestResourceExecutor_LifecycleDelete_DeleteConfigNil(t *testing.T) {
 		"lifecycle block with no delete config must fall through to normal apply")
 }
 
-// ---- MEDIUM: Maestro async deletion through executor ----
+// ---- MEDIUM: multi-resource delete behavior ----
 
 // multiDeleteMock tracks which resource names were passed to DeleteResource and always
 // returns a configured error, while GetResource returns a distinct object per name.

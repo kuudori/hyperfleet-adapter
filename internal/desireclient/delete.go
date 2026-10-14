@@ -20,8 +20,7 @@ import (
 // ordering could leave behind if the read-desire write failed afterward.
 //
 // opts is unused: propagation policy has no equivalent in the desire model
-// (the applier owns deletion semantics against the target cluster), the same
-// way maestroclient ignores it for ManifestWork deletes.
+// (the applier owns deletion semantics against the target cluster).
 func (c *Client) DeleteResource(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,

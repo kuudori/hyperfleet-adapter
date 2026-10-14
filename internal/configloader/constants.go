@@ -84,17 +84,12 @@ const (
 
 // Transport field names
 const (
-	FieldTransport     = "transport"
-	FieldClient        = "client"
-	FieldMaestro       = "maestro"
-	FieldTargetCluster = "target_cluster"
+	FieldTransport = "transport"
 )
 
 // Transport client types
-// TODO(HYPERFLEET-1504): drop TransportClientMaestro and the client/maestro field names.
 const (
 	TransportClientKubernetes = "kubernetes"
-	TransportClientMaestro    = "maestro"
 )
 
 // Deployment transport types.

@@ -44,10 +44,10 @@ func TestStaticGVK(t *testing.T) {
 			want: configMap,
 		},
 		{
-			name: "ManifestWork with nested manifests",
-			manifest: "apiVersion: work.open-cluster-management.io/v1\nkind: ManifestWork\nspec:\n  workload:\n" +
+			name: "grouped kind with nested manifests",
+			manifest: "apiVersion: bundles.example.com/v1\nkind: Bundle\nspec:\n  workload:\n" +
 				"    manifests:\n      - apiVersion: v1\n        kind: Namespace\n",
-			want: schema.GroupVersionKind{Group: "work.open-cluster-management.io", Version: "v1", Kind: "ManifestWork"},
+			want: schema.GroupVersionKind{Group: "bundles.example.com", Version: "v1", Kind: "Bundle"},
 		},
 		{
 			name:     "comments, quotes, and a document start",

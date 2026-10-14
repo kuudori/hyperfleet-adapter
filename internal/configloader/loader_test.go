@@ -60,6 +60,7 @@ clients:
 `
 
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "clusterId"
     source: "event.id"
@@ -784,6 +785,7 @@ status: "{{ .status }}"
 
 	// Create task config file with build_ref
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "clusterId"
     source: "event.id"
@@ -822,6 +824,7 @@ post:
 
 	// Now test with non-existent buildRef
 	taskYAMLBad := `
+schema_version: "2.0"
 params:
   - name: "clusterId"
     source: "event.id"
@@ -886,6 +889,7 @@ spec:
 
 	// Create task config file with both build_ref and manifest.ref
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "clusterId"
     source: "event.id"
@@ -1176,6 +1180,7 @@ data:
 	require.NoError(t, os.WriteFile(adapterPath, []byte(adapterYAML), 0644))
 
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "name"
     source: "event.name"
@@ -1216,6 +1221,7 @@ func TestLoadConfigWithInlineStringManifest(t *testing.T) {
 
 	// Inline manifest using YAML multiline string syntax for Go templates
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "name"
     source: "event.name"
@@ -1341,6 +1347,7 @@ data:
 	require.NoError(t, os.WriteFile(adapterPath, []byte(adapterYAML), 0644))
 
 	taskYAML := `
+schema_version: "2.0"
 params:
   - name: "clusterId"
     source: "event.id"

@@ -14,7 +14,7 @@ slog.InfoContext(ctx, "message")
 slog.ErrorContext(ctx, "operation failed", "error", err)
 
 // Structured fields on context (carried through call chain)
-ctx = hfl.Set(ctx, logctx.ManifestWorkKey, name)
+ctx = hfl.Set(ctx, logctx.K8sNameKey, name)
 
 // Built-in fields (registered by hyperfleet-logger itself)
 ctx = hfl.WithResourceType(ctx, "Cluster")
@@ -41,7 +41,7 @@ Never construct a second handler mid-request or thread a logger through function
 
 ## Context fields
 
-Adapter-specific typed context keys live in `internal/logctx/` (`hfl.NewKey[T](name)`), registered via `logctx.ContextFields()` at handler construction. Values set with `hfl.Set(ctx, key, val)` are automatically attached to every log record made with that context, at any depth in the call chain - this is how a field set once (e.g. `logctx.ManifestWorkKey` in `CreateManifestWork`) reaches a log call several frames down (`retryOnTransientGRPC`) without being passed explicitly.
+Adapter-specific typed context keys live in `internal/logctx/` (`hfl.NewKey[T](name)`), registered via `logctx.ContextFields()` at handler construction. Values set with `hfl.Set(ctx, key, val)` are automatically attached to every log record made with that context, at any depth in the call chain - this is how a field set once (e.g. `logctx.K8sNameKey` in `recreateResource`) reaches the log calls in a callee (`waitForDeletion`) without being passed to each call.
 
 Use a registered `logctx` key only for fields read by more than one log call, or that must propagate across a call chain. A field consumed by exactly one downstream log call is an inline attr instead - don't register a key for it.
 

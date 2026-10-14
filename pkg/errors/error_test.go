@@ -71,8 +71,8 @@ func TestErrors(t *testing.T) {
 	t.Run("all_errors_defined", func(t *testing.T) {
 		errors := Errors()
 
-		// Should have 17 error codes defined
-		expectedCount := 17
+		// Should have 16 error codes defined
+		expectedCount := 16
 		if len(errors) != expectedCount {
 			t.Errorf("Expected %d errors, got %d", expectedCount, len(errors))
 		}

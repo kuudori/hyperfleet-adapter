@@ -44,7 +44,7 @@ transports:
     resource_plurals:
       "v1/ConfigMap": configmaps
     store: desired-memory
-`, `{}`)
+`, `schema_version: "2.0"`)
 
 	config, err := LoadConfig(
 		WithAdapterConfigPath(adapterPath),
@@ -86,7 +86,7 @@ transports:
     resource_plurals:
       "v1/ConfigMap": configmaps
     store: Desired-Memory
-`, `{}`)
+`, `schema_version: "2.0"`)
 
 	config, err := LoadConfig(
 		WithAdapterConfigPath(adapterPath),
@@ -122,7 +122,7 @@ transports:
     target_cluster: cluster-1
     resource_plurals:
       "v1/ConfigMap": configmaps
-`, `{}`)
+`, `schema_version: "2.0"`)
 
 	config, err := LoadConfig(
 		WithAdapterConfigPath(adapterPath),
@@ -482,17 +482,24 @@ func TestTransportDefinitionByNameMatchesCaseInsensitively(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestAdapterConfigValidationRejectsLegacyMaestroWithNamedTransports(t *testing.T) {
-	config := &AdapterConfig{
-		Adapter: AdapterInfo{Name: "test-adapter"},
-		Clients: ClientsConfig{Maestro: new(MaestroClientConfig)},
-		Transports: map[string]TransportDefinition{
-			"remote": {Type: TransportTypeRemote, Store: "desired"},
-		},
-	}
+func TestLoadConfigRejectsMaestroClient(t *testing.T) {
+	adapterPath, taskPath := createTestConfigFiles(t, t.TempDir(), `
+adapter:
+  name: test-adapter
+  version: "1.0.0"
+clients:
+  maestro:
+    grpc_server_address: maestro-grpc:8090
+`, `schema_version: "2.0"
+`)
 
-	err := NewAdapterConfigValidator(config, "").ValidateStructure()
+	config, err := LoadConfig(
+		WithAdapterConfigPath(adapterPath),
+		WithTaskConfigPath(taskPath),
+		WithSkipSemanticValidation(),
+	)
 
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "clients.maestro cannot be configured when transports are set")
+	assert.Nil(t, config)
+	assert.ErrorContains(t, err, "field maestro not found")
 }

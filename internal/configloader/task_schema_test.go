@@ -14,6 +14,7 @@ func TestTaskSchemaYAML(t *testing.T) {
     discovery: {by_name: item}
 `
 	v2Base := "schema_version: \"2.0\"\n" + base
+	const wantVersionRequired = `schema_version is required; use "2.0". v1 task configs are not supported`
 	withField := func(input, field string) string {
 		return strings.Replace(input, "    manifest:", "    "+field+"\n    manifest:", 1)
 	}
@@ -28,28 +29,16 @@ func TestTaskSchemaYAML(t *testing.T) {
 		{"v1 unsupported", "schema_version: \"1.0\"\n" + base, "schema_version \"1.0\" is unsupported"},
 		{"patch unsupported", "schema_version: \"2.0.0\"\n" + base,
 			"schema_version \"2.0.0\" is unsupported"},
+		{"missing", base, wantVersionRequired},
+		{"missing without resources", "params: []\n", wantVersionRequired},
+		{"missing with named transport", withField(base, "transport: remote"), wantVersionRequired},
+		{"missing with object transport", withField(base, "transport: {client: kubernetes}"), wantVersionRequired},
 		{
-			"named unversioned", withField(base, "transport: remote"),
-			"resources[0].transport: schema_version is required for named transport references",
+			"object v2", withField(v2Base, "transport: {client: kubernetes}"),
+			"resources[0].transport: this is a v1 configuration shape",
 		},
 		{
-			"second named unversioned", base + `  - name: second
-    transport: remote
-    manifest: {apiVersion: v1, kind: ConfigMap}
-    discovery: {by_name: second}
-`, "resources[1].transport: schema_version is required for named transport references",
-		},
-		{
-			"aliased named unversioned", `route: &route remote
-resources:
-  - name: item
-    transport: *route
-    manifest: {apiVersion: v1, kind: ConfigMap}
-    discovery: {by_name: item}
-`, "resources[0].transport: schema_version is required for named transport references",
-		},
-		{
-			"object v2", withField(v2Base, "transport: {client: kubernetes, removed: true}"),
+			"object with unknown field v2", withField(v2Base, "transport: {client: kubernetes, removed: true}"),
 			"resources[0].transport: this is a v1 configuration shape",
 		},
 		{
@@ -59,15 +48,6 @@ resources:
 		{"unknown", "schema_version: \"2.0\"\nunknown: true\n" + base, "field unknown not found"},
 		{"unknown resource", withField(v2Base, "removed: true"), "field removed not found"},
 		{"duplicate", "schema_version: \"2.0\"\n" + v2Base, "already defined"},
-		{
-			"merged named unversioned", `routing: &routing {transport: remote}
-resources:
-  - <<: *routing
-    name: item
-    manifest: {apiVersion: v1, kind: ConfigMap}
-    discovery: {by_name: item}
-`, "resources[0].transport: schema_version is required for named transport references",
-		},
 		{
 			"aliased v2 object", `schema_version: "2.0"
 routing: &routing {client: kubernetes}
@@ -92,7 +72,7 @@ resources:
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadRemoteConfig(t, "adapter: {name: test}\n", tc.yaml)
 			require.ErrorContains(t, err, tc.want)
-			if strings.Contains(tc.want, "this is a v1 configuration shape") {
+			if tc.want == wantVersionRequired || strings.Contains(tc.want, "this is a v1 configuration shape") {
 				require.ErrorContains(t, err, v2ConceptsURL)
 			}
 		})
@@ -134,15 +114,11 @@ func TestTaskSchemaDirectConstruction(t *testing.T) {
 	}{
 		{"unsupported", "2.1", "schema_version \"2.1\" is unsupported", Resource{}},
 		{
-			"missing named", "", "resources[0].transport: schema_version is required",
-			Resource{Transport: NamedTransport("remote")},
-		},
-		{
-			"v2 legacy", "2.0", "resources[0].transport: this is a v1 configuration shape",
-			Resource{Transport: &ResourceTransport{Legacy: true}},
-		},
-		{
 			"v2 nested", "2.0", "resources[0].nested_discoveries: this is a v1 configuration shape",
+			Resource{NestedDiscoveries: []NestedDiscovery{{}}},
+		},
+		{
+			"unversioned nested", "", "resources[0].nested_discoveries: this is a v1 configuration shape",
 			Resource{NestedDiscoveries: []NestedDiscovery{{}}},
 		},
 	} {

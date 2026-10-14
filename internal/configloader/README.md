@@ -63,6 +63,7 @@ clients:
     retry_backoff: exponential
 
 # adapter-task-config.yaml (task config — merged at runtime)
+schema_version: "2.0"  # required
 params: [...]
 preconditions: [...]
 resources: [...]

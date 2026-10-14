@@ -56,34 +56,8 @@ func (c *Config) Redacted() *Config {
 		return nil
 	}
 	copy := *c
-	copy.Clients = redactedClients(c.Clients)
 	copy.Stores = redactedStores(c.Stores)
 	return &copy
-}
-
-func redactedClients(clients ClientsConfig) ClientsConfig {
-	copy := clients
-	if clients.Maestro != nil {
-		maestroCopy := *clients.Maestro
-		if maestroCopy.Auth.TLSConfig != nil {
-			tlsCopy := *maestroCopy.Auth.TLSConfig
-			if tlsCopy.CAFile != "" {
-				tlsCopy.CAFile = redactedValue
-			}
-			if tlsCopy.CertFile != "" {
-				tlsCopy.CertFile = redactedValue
-			}
-			if tlsCopy.KeyFile != "" {
-				tlsCopy.KeyFile = redactedValue
-			}
-			if tlsCopy.HTTPCAFile != "" {
-				tlsCopy.HTTPCAFile = redactedValue
-			}
-			maestroCopy.Auth.TLSConfig = &tlsCopy
-		}
-		copy.Maestro = &maestroCopy
-	}
-	return copy
 }
 
 func redactedStores(stores map[string]StoreDefinition) map[string]StoreDefinition {
@@ -497,13 +471,6 @@ func (c *Condition) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-// MaestroTransportConfig contains maestro-specific transport settings
-// TODO(HYPERFLEET-1504): remove with the Maestro transport.
-type MaestroTransportConfig struct {
-	// TargetCluster is the name of the target cluster (consumer) for ManifestWork delivery
-	TargetCluster string `yaml:"target_cluster" validate:"required"`
-}
-
 // Resource represents a resource configuration.
 // Transport names a deployment transport; omission selects local Kubernetes.
 // Manifest holds the Kubernetes resource delivered through that transport.
@@ -519,6 +486,30 @@ type Resource struct {
 	Lifecycle         *ResourceLifecycle `yaml:"lifecycle,omitempty"`
 	NestedDiscoveries []NestedDiscovery  `yaml:"nested_discoveries,omitempty" validate:"dive"`
 	RecreateOnChange  bool               `yaml:"recreate_on_change,omitempty"`
+}
+
+// ResourceTransport is a resource's reference to a named deployment transport.
+type ResourceTransport struct {
+	// Name is the transport name.
+	Name string
+}
+
+// NamedTransport returns a reference to the named deployment transport.
+func NamedTransport(name string) *ResourceTransport {
+	return &ResourceTransport{Name: name}
+}
+
+// UnmarshalYAML accepts only a transport name.
+func (t *ResourceTransport) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("line %d: transport must be a transport name", node.Line)
+	}
+	return node.Decode(&t.Name)
+}
+
+// MarshalYAML writes the transport name.
+func (t ResourceTransport) MarshalYAML() (interface{}, error) {
+	return t.Name, nil
 }
 
 // ResourceLifecycle defines the lifecycle behavior for a resource.
@@ -732,46 +723,9 @@ func TransportClaimsReservedKubernetesName(name string, definition TransportDefi
 
 // ClientsConfig contains configuration for all external clients
 type ClientsConfig struct {
-	Maestro       *MaestroClientConfig `yaml:"maestro,omitempty" mapstructure:"maestro"`
-	Broker        BrokerConfig         `yaml:"broker,omitempty" mapstructure:"broker"`
-	Kubernetes    KubernetesConfig     `yaml:"kubernetes" mapstructure:"kubernetes"`
-	HyperfleetAPI HyperfleetAPIConfig  `yaml:"hyperfleet_api" mapstructure:"hyperfleet_api"`
-}
-
-// MaestroClientConfig contains Maestro client configuration
-type MaestroClientConfig struct {
-	GRPCServerAddress string `yaml:"grpc_server_address" mapstructure:"grpc_server_address"`
-	HTTPServerAddress string `yaml:"http_server_address" mapstructure:"http_server_address"`
-	SourceID          string `yaml:"source_id" mapstructure:"source_id"`
-	ClientID          string `yaml:"client_id" mapstructure:"client_id"`
-	Timeout           string `yaml:"timeout" mapstructure:"timeout"`
-	//nolint:lll
-	ServerHealthinessTimeout string            `yaml:"server_healthiness_timeout,omitempty" mapstructure:"server_healthiness_timeout"`
-	Keepalive                *KeepaliveConfig  `yaml:"keepalive,omitempty" mapstructure:"keepalive"`
-	Auth                     MaestroAuthConfig `yaml:"auth" mapstructure:"auth"`
-	RetryAttempts            int               `yaml:"retry_attempts" mapstructure:"retry_attempts"`
-	Insecure                 bool              `yaml:"insecure,omitempty" mapstructure:"insecure"`
-}
-
-// MaestroAuthConfig contains authentication configuration for Maestro
-type MaestroAuthConfig struct {
-	TLSConfig *TLSConfig `yaml:"tls_config,omitempty" mapstructure:"tls_config"`
-	// "tls" or "none"
-	Type string `yaml:"type" mapstructure:"type"`
-}
-
-// TLSConfig contains TLS certificate configuration
-type TLSConfig struct {
-	CAFile     string `yaml:"ca_file" mapstructure:"ca_file"`
-	CertFile   string `yaml:"cert_file" mapstructure:"cert_file"`
-	KeyFile    string `yaml:"key_file" mapstructure:"key_file"`
-	HTTPCAFile string `yaml:"http_ca_file,omitempty" mapstructure:"http_ca_file"`
-}
-
-// KeepaliveConfig contains gRPC keepalive configuration
-type KeepaliveConfig struct {
-	Time    string `yaml:"time" mapstructure:"time"`
-	Timeout string `yaml:"timeout" mapstructure:"timeout"`
+	Broker        BrokerConfig        `yaml:"broker,omitempty" mapstructure:"broker"`
+	Kubernetes    KubernetesConfig    `yaml:"kubernetes" mapstructure:"kubernetes"`
+	HyperfleetAPI HyperfleetAPIConfig `yaml:"hyperfleet_api" mapstructure:"hyperfleet_api"`
 }
 
 // AdapterTaskConfig represents the business logic configuration.
