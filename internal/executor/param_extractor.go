@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -38,6 +39,8 @@ func extractConfigParams(
 			if isAuthFailure {
 				execCtx.APIAuthFailureStatusCodes = append(execCtx.APIAuthFailureStatusCodes, statusCode)
 			}
+			slog.DebugContext(ctx, "optional parameter not extracted",
+				"param", param.Name, "default_applied", param.Default != nil, "error", err)
 			if param.Default != nil {
 				execCtx.Params[param.Name] = param.Default
 			}

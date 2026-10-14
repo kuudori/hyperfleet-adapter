@@ -60,7 +60,7 @@ These return `*ServiceError`, not `error`. Use `.AsError()` to convert.
 ## Packages
 
 - `internal/executor/`: the event pipeline (params → preconditions → resources → post-actions).
-- `internal/configloader/`: loads, merges and validates both configs, including CEL compilation at load time.
+- `internal/configloader/`: loads, merges and validates both configs, including a CEL syntax check at load time. Unknown functions and type errors surface only at runtime.
 - `internal/criteria/`: the CEL evaluator and the custom functions.
 - `internal/transportclient/`: the apply and discovery interface shared by every backend. `internal/transportregistry/` builds the named transport clients from deployment config.
 - Backends: `internal/k8sclient/` (local) and `internal/desireclient/` (the `remote` transport).

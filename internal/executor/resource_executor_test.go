@@ -2229,6 +2229,34 @@ func TestResourceExecutor_LifecycleDelete_CELUndeclaredVariable(t *testing.T) {
 	assert.False(t, mock.DeleteCalled, "DeleteResource must not be called when lifecycle.delete.when evaluates to false")
 }
 
+func TestResourceExecutor_LifecycleDelete_EvaluationErrorWarnsAndDoesNotDelete(t *testing.T) {
+	// The expression parses, but evaluating an undeclared function fails. The gate reads as
+	// false, so the resource is applied instead of deleted, and the failure is logged.
+	prev := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	mock := &trackingMockClient{MockK8sClient: k8sclient.NewMockK8sClient()}
+	re := newResourceExecutor(&ExecutorConfig{
+		TransportRegistry: testTransportRegistry(mock),
+	})
+
+	resource := newResourceWithLifecycle(`noSuchFunction("x") == "y"`, "Background")
+	execCtx := NewExecutionContext(context.Background(), nil, nil)
+
+	results, err := re.ExecuteAll(context.Background(), []configloader.Resource{resource}, execCtx)
+
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, manifest.OperationCreate, results[0].Operation)
+	assert.False(t, mock.DeleteCalled, "DeleteResource must not be called when lifecycle.delete.when fails to evaluate")
+	logs := buf.String()
+	assert.Contains(t, logs, "level=WARN")
+	assert.Contains(t, logs, "resource lifecycle when failed to evaluate, treating it as false")
+	assert.Contains(t, logs, "noSuchFunction")
+}
+
 // ---- MEDIUM: PropagationPolicy passthrough ----
 
 func TestResourceExecutor_LifecycleDelete_PropagationPolicy(t *testing.T) {

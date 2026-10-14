@@ -705,9 +705,8 @@ func (re *ResourceExecutor) resolveTransport(
 // current execution context and records the result for observability.
 //
 // The evaluation uses the same CEL context as post-actions: params + adapter metadata + resources.
-// A CEL evaluation error is surfaced (not swallowed) so the executor marks executionStatus=failed
-// and the operator sees Health=False. A common cause is a variable used in the expression that was
-// never captured in the precondition phase (e.g. a typo in a capture name).
+// A parse error fails the phase. An evaluation error, such as a missing field or an unknown
+// function, makes the expression read as false: the gate does not fire, and a warning is logged.
 func (re *ResourceExecutor) evaluateLifecycleWhen(
 	ctx context.Context,
 	resource configloader.Resource,
@@ -726,6 +725,11 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 	if err != nil {
 		return false, fmt.Errorf("%s expression %q failed to evaluate "+
 			"(check that all variables are captured in preconditions): %w", kind, expression, err)
+	}
+
+	if celResult.HasError() {
+		slog.WarnContext(ctx, "resource lifecycle when failed to evaluate, treating it as false",
+			"resource", resource.Name, "kind", kind, "error", celResult.Error)
 	}
 
 	execCtx.AddCELEvaluation(PhaseResources, resource.Name+"/"+kind, expression, celResult.Matched)
