@@ -123,6 +123,12 @@ func (m *k8sTestAPIServer) GetStatusResponses() []map[string]interface{} {
 
 // createK8sTestEvent creates a CloudEvent for K8s integration testing
 func createK8sTestEvent(clusterID string) *event.Event {
+	return createK8sTestEventWithGeneration(clusterID, 1)
+}
+
+// createK8sTestEventWithGeneration creates a K8s test event for a given resource generation.
+// A higher generation makes the executor apply a changed manifest instead of skipping it.
+func createK8sTestEventWithGeneration(clusterID string, generation int64) *event.Event {
 	evt := event.New()
 	evt.SetID("k8s-test-event-" + clusterID)
 	evt.SetType("com.redhat.hyperfleet.cluster.provision")
@@ -132,7 +138,7 @@ func createK8sTestEvent(clusterID string) *event.Event {
 	eventData := map[string]interface{}{
 		"id":            clusterID,
 		"resource_type": "cluster",
-		"generation":    "gen-001",
+		"generation":    generation,
 		"href":          "/api/v1/clusters/" + clusterID,
 	}
 	eventDataBytes, _ := json.Marshal(eventData)
@@ -170,6 +176,12 @@ func createK8sTestConfig(testNamespace string) *configloader.Config {
 			{
 				Name:     "clusterID",
 				Source:   configloader.StringSource("event.id"),
+				Required: true,
+			},
+			{
+				Name:     "generation",
+				Source:   configloader.StringSource("event.generation"),
+				Type:     "int",
 				Required: true,
 			},
 			{
@@ -217,6 +229,9 @@ func createK8sTestConfig(testNamespace string) *configloader.Config {
 					"metadata": map[string]interface{}{
 						"name":      "cluster-config-{{ .clusterID }}",
 						"namespace": testNamespace,
+						"annotations": map[string]interface{}{
+							"hyperfleet.io/generation": "{{ .generation }}",
+						},
 						"labels": map[string]interface{}{
 							"hyperfleet.io/cluster-id": "{{ .clusterID }}",
 							"hyperfleet.io/managed-by": "{{ .adapter.name }}",
@@ -244,6 +259,9 @@ func createK8sTestConfig(testNamespace string) *configloader.Config {
 					"metadata": map[string]interface{}{
 						"name":      "cluster-secret-{{ .clusterID }}",
 						"namespace": testNamespace,
+						"annotations": map[string]interface{}{
+							"hyperfleet.io/generation": "{{ .generation }}",
+						},
 						"labels": map[string]interface{}{
 							"hyperfleet.io/cluster-id": "{{ .clusterID }}",
 							"hyperfleet.io/managed-by": "{{ .adapter.name }}",
@@ -270,14 +288,15 @@ func createK8sTestConfig(testNamespace string) *configloader.Config {
 						"conditions": map[string]interface{}{
 							"applied": map[string]interface{}{
 								"status": map[string]interface{}{
-									"expression": "adapter.executionStatus == \"success\"",
+									"expression": `adapter.executionStatus == "success" && !adapter.resourcesSkipped`,
 								},
 								"reason": map[string]interface{}{
-									"expression": "has(adapter.errorReason) ? adapter.errorReason : \"ResourcesCreated\"",
+									"expression": `adapter.resourcesSkipped ? "PreconditionNotMet" : ` +
+										`(adapter.errorReason != "" ? adapter.errorReason : "ResourcesCreated")`,
 								},
 								"message": map[string]interface{}{
-									"expression": "has(adapter.errorMessage) ? adapter.errorMessage : " +
-										`"ConfigMap and Secret created successfully"`,
+									"expression": `adapter.skipReason != "" ? adapter.skipReason : ` +
+										`(adapter.errorMessage != "" ? adapter.errorMessage : "ConfigMap and Secret created successfully")`,
 								},
 							},
 						},
@@ -312,7 +331,6 @@ func createK8sTestConfig(testNamespace string) *configloader.Config {
 func TestExecutor_K8s_CreateResources(t *testing.T) {
 	// Setup K8s test environment
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	// Create test namespace
 	testNamespace := fmt.Sprintf("executor-test-%d", time.Now().Unix())
@@ -351,7 +369,7 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify execution succeeded
 	if result.Status != executor.StatusSuccess {
@@ -420,7 +438,7 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 	t.Logf("Status reported: %+v", status)
 
 	// Verify clusterID is correctly templated in status payload
-	assert.Equal(t, clusterID, status["clusterID"],
+	assert.Equal(t, map[string]interface{}{"value": clusterID}, status["clusterID"],
 		"Status payload should contain the correct clusterID")
 
 	if conditions, ok := status["conditions"].(map[string]interface{}); ok {
@@ -441,7 +459,6 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 // TestExecutor_K8s_UpdateExistingResource tests updating an existing resource
 func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-update-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -498,7 +515,7 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 
 	// Execute - should update existing resource
 	evt := createK8sTestEvent(clusterID)
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	require.Equal(t, executor.StatusSuccess, result.Status, "Execution should succeed: errors=%v", result.Errors)
 
@@ -545,7 +562,6 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 // TestExecutor_K8s_DiscoveryByLabels tests resource discovery using label selectors
 func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-discovery-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -571,6 +587,9 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 				"metadata": map[string]interface{}{
 					"name":      "cluster-config-{{ .clusterID }}",
 					"namespace": testNamespace,
+					"annotations": map[string]interface{}{
+						"hyperfleet.io/generation": "{{ .generation }}",
+					},
 					"labels": map[string]interface{}{
 						"hyperfleet.io/cluster-id": "{{ .clusterID }}",
 						"hyperfleet.io/managed-by": "{{ .adapter.name }}",
@@ -606,14 +625,14 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 
 	// First execution - should create
 	evt := createK8sTestEvent(clusterID)
-	result1 := exec.Execute(ctx, evt)
+	result1 := exec.Execute(ctx, evt.Data())
 	require.Equal(t, executor.StatusSuccess, result1.Status)
 	assert.Equal(t, manifest.OperationCreate, result1.ResourceResults[0].Operation)
 	t.Logf("First execution: %s", result1.ResourceResults[0].Operation)
 
 	// Second execution - should find by labels and update
-	evt2 := createK8sTestEvent(clusterID)
-	result2 := exec.Execute(ctx, evt2)
+	evt2 := createK8sTestEventWithGeneration(clusterID, 2)
+	result2 := exec.Execute(ctx, evt2.Data())
 	require.Equal(t, executor.StatusSuccess, result2.Status)
 	assert.Equal(t, manifest.OperationUpdate, result2.ResourceResults[0].Operation)
 	t.Logf("Second execution: %s (discovered by labels)", result2.ResourceResults[0].Operation)
@@ -622,7 +641,6 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 // TestExecutor_K8s_RecreateOnChange tests the recreateOnChange behavior
 func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-recreate-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -648,6 +666,9 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 				"metadata": map[string]interface{}{
 					"name":      "cluster-config-{{ .clusterID }}",
 					"namespace": testNamespace,
+					"annotations": map[string]interface{}{
+						"hyperfleet.io/generation": "{{ .generation }}",
+					},
 					"labels": map[string]interface{}{
 						"hyperfleet.io/cluster-id": "{{ .clusterID }}",
 					},
@@ -676,7 +697,7 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 
 	// First execution - create
 	evt := createK8sTestEvent(clusterID)
-	result1 := exec.Execute(ctx, evt)
+	result1 := exec.Execute(ctx, evt.Data())
 	require.Equal(t, executor.StatusSuccess, result1.Status)
 	assert.Equal(t, manifest.OperationCreate, result1.ResourceResults[0].Operation)
 
@@ -689,8 +710,8 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 	t.Logf("Original ConfigMap UID: %s", originalUID)
 
 	// Second execution - should recreate (delete + create)
-	evt2 := createK8sTestEvent(clusterID)
-	result2 := exec.Execute(ctx, evt2)
+	evt2 := createK8sTestEventWithGeneration(clusterID, 2)
+	result2 := exec.Execute(ctx, evt2.Data())
 	require.Equal(t, executor.StatusSuccess, result2.Status)
 	assert.Equal(t, manifest.OperationRecreate, result2.ResourceResults[0].Operation)
 	t.Logf("Second execution: %s", result2.ResourceResults[0].Operation)
@@ -706,7 +727,6 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 // TestExecutor_K8s_MultipleResourceTypes tests creating different resource types
 func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-multi-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -732,7 +752,7 @@ func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 	clusterID := fmt.Sprintf("multi-cluster-%d", time.Now().UnixNano())
 	evt := createK8sTestEvent(clusterID)
 
-	result := exec.Execute(context.Background(), evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	require.Equal(t, executor.StatusSuccess, result.Status)
 	require.Len(t, result.ResourceResults, 2)
@@ -755,7 +775,6 @@ func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 // TestExecutor_K8s_ResourceCreationFailure tests handling of K8s API failures
 func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	// Use a namespace that doesn't exist (should fail)
 	nonExistentNamespace := "non-existent-namespace-12345"
@@ -777,7 +796,7 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	evt := createK8sTestEvent("failure-test")
-	result := exec.Execute(context.Background(), evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should fail during resource creation
 	assert.Equal(t, executor.StatusFailed, result.Status)
@@ -836,7 +855,6 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 // TODO: Implement proper discovery-based update logic and update this test accordingly.
 func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-multi-match-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -898,7 +916,8 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 					"apiVersion": "v1",
 					"kind":       "ConfigMap",
 					"metadata": map[string]interface{}{
-						"name": "config-{{ .clusterID }}-new",
+						"name":      "config-{{ .clusterID }}-new",
+						"namespace": testNamespace,
 						"labels": map[string]interface{}{
 							"hyperfleet.io/cluster-id": "{{ .clusterID }}",
 							"app":                      "multi-match-test",
@@ -924,7 +943,7 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 	require.NoError(t, err)
 
 	evt := createK8sTestEvent(clusterID)
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	require.Equal(t, executor.StatusSuccess, result.Status, "Execution should succeed: errors=%v", result.Errors)
 
@@ -959,7 +978,6 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 // don't match
 func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	k8sEnv := SetupK8sTestEnv(t)
-	defer k8sEnv.Cleanup(t)
 
 	testNamespace := fmt.Sprintf("executor-precond-fail-%d", time.Now().Unix())
 	k8sEnv.CreateTestNamespace(t, testNamespace)
@@ -1000,7 +1018,7 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	clusterID := fmt.Sprintf("precond-fail-%d", time.Now().UnixNano())
 	evt := createK8sTestEvent(clusterID)
 
-	result := exec.Execute(context.Background(), evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should be success with resources skipped (precondition not met is valid outcome)
 	assert.Equal(t, executor.StatusSuccess, result.Status, "Should be success when precondition not met (valid outcome)")
@@ -1024,21 +1042,21 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	// Check that error info is in the status payload via template expressions
 	if conditions, ok := status["conditions"].(map[string]interface{}); ok {
 		if applied, ok := conditions["applied"].(map[string]interface{}); ok {
-			// Status should be false (adapter.executionStatus != "success")
+			// Status should be false: resources were skipped
 			assert.Equal(t, false, applied["status"], "Applied status should be false")
 
-			// Reason should come from adapter.errorReason (not default)
+			// Reason should report the skip, not the default success reason
 			if reason, ok := applied["reason"].(string); ok {
 				if reason == "ResourcesCreated" {
-					t.Error("Expected reason to be from adapter.errorReason, got default success reason")
+					t.Error("Expected the skip reason, got default success reason")
 				}
 				t.Logf("Applied reason: %s", reason)
 			}
 
-			// Message should come from adapter.errorMessage (not default)
+			// Message should come from adapter.skipReason, not the default success message
 			if message, ok := applied["message"].(string); ok {
 				if message == "ConfigMap and Secret created successfully" {
-					t.Error("Expected message to be from adapter.errorMessage, got default success message")
+					t.Error("Expected the skip reason as message, got default success message")
 				}
 				t.Logf("Applied message: %s", message)
 			}

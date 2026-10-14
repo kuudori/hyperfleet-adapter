@@ -35,13 +35,6 @@ func SetupK8sTestEnv(t *testing.T) *K8sTestEnv {
 	return sharedK8sEnv
 }
 
-// Cleanup cleans up the test environment
-func (e *K8sTestEnv) Cleanup(t *testing.T) {
-	if e.cleanup != nil {
-		e.cleanup()
-	}
-}
-
 // CreateTestNamespace creates a namespace for test isolation
 func (e *K8sTestEnv) CreateTestNamespace(t *testing.T, name string) {
 	t.Helper()
