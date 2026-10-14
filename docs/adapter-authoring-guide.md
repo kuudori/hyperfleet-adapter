@@ -927,6 +927,16 @@ Then reference `is_deleting` in `lifecycle.delete.when.expression`.
 
 > **Why not `source: "resourceStatus.deleted_time"`?** While the resource is not being deleted the field is absent, and an optional dot-notation source then leaves the param unset without logging anything. Every CEL expression that reads `is_deleting` then fails at runtime: a lifecycle gate counts it as `false`, and payload expressions log `cel evaluation failed`. The `expression` source with `hasValue()` returns a real `false`.
 
+**Delete, then want the resource back.** `lifecycle.delete.when` accepts any CEL expression, not only `is_deleting`. The expression can evaluate to `true` on one event and `false` on a later event, while the API object still exists. A finalizer that holds the object in `Terminating` is the usual case.
+
+On a remote transport the adapter does not apply onto that object. While the delete is still unconfirmed, the store rejects the new apply. The adapter logs this warning and retries on the next event:
+
+```text
+ApplyResource: delete pending, retrying on next event
+```
+
+For that event the resource's `resource_states` entry is `unsynced`, and the mirrored object stays in resources.
+
 **Dependency ordering.** When resources must be deleted in a specific order, gate the parent's delete on the child being confirmed gone with `resource_states.?X.orValue("") == "confirmed_deleted"`. This also keeps an unsynced remote mirror from looking like confirmed absence:
 
 ```yaml

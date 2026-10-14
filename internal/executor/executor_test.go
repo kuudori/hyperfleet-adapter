@@ -18,11 +18,15 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -1378,6 +1382,58 @@ func TestSequentialExecution_SkipReasonCapture(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric(t *testing.T) {
+	ctx := t.Context()
+	store := memory.New()
+	_, err := store.CreateDeleteDesire(ctx, desire.DeleteDesire{
+		Identity: testDesireID.Delete(),
+		Owner:    desireOwner,
+	})
+	require.NoError(t, err)
+
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
+		Transports: map[string]configloader.TransportDefinition{
+			desireTransportName: testRemoteDefinition(),
+		},
+		Resources: []configloader.Resource{
+			newDesireResourceWithLifecycle("", "Background"),
+		},
+	}
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithAPIClient(newMockAPIClient()).
+		WithTransportRegistry(transportclient.Registry{
+			desireTransportName: desireclient.NewClient(store, desireOwner),
+		}).
+		Build()
+	require.NoError(t, err)
+
+	registry := prometheus.NewRegistry()
+	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	handler := WithMetrics(exec.CreateHandler(), recorder)
+	evt := event.New()
+	evt.SetID("pending-delete")
+	evt.SetType("com.hyperfleet.test")
+	evt.SetSource("test")
+
+	result, err := handler(ctx, &evt)
+	require.NoError(t, err)
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Empty(t, result.Errors)
+	require.Len(t, result.ResourceResults, 1)
+	assert.Equal(t, applyDeletePendingReason, result.ResourceResults[0].OperationReason)
+	assert.Nil(t, result.ResourceResults[0].Error)
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), getCounterValue(t, families,
+		"hyperfleet_adapter_events_processed_total", "status", "success"))
+	assert.Zero(t, getCounterValue(t, families,
+		"hyperfleet_adapter_events_processed_total", "status", "failed"))
+	assert.Nil(t, findFamily(families, "hyperfleet_adapter_errors_total"))
 }
 
 // TestCreateHandler_MetricsRecording verifies that WithMetrics records Prometheus metrics

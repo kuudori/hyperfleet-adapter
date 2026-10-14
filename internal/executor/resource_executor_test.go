@@ -1,10 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
@@ -396,7 +398,7 @@ func TestResourceExecutor_DesireCleanupFailureBlocksDependentDelete(t *testing.T
 			if tt.readNotFound {
 				desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)
 			} else {
-				desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent())
+				desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent("value", "1"))
 			}
 			if !tt.noDeleteDesire {
 				desiretest.PutConfirmedDeleteDesire(t, ctx, store, testDesireID.Delete(), desireOwner)
@@ -630,7 +632,7 @@ func TestResourceExecutor_UnsyncedDeleteErrorIsPropagated(t *testing.T) {
 	_, err := inner.CreateApplyDesire(ctx, desire.ApplyDesire{
 		Identity: testDesireID.Apply(),
 		Owner:    desireOwner,
-		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+		Spec:     desire.ApplySpec{KubeContent: configMapContent("value", "1")},
 	})
 	require.NoError(t, err)
 	desiretest.PutUnsyncedReadDesire(t, ctx, inner, testDesireID.Read(), desireOwner)
@@ -2953,16 +2955,16 @@ var testDesireID = desiretest.TestIdentity{
 	Name:              "test-config",
 }
 
-func configMapContent() []byte {
+func configMapContent(data, generation string) []byte {
 	return []byte(`{
 		"apiVersion": "v1",
 		"kind": "ConfigMap",
 		"metadata": {
 			"name": "test-config",
 			"namespace": "default",
-			"annotations": {"hyperfleet.io/generation": "1"}
+			"annotations": {"hyperfleet.io/generation": "` + generation + `"}
 		},
-		"data": {"key": "value"}
+		"data": {"key": "` + data + `"}
 	}`)
 }
 
@@ -3033,7 +3035,7 @@ func TestResourceExecutor_DesireTransport_SlowApplier(t *testing.T) {
 	_, err = store.GetReadDesire(ctx, testDesireID.Read())
 	require.NoError(t, err, "ReadDesire must exist after apply")
 
-	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent())
+	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent("value", "1"))
 
 	// ---- Event 2: delete (applier hasn't confirmed yet) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
@@ -3099,7 +3101,7 @@ func TestResourceExecutor_DesireTransport_FastApplier(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
 
-	desiretest.MarkReadDesireSynced(t, ctx, inner, testDesireID.Read(), configMapContent())
+	desiretest.MarkReadDesireSynced(t, ctx, inner, testDesireID.Read(), configMapContent("value", "1"))
 
 	// ---- Event 2: delete (applier confirms instantly via wrapper) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
@@ -3187,7 +3189,7 @@ func TestResourceExecutor_DesireTransport_FullLifecycleFromEmptyStore(t *testing
 	require.NoError(t, err, "ReadDesire must be auto-created by ensureReadDesire")
 
 	// Simulate applier syncing the read mirror.
-	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent())
+	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent("value", "1"))
 
 	// ---- Event 2: apply after sync (post-apply discovery finds the resource) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
@@ -3240,10 +3242,150 @@ func TestResourceExecutor_DesireTransport_FullLifecycleFromEmptyStore(t *testing
 	require.NoError(t, err, "the re-apply must recreate its paired ReadDesire")
 }
 
+// TestResourceExecutor_DesireTransport_ReapplyWhileDeletePending locks the path
+// where lifecycle.delete.when flips from true back to false before the applier
+// confirms the delete. The new apply is rejected until Reason=Deleted, then it
+// replaces the DeleteDesire. The paired ReadDesire is not recreated.
+func TestResourceExecutor_DesireTransport_ReapplyWhileDeletePending(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	re := newDesireExecutor(store)
+	v1 := newHoldDesireResource("v1", "1")
+
+	// Event 1 — want the resource.
+	execCtx := NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["hold"] = false
+	results, err := re.ExecuteAll(ctx, []configloader.Resource{v1}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+
+	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
+	require.NoError(t, err, "ApplyDesire must exist after apply")
+	_, err = store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err, "ReadDesire must exist after apply")
+	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent("v1", "1"))
+
+	// Event 2 — expression flips true. The applier has not confirmed.
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["hold"] = true
+	results, err = re.ExecuteAll(ctx, []configloader.Resource{v1}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+
+	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "DeleteResource must remove the ApplyDesire")
+	pendingDelete, err := store.GetDeleteDesire(ctx, testDesireID.Delete())
+	require.NoError(t, err, "DeleteDesire must exist while the applier has not confirmed")
+	assert.False(t, desire.IsDeleted(pendingDelete.Status), "the delete must still be unconfirmed")
+	desiretest.MarkReadDesireNotFound(t, ctx, store, testDesireID.Read())
+
+	readBeforeReject, err := store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err)
+	requireReadReason(t, readBeforeReject, desire.ReasonNotFound)
+
+	// Event 3 — expression flips false while the delete is still pending.
+	v2 := newHoldDesireResource("v2", "2")
+	logs := captureExecutorSlog(t)
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["hold"] = false
+	results, err = re.ExecuteAll(ctx, []configloader.Resource{v2}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+	assert.Equal(t, applyDeletePendingReason, results[0].OperationReason)
+	assert.Nil(t, results[0].Error)
+	assert.Nil(t, execCtx.Adapter.ExecutionError)
+	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates["test-resource"])
+	assert.Nil(t, execCtx.Resources["test-resource"])
+
+	assert.Contains(t, logs.String(), "level=WARN")
+	assert.Contains(t, logs.String(), "ApplyResource: delete pending, retrying on next event")
+	assert.NotContains(t, logs.String(), "level=ERROR")
+
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.NoError(t, err, "the unconfirmed DeleteDesire must still be present")
+	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "the rejected apply must not write an ApplyDesire")
+	readAfterReject, err := store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err)
+	assert.Equal(t, readBeforeReject.Version, readAfterReject.Version, "the ReadDesire must not be recreated")
+	requireReadReason(t, readAfterReject, desire.ReasonNotFound)
+
+	// The applier confirms. Do not run another hold=true event here; that would
+	// clean the desires up, which is a different path.
+	desiretest.MarkDeleteDesireConfirmed(t, ctx, store, testDesireID.Delete())
+
+	// Event 4 — the next event applies. The store swaps DeleteDesire for ApplyDesire.
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["hold"] = false
+	results, err = re.ExecuteAll(ctx, []configloader.Resource{v2}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+
+	applied, err := store.GetApplyDesire(ctx, testDesireID.Apply())
+	require.NoError(t, err, "ApplyDesire must replace the confirmed DeleteDesire")
+	assert.Contains(t, string(applied.Spec.KubeContent), `"v2"`)
+	_, err = store.GetDeleteDesire(ctx, testDesireID.Delete())
+	assert.ErrorIs(t, err, desire.ErrNotFound, "the confirmed DeleteDesire must be gone")
+	readAfterReplace, err := store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err)
+	assert.Equal(t, readBeforeReject.Version, readAfterReplace.Version,
+		"replacing the delete must not recreate the ReadDesire")
+	requireReadReason(t, readAfterReplace, desire.ReasonNotFound)
+
+	// The applier observes the recreated object.
+	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent("v2", "2"))
+	readSynced, err := store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err)
+
+	// Event 5 — discovery sees it. The mirror is still the same desire.
+	execCtx = NewExecutionContext(ctx, nil, nil)
+	execCtx.Params["hold"] = false
+	results, err = re.ExecuteAll(ctx, []configloader.Resource{v2}, execCtx)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Status)
+	assert.NotNil(t, execCtx.Resources["test-resource"], "the synced object must be visible to later resources")
+
+	readAfterSync, err := store.GetReadDesire(ctx, testDesireID.Read())
+	require.NoError(t, err)
+	assert.Equal(t, readSynced.Version, readAfterSync.Version, "seeing the object again must not recreate the ReadDesire")
+	requireReadReason(t, readAfterSync, desire.ReasonSynced)
+	assert.Contains(t, string(readAfterSync.Status.KubeContent), `"v2"`)
+}
+
+func newHoldDesireResource(data, generation string) configloader.Resource {
+	resource := newDesireResourceWithLifecycle("hold", "Background")
+	manifest := resource.Manifest.(map[string]interface{})
+	metadata := manifest["metadata"].(map[string]interface{})
+	annotations := metadata["annotations"].(map[string]interface{})
+	annotations["hyperfleet.io/generation"] = generation
+	manifest["data"] = map[string]interface{}{"key": data}
+	return resource
+}
+
+func requireReadReason(t *testing.T, read desire.ReadDesire, reason string) {
+	t.Helper()
+	require.NotEmpty(t, read.Status.Conditions)
+	assert.Equal(t, reason, read.Status.Conditions[0].Reason)
+}
+
+func captureExecutorSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
+}
+
 func TestResourceExecutor_PendingDesireDeleteDoesNotCountAsDeleted(t *testing.T) {
 	ctx := t.Context()
 	store := memory.New()
-	desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent())
+	desiretest.PutSyncedReadDesire(t, ctx, store, testDesireID.Read(), desireOwner, configMapContent("value", "1"))
 	_, err := store.CreateDeleteDesire(ctx, desire.DeleteDesire{
 		Identity: testDesireID.Delete(), Owner: desireOwner,
 	})
@@ -3304,7 +3446,7 @@ func TestResourceExecutor_DesireTransport_Step2_DeletionPending_DeleteNotConfirm
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
 
-	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent())
+	desiretest.MarkReadDesireSynced(t, ctx, store, testDesireID.Read(), configMapContent("value", "1"))
 
 	// ---- Event 2: delete (creates delete desire, applier hasn't confirmed) ----
 	execCtx = NewExecutionContext(ctx, nil, nil)
@@ -3363,7 +3505,7 @@ func TestResourceExecutor_DesireTransport_Step6_DeletionPending_NonFatal(t *test
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
 
-	desiretest.MarkReadDesireSynced(t, ctx, inner, testDesireID.Read(), configMapContent())
+	desiretest.MarkReadDesireSynced(t, ctx, inner, testDesireID.Read(), configMapContent("value", "1"))
 
 	// ---- Event 2: delete ----
 	// Discovery finds the resource (synced). DeleteResource creates a
@@ -3547,7 +3689,7 @@ func TestResourceExecutor_DesireTransport_UnsyncedDependencyBlocksDelete(t *test
 	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
 		Identity: testDesireID.Apply(),
 		Owner:    desireOwner,
-		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+		Spec:     desire.ApplySpec{KubeContent: configMapContent("value", "1")},
 	})
 	require.NoError(t, err)
 
@@ -3595,7 +3737,7 @@ func TestResourceExecutor_DesireTransport_PendingCleanupBlocksDeleteDependency(t
 	_, err := store.CreateApplyDesire(ctx, desire.ApplyDesire{
 		Identity: testDesireID.Apply(),
 		Owner:    desireOwner,
-		Spec:     desire.ApplySpec{KubeContent: configMapContent()},
+		Spec:     desire.ApplySpec{KubeContent: configMapContent("value", "1")},
 	})
 	require.NoError(t, err)
 	desiretest.PutConfirmedAbsentReadDesire(t, ctx, store, testDesireID.Read(), desireOwner)

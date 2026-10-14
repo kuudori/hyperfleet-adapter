@@ -17,6 +17,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -25,6 +26,7 @@ import (
 
 const (
 	desireDeletionPendingReason     = "desire deletion pending"
+	applyDeletePendingReason        = "delete pending, retrying on next event"
 	resourceAlreadyDeletedReason    = "resource already deleted or never existed"
 	resourceDeletionConfirmedReason = "resource deletion confirmed by transport"
 )
@@ -229,6 +231,16 @@ func (re *ResourceExecutor) executeResource(
 
 	// Step 6: Call transport client ApplyResource with rendered bytes
 	applyResult, err := transportClient.ApplyResource(ctx, renderedBytes, applyOpts, transportTarget)
+	if errors.Is(err, desire.ErrDeletePending) {
+		// The store refused a new ApplyDesire while a DeleteDesire is still
+		// unconfirmed. Desireclient already logged the retry warning. Failing
+		// the event would count an error and the next event is the retry.
+		// Pre-discovery may have recorded the mirrored object as present.
+		// This event did not apply, so record the resource as unsynced instead.
+		execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
+		result.OperationReason = applyDeletePendingReason
+		return result, nil
+	}
 	if err != nil {
 		result.Status = StatusFailed
 		result.Error = err
