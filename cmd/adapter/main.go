@@ -773,35 +773,9 @@ func addConfigPathFlags(cmd *cobra.Command) {
 			configloader.EnvTaskConfigPath))
 }
 
-// addOverrideFlags registers all configuration override flags (Maestro, API, broker, Kubernetes).
+// addOverrideFlags registers all configuration override flags (API, broker, Kubernetes).
 // These flags are available on both the serve and config-dump commands.
 func addOverrideFlags(cmd *cobra.Command) {
-	// Maestro override flags
-	cmd.Flags().String("maestro-grpc-server-address", "",
-		"Maestro gRPC server address. Env: HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS")
-	cmd.Flags().String("maestro-http-server-address", "",
-		"Maestro HTTP server address. Env: HYPERFLEET_MAESTRO_HTTP_SERVER_ADDRESS")
-	cmd.Flags().String("maestro-source-id", "", "Maestro source ID. Env: HYPERFLEET_MAESTRO_SOURCE_ID")
-	cmd.Flags().String("maestro-client-id", "", "Maestro client ID. Env: HYPERFLEET_MAESTRO_CLIENT_ID")
-	cmd.Flags().String("maestro-auth-type", "", "Maestro auth type (tls, none). Env: HYPERFLEET_MAESTRO_AUTH_TYPE")
-	cmd.Flags().String("maestro-ca-file", "", "Maestro gRPC CA certificate file. Env: HYPERFLEET_MAESTRO_CA_FILE")
-	cmd.Flags().String("maestro-cert-file", "", "Maestro gRPC client certificate file. Env: HYPERFLEET_MAESTRO_CERT_FILE")
-	cmd.Flags().String("maestro-key-file", "", "Maestro gRPC client key file. Env: HYPERFLEET_MAESTRO_KEY_FILE")
-	cmd.Flags().String("maestro-http-ca-file", "",
-		"Maestro HTTP CA certificate file. Env: HYPERFLEET_MAESTRO_HTTP_CA_FILE")
-	cmd.Flags().String("maestro-timeout", "",
-		"Maestro client timeout (e.g. 10s). Env: HYPERFLEET_MAESTRO_TIMEOUT")
-	cmd.Flags().String("maestro-server-healthiness-timeout", "",
-		"Maestro server healthiness check timeout (e.g. 20s). Env: HYPERFLEET_MAESTRO_SERVER_HEALTHINESS_TIMEOUT")
-	cmd.Flags().Int("maestro-retry-attempts", 0,
-		"Maestro retry attempts. Env: HYPERFLEET_MAESTRO_RETRY_ATTEMPTS")
-	cmd.Flags().String("maestro-keepalive-time", "",
-		"Maestro gRPC keepalive ping interval (e.g. 30s). Env: HYPERFLEET_MAESTRO_KEEPALIVE_TIME")
-	cmd.Flags().String("maestro-keepalive-timeout", "",
-		"Maestro gRPC keepalive ping timeout (e.g. 10s). Env: HYPERFLEET_MAESTRO_KEEPALIVE_TIMEOUT")
-	cmd.Flags().Bool("maestro-insecure", false,
-		"Use insecure connection to Maestro. Env: HYPERFLEET_MAESTRO_INSECURE")
-
 	// HyperFleet API override flags
 	cmd.Flags().String("hyperfleet-api-base-url", "", "HyperFleet API base URL. Env: HYPERFLEET_API_BASE_URL")
 	cmd.Flags().String("hyperfleet-api-version", "", "HyperFleet API version (e.g. v1). Env: HYPERFLEET_API_VERSION")

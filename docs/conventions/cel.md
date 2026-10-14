@@ -17,7 +17,7 @@ Used in precondition expressions, lifecycle delete conditions, and post-action `
 | `adapter.*` | map | all contexts[¹](#footnotes) | Adapter name and version, plus execution metadata. See fields below. Go templates read the same map as `{{ .adapter }}`. Execution metadata is meaningful only in post-phase expressions. During params and preconditions, `executionStatus` is always `"success"` and the error fields are empty. |
 | `env.*` | map | all contexts[¹](#footnotes) | All OS environment variables accessible to the process (`env.MY_VAR`). No declaration needed. |
 | `event.*` | map | all contexts[¹](#footnotes) | Full triggering event payload (`event.id`, `event.kind`, etc.). No declaration needed. |
-| `config.*` | map | all contexts[¹](#footnotes) | Merged deployment and task config as a nested map with snake_case keys (`config.clients.hyperfleet_api.base_url`). The runtime redacts sensitive values, such as TLS file paths and store credentials. A param with `source: config.<path>` reads the unredacted value. |
+| `config.*` | map | all contexts[¹](#footnotes) | Merged deployment and task config as a nested map with snake_case keys (`config.clients.hyperfleet_api.base_url`). The runtime redacts store credentials. A param with `source: config.<path>` reads the unredacted value. |
 
 #### Footnotes
 
@@ -76,7 +76,6 @@ resource_states.?x.orValue("") == "confirmed_deleted"
 - `conditionStatus(conditions, type)` — returns the `status` field (`"True"`, `"False"`, etc.) of the first condition matching `type`, or `"Unknown"` if absent
 - `conditionAge(conditions, type)` — returns elapsed seconds since `last_transition_time` for the matching condition, or `-1` if absent
 - `stableFor(conditions, type, seconds)` — returns `true` only when `conditionStatus` is `"True"` AND `conditionAge` is at least the threshold
-- `statusFeedbackValue(statusFeedback, name)` — returns `fieldValue.string` of the named Maestro statusFeedback value, or `""` if absent
 - `triState(trueCond, falseCond)` — returns `"True"` when first arg is true, `"False"` when second is true, `"Unknown"` otherwise
 
 ## String Extensions
@@ -141,16 +140,6 @@ status.conditions.filter(c, c.type == "Reconciled").size() > 0
 
 // After:
 stableFor(conditions, "Reconciled", 300)
-```
-
-```cel
-// Before — statusFeedback value extraction (4-step filter chain):
-statusFeedback.values.filter(v, v.name == "phase").size() > 0
-  ? statusFeedback.values.filter(v, v.name == "phase")[0].fieldValue.string
-  : ""
-
-// After:
-statusFeedbackValue(statusFeedback, "phase")
 ```
 
 ```cel

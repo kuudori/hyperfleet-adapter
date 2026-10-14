@@ -61,7 +61,7 @@ func createTestEvent(clusterID string) *event.Event {
 	eventData := map[string]interface{}{
 		"id":            clusterID,
 		"resource_type": "cluster",
-		"generation":    "gen-001",
+		"generation":    int64(1),
 		"href":          "/api/v1/clusters/" + clusterID,
 	}
 	eventDataBytes, _ := json.Marshal(eventData)
@@ -204,7 +204,7 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify result
 	require.Equal(t, executor.StatusSuccess, result.Status, "Expected success status; errors=%v", result.Errors)
@@ -333,7 +333,7 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 	// Execute
 	evt := createTestEvent("cluster-456")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify result - should be success with resources skipped (precondition not met is valid outcome)
 	if result.Status != executor.StatusSuccess {
@@ -435,7 +435,7 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 	// Execute
 	evt := createTestEvent("cluster-notfound")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify result - should be failed (API error)
 	if result.Status != executor.StatusFailed {
@@ -532,7 +532,7 @@ func TestExecutor_PreconditionNotFound_GracefulStop(t *testing.T) {
 
 	evt := createTestEvent("cluster-force-deleted")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	assert.Equal(t, executor.StatusSuccess, result.Status,
 		"404 on force-deleted resource should not mark execution as failed")
@@ -555,7 +555,7 @@ func TestExecutor_PostActionNotFound_GracefulHandling(t *testing.T) {
 
 	evt := createTestEvent("cluster-force-deleted-during-post")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	assert.Equal(t, executor.StatusSuccess, result.Status,
 		"404 on post-action should not mark execution as failed")
@@ -620,7 +620,7 @@ func TestExecutor_CELExpressionEvaluation(t *testing.T) {
 	// Execute
 	evt := createTestEvent("cluster-cel-test")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify CEL evaluation passed
 	require.Equal(t, executor.StatusSuccess, result.Status, "Expected success status; errors=%v", result.Errors)
@@ -668,7 +668,7 @@ func TestExecutor_MultipleMessages(t *testing.T) {
 
 	for i, clusterID := range clusterIDs {
 		evt := createTestEvent(clusterID)
-		results[i] = exec.Execute(context.Background(), evt)
+		results[i] = exec.Execute(context.Background(), evt.Data())
 	}
 
 	// Verify all succeeded with isolated params
@@ -802,7 +802,7 @@ func TestExecutor_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	evt := createTestEvent("cluster-canceled")
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Should fail due to context cancellation
 	// Note: The exact behavior depends on where cancellation is checked
@@ -838,7 +838,7 @@ func TestExecutor_MissingRequiredParam(t *testing.T) {
 	}
 
 	evt := createTestEvent("cluster-missing-param")
-	result := exec.Execute(context.Background(), evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should fail during param extraction
 	if result.Status != executor.StatusFailed {
@@ -907,7 +907,7 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 	invalidJSON := []byte("this is not valid JSON {{{")
 	_ = evt.SetData(event.ApplicationJSON, invalidJSON)
 
-	result := exec.Execute(context.Background(), &evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should fail during param extraction (JSON parsing)
 	assert.Equal(t, executor.StatusFailed, result.Status, "Should fail with invalid JSON")
@@ -960,7 +960,7 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	eventDataBytes, _ := json.Marshal(eventData)
 	_ = evt.SetData(event.ApplicationJSON, eventDataBytes)
 
-	result := exec.Execute(context.Background(), &evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should fail during param extraction (missing required param from event)
 	assert.Equal(t, executor.StatusFailed, result.Status, "Should fail with missing required field")
@@ -1065,7 +1065,7 @@ func TestExecutor_LogAction(t *testing.T) {
 					ActionBase: configloader.ActionBase{
 						Name: "logCompletion",
 						Log: &configloader.LogAction{
-							Message: "Completed processing cluster {{ .clusterID }} with resource {{ .resourceId }}",
+							Message: "Completed processing cluster {{ .clusterID }}",
 							Level:   "info",
 						},
 					},
@@ -1097,7 +1097,7 @@ func TestExecutor_LogAction(t *testing.T) {
 
 	// Execute
 	evt := createTestEvent("log-test-clusterx")
-	result := exec.Execute(context.Background(), evt)
+	result := exec.Execute(context.Background(), evt.Data())
 
 	// Should succeed
 	if result.Status != executor.StatusSuccess {
@@ -1112,7 +1112,7 @@ func TestExecutor_LogAction(t *testing.T) {
 	expectedLogs := []string{
 		"[config] Starting processing for cluster log-test-cluster",
 		"[config] About to check cluster status for log-test-cluster",
-		"[config] Completed processing cluster log-test-cluster with resource log-test-resource",
+		"[config] Completed processing cluster log-test-cluster",
 		"[config] This is a warning for cluster log-test-cluster",
 	}
 
@@ -1166,7 +1166,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 	// Execute
 	evt := createTestEvent("cluster-post-fail")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify result - should be failed due to post action API error
 	assert.Equal(t, executor.StatusFailed, result.Status, "Expected failed status for post action API error")
@@ -1350,7 +1350,7 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 	// Execute - should fail due to precondition API error
 	evt := createTestEvent("cluster-cel-error-test")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify execution failed (due to precondition failure)
 	assert.Equal(t, executor.StatusFailed, result.Status, "Expected failed status")
@@ -1394,7 +1394,8 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 			// Verify other adapter fields still accessible
 			assert.Equal(t, "failed", reportPayload["executionStatus"], "executionStatus should be 'failed'")
 			assert.NotEmpty(t, reportPayload["errorReason"], "errorReason should be populated")
-			assert.Equal(t, "cluster-cel-error-test", reportPayload["clusterID"], "clusterID should match")
+			assert.Equal(t, map[string]interface{}{"value": "cluster-cel-error-test"}, reportPayload["clusterID"],
+				"clusterID should match")
 
 			t.Logf("CEL expressions successfully accessed executionError:")
 			t.Logf("  hasError: %v", reportPayload["hasError"])
@@ -1493,7 +1494,7 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 	// Execute
 	evt := createTestEvent("test-cluster")
 	ctx := context.Background()
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	// Verify execution failed in post_actions phase (payload build)
 	assert.Equal(t, executor.StatusFailed, result.Status, "Expected failed status")
@@ -1650,7 +1651,7 @@ func TestExecutor_PayloadWhenCondition(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := exec.Execute(ctx, evt)
+	result := exec.Execute(ctx, evt.Data())
 
 	require.Equal(t, executor.StatusSuccess, result.Status,
 		"Expected success; errors=%v", result.Errors)

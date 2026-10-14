@@ -113,8 +113,7 @@ func generationFromKubeContent(kubeContent []byte) int64 {
 }
 
 // parseToUnstructured parses JSON or YAML bytes into an unstructured resource,
-// mirroring the pattern in internal/k8sclient/apply.go and
-// internal/maestroclient/client.go.
+// mirroring the pattern in internal/k8sclient/apply.go.
 func parseToUnstructured(data []byte) (*unstructured.Unstructured, error) {
 	obj := &unstructured.Unstructured{}
 	if err := json.Unmarshal(data, &obj.Object); err == nil && obj.Object != nil {

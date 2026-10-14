@@ -23,7 +23,8 @@ import (
 const (
 	EnvtestAPIServerPort = "6443/tcp"
 	EnvtestReadyLog      = "Envtest is running"
-	EnvtestBearerToken   = "envtest-token"
+	// EnvtestBearerToken must match the token file in test/Dockerfile.integration.
+	EnvtestBearerToken = "test-token"
 )
 
 // sharedK8sEnv holds the shared test environment for executor integration tests
@@ -196,6 +197,8 @@ func waitForAPIServerReady(config *rest.Config, timeout time.Duration) error {
 	healthURL := config.Host + "/healthz"
 	deadline := time.Now().Add(timeout)
 
+	var lastErr error
+	var lastStatus int
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodGet, healthURL, nil)
 		if err != nil {
@@ -204,7 +207,11 @@ func waitForAPIServerReady(config *rest.Config, timeout time.Duration) error {
 		req.Header.Set("Authorization", "Bearer "+config.BearerToken)
 
 		resp, err := client.Do(req)
-		if err == nil {
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = nil
+			lastStatus = resp.StatusCode
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil // API server is ready
@@ -214,5 +221,8 @@ func waitForAPIServerReady(config *rest.Config, timeout time.Duration) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	return fmt.Errorf("timeout waiting for API server to be ready")
+	if lastErr != nil {
+		return fmt.Errorf("timeout waiting for API server to be ready: last error: %w", lastErr)
+	}
+	return fmt.Errorf("timeout waiting for API server to be ready: last status %d", lastStatus)
 }

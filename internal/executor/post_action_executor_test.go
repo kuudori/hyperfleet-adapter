@@ -901,7 +901,7 @@ func TestBuildPostPayloads_WithResourceDiscoveryCELHelpers(t *testing.T) {
 	pae := testPAE()
 	execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
 
-	execCtx.Resources["manifestWork"] = map[string]*unstructured.Unstructured{
+	execCtx.Resources["bundle"] = map[string]*unstructured.Unstructured{
 		"clusterClaim": {
 			Object: map[string]interface{}{
 				"status": map[string]interface{}{
@@ -916,7 +916,7 @@ func TestBuildPostPayloads_WithResourceDiscoveryCELHelpers(t *testing.T) {
 			Name: "inspectPayload",
 			Build: map[string]interface{}{
 				"claimValue": map[string]interface{}{
-					"expression": `dig(resources, "manifestWork.clusterClaim.status.value")`,
+					"expression": `dig(resources, "bundle.clusterClaim.status.value")`,
 				},
 				"resourceSnapshot": map[string]interface{}{
 					"expression": `toJson(resources)`,
@@ -934,6 +934,6 @@ func TestBuildPostPayloads_WithResourceDiscoveryCELHelpers(t *testing.T) {
 	var built map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(rawPayload), &built))
 	assert.Equal(t, "prod", built["claimValue"])
-	assert.Contains(t, built["resourceSnapshot"], `"manifestWork"`)
+	assert.Contains(t, built["resourceSnapshot"], `"bundle"`)
 	assert.Contains(t, built["resourceSnapshot"], `"clusterClaim"`)
 }

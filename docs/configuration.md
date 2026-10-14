@@ -122,7 +122,7 @@ declare a `type: remote` transport.
 
 ### Task schema version
 
-Every v2 task declares the YAML string `schema_version: "2.0"`. For example:
+Every task declares the YAML string `schema_version: "2.0"`. For example:
 
 ```yaml
 schema_version: "2.0"
@@ -136,55 +136,13 @@ resources:
     discovery: {by_name: example}
 ```
 
-An unversioned task that names a transport is rejected. During the transition,
-unversioned legacy tasks still load; other version strings and non-string YAML
-values are rejected.
+The loader rejects a task without `schema_version`:
 
-### Legacy Maestro client (`clients.maestro`)
-
-**Transitional.** These settings remain available for unversioned legacy tasks until
-the Maestro cutover, and HYPERFLEET-1504 removes them. Do not combine `clients.maestro`
-with named `transports`. V2 tasks use the named `kubernetes` and `remote` transports
-described above.
-
-```yaml
-clients:
-  maestro:
-    grpc_server_address: "maestro-grpc.maestro.svc.cluster.local:8090"
-    http_server_address: "https://maestro-api.maestro.svc.cluster.local"
-    source_id: "hyperfleet-adapter"
-    client_id: "hyperfleet-adapter-client"
-    auth:
-      type: "tls"
-      tls_config:
-        ca_file: "/etc/maestro/certs/grpc/ca.crt"
-        cert_file: "/etc/maestro/certs/grpc/client.crt"
-        key_file: "/etc/maestro/certs/grpc/client.key"
-        http_ca_file: "/etc/maestro/certs/https/ca.crt"
-    timeout: "30s"
-    server_healthiness_timeout: "20s"
-    retry_attempts: 3
-    keepalive:
-      time: "30s"
-      timeout: "10s"
-    insecure: false
+```text
+schema_version is required; use "2.0". v1 task configs are not supported; see https://github.com/openshift-hyperfleet/hyperfleet-adapter/blob/main/docs/configuration.md#v2-concepts-changed
 ```
 
-- `grpc_server_address` (string): Maestro gRPC endpoint.
-- `http_server_address` (string): Maestro HTTP API endpoint.
-- `source_id` (string): CloudEvents source identifier.
-- `client_id` (string): Maestro client identifier.
-- `auth.type` (string): Authentication type (`tls` or `none`).
-- `auth.tls_config.ca_file` (string): gRPC CA certificate path.
-- `auth.tls_config.cert_file` (string): gRPC client certificate path.
-- `auth.tls_config.key_file` (string): gRPC client key path.
-- `auth.tls_config.http_ca_file` (string, optional): CA certificate for the HTTP API. Falls back to `ca_file` if unset.
-- `timeout` (duration string): Request timeout (e.g. `30s`).
-- `server_healthiness_timeout` (duration string, optional): Timeout for the server healthiness check (e.g. `20s`).
-- `retry_attempts` (int): Number of retry attempts.
-- `keepalive.time` (duration string): gRPC keepalive ping interval.
-- `keepalive.timeout` (duration string): gRPC keepalive ping timeout.
-- `insecure` (bool): Allow insecure connection.
+Other version strings and non-string YAML values are also rejected.
 
 ### HyperFleet API client (`clients.hyperfleet_api`)
 
@@ -299,24 +257,6 @@ URL can be set from the environment (see [Environment variables](#environment-va
 - `--log-format` -> `log.format`
 - `--log-output` -> `log.output`
 
-**Legacy Maestro** (transitional; HYPERFLEET-1504 removes these)
-
-- `--maestro-grpc-server-address` -> `clients.maestro.grpc_server_address`
-- `--maestro-http-server-address` -> `clients.maestro.http_server_address`
-- `--maestro-source-id` -> `clients.maestro.source_id`
-- `--maestro-client-id` -> `clients.maestro.client_id`
-- `--maestro-auth-type` -> `clients.maestro.auth.type`
-- `--maestro-ca-file` -> `clients.maestro.auth.tls_config.ca_file`
-- `--maestro-cert-file` -> `clients.maestro.auth.tls_config.cert_file`
-- `--maestro-key-file` -> `clients.maestro.auth.tls_config.key_file`
-- `--maestro-http-ca-file` -> `clients.maestro.auth.tls_config.http_ca_file`
-- `--maestro-timeout` -> `clients.maestro.timeout`
-- `--maestro-server-healthiness-timeout` -> `clients.maestro.server_healthiness_timeout`
-- `--maestro-retry-attempts` -> `clients.maestro.retry_attempts`
-- `--maestro-keepalive-time` -> `clients.maestro.keepalive.time`
-- `--maestro-keepalive-timeout` -> `clients.maestro.keepalive.timeout`
-- `--maestro-insecure` -> `clients.maestro.insecure`
-
 **HyperFleet API**
 
 - `--hyperfleet-api-base-url` -> `clients.hyperfleet_api.base_url`
@@ -350,24 +290,6 @@ Task `schema_version` has no environment override.
 - `LOG_LEVEL` -> `log.level`
 - `LOG_FORMAT` -> `log.format`
 - `LOG_OUTPUT` -> `log.output`
-
-**Legacy Maestro** (transitional; HYPERFLEET-1504 removes these)
-
-- `HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS` -> `clients.maestro.grpc_server_address`
-- `HYPERFLEET_MAESTRO_HTTP_SERVER_ADDRESS` -> `clients.maestro.http_server_address`
-- `HYPERFLEET_MAESTRO_SOURCE_ID` -> `clients.maestro.source_id`
-- `HYPERFLEET_MAESTRO_CLIENT_ID` -> `clients.maestro.client_id`
-- `HYPERFLEET_MAESTRO_AUTH_TYPE` -> `clients.maestro.auth.type`
-- `HYPERFLEET_MAESTRO_CA_FILE` -> `clients.maestro.auth.tls_config.ca_file`
-- `HYPERFLEET_MAESTRO_CERT_FILE` -> `clients.maestro.auth.tls_config.cert_file`
-- `HYPERFLEET_MAESTRO_KEY_FILE` -> `clients.maestro.auth.tls_config.key_file`
-- `HYPERFLEET_MAESTRO_HTTP_CA_FILE` -> `clients.maestro.auth.tls_config.http_ca_file`
-- `HYPERFLEET_MAESTRO_TIMEOUT` -> `clients.maestro.timeout`
-- `HYPERFLEET_MAESTRO_SERVER_HEALTHINESS_TIMEOUT` -> `clients.maestro.server_healthiness_timeout`
-- `HYPERFLEET_MAESTRO_RETRY_ATTEMPTS` -> `clients.maestro.retry_attempts`
-- `HYPERFLEET_MAESTRO_KEEPALIVE_TIME` -> `clients.maestro.keepalive.time`
-- `HYPERFLEET_MAESTRO_KEEPALIVE_TIMEOUT` -> `clients.maestro.keepalive.timeout`
-- `HYPERFLEET_MAESTRO_INSECURE` -> `clients.maestro.insecure`
 
 **HyperFleet API**
 
@@ -411,13 +333,12 @@ Legacy broker environment variables (used only if the prefixed version is unset)
 
 ## V2 concepts changed
 
-A v2 task declares `schema_version: "2.0"`. The loader rejects these v1 shapes:
+Every task declares `schema_version: "2.0"`. The loader rejects these v1 shapes:
 
 | v1 shape | v2 replacement |
 | --- | --- |
 | `transport: {client: ...}` object on a resource | `transport: <name>` naming a `transports` entry, or no `transport` for local Kubernetes |
 | `nested_discoveries` on a resource | One resource per object, each with its own `discovery` |
-| `clients.maestro` next to `transports` | `stores` and `transports` in the deployment config |
 
 The authoring guide lists every removed key and its replacement in
 [Appendix E: Concepts changed in v2](adapter-authoring-guide.md#appendix-e-concepts-changed-in-v2).

@@ -5,7 +5,6 @@ package logctx
 
 import (
 	"context"
-	"log/slog"
 
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"go.opentelemetry.io/otel/trace"
@@ -13,15 +12,12 @@ import (
 
 // Adapter-specific typed context keys.
 var (
-	EventIDKey            = hfl.NewKey[string]("event_id")
-	K8sKindKey            = hfl.NewKey[string]("k8s_kind")
-	K8sNameKey            = hfl.NewKey[string]("k8s_name")
-	K8sNamespaceKey       = hfl.NewKey[string]("k8s_namespace")
-	ObservedGenerationKey = hfl.NewKey[int64]("observed_generation")
-	MaestroConsumerKey    = hfl.NewKey[string]("maestro_consumer")
-	ManifestWorkKey       = hfl.NewKey[string]("manifestwork")
-	OwnerResourceTypeKey  = hfl.NewKey[string]("owner_resource_type")
-	OwnerResourceIDKey    = hfl.NewKey[string]("owner_resource_id")
+	EventIDKey           = hfl.NewKey[string]("event_id")
+	K8sKindKey           = hfl.NewKey[string]("k8s_kind")
+	K8sNameKey           = hfl.NewKey[string]("k8s_name")
+	K8sNamespaceKey      = hfl.NewKey[string]("k8s_namespace")
+	OwnerResourceTypeKey = hfl.NewKey[string]("owner_resource_type")
+	OwnerResourceIDKey   = hfl.NewKey[string]("owner_resource_id")
 )
 
 // ContextFields returns the adapter-specific context fields to register with
@@ -32,9 +28,6 @@ func ContextFields() []hfl.ContextField {
 		hfl.StringField(K8sKindKey),
 		hfl.StringField(K8sNameKey),
 		hfl.StringField(K8sNamespaceKey),
-		hfl.FieldFromKey(ObservedGenerationKey, slog.Int64Value),
-		hfl.StringField(MaestroConsumerKey),
-		hfl.StringField(ManifestWorkKey),
 		hfl.StringField(OwnerResourceTypeKey),
 		hfl.StringField(OwnerResourceIDKey),
 	}

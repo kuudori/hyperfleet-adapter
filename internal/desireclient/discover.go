@@ -16,8 +16,7 @@ import (
 // DiscoverResources implements transportclient.TransportClient. It lists
 // read desires in the target partition and filters their mirrored objects by
 // GVK, namespace, and discovery criteria. desire.Identity carries no labels, so
-// selector matching must scan client-side, the same shape as
-// maestroclient.DiscoverResources scanning ManifestWorks.
+// selector matching must scan client-side.
 //
 // Selector results come from read mirrors only. An unsynced mirror in scope has
 // nothing to match yet, so an empty selector result is reported as

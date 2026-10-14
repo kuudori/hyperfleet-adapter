@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -132,6 +133,11 @@ func TestLoadRemoteTransportRejectsInvalidRoutingWithSemanticValidationSkipped(t
 			name: "unknown name", adapter: remoteAdapterYAML,
 			task: replaceTask("Remote-Primary", "missing"),
 			want: `resources[0].transport references unknown transport "missing"; available: [kubernetes remote-primary]`,
+		},
+		{
+			name: "removed maestro transport", adapter: remoteAdapterYAML,
+			task: replaceTask("Remote-Primary", "maestro"),
+			want: `resources[0].transport references unknown transport "maestro"; available: [kubernetes remote-primary]`,
 		},
 		{
 			name: "blank name", adapter: remoteAdapterYAML,
@@ -328,6 +334,31 @@ func TestValidateConfigRoutingRejectsRemoteDeleteWithoutByName(t *testing.T) {
 				}},
 			})
 			require.ErrorContains(t, err, "resources[0].lifecycle.delete: "+ErrMsgDesireSelectorDeleteUnsupported)
+		})
+	}
+}
+
+func TestResourceTransportYAMLRoundTrip(t *testing.T) {
+	var resource struct {
+		Transport *ResourceTransport `yaml:"transport"`
+	}
+	input := "transport: remote-primary\n"
+	require.NoError(t, yaml.Unmarshal([]byte(input), &resource))
+	assert.Equal(t, NamedTransport("remote-primary"), resource.Transport)
+	out, err := yaml.Marshal(resource)
+	require.NoError(t, err)
+	assert.Equal(t, input, string(out))
+
+	for name, input := range map[string]string{
+		"mapping":  "transport: {client: kubernetes}\n",
+		"sequence": "transport: [a]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var resource struct {
+				Transport *ResourceTransport `yaml:"transport"`
+			}
+			require.ErrorContains(t, yaml.Unmarshal([]byte(input), &resource),
+				"line 1: transport must be a transport name")
 		})
 	}
 }

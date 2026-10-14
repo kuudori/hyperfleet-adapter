@@ -12,7 +12,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
@@ -189,7 +188,7 @@ func (re *ResourceExecutor) executeResource(
 			"resource", resource.Name)
 	}
 
-	// Step 3: Render the manifest/manifestWork to bytes
+	// Step 3: Render the manifest to bytes
 	slog.DebugContext(ctx, "rendering manifest template", "resource", resource.Name)
 	renderedBytes, err := re.renderToBytes(resource, execCtx)
 	if err != nil {
@@ -670,25 +669,9 @@ func (re *ResourceExecutor) resolveTransport(
 	if re.config != nil {
 		definition, configured = configloader.TransportDefinitionByName(re.config.Transports, transportName)
 	}
-	// TODO(HYPERFLEET-1504): remove the maestro route with the Maestro transport.
-	if transportName == configloader.TransportClientMaestro && configured {
-		return nil, nil, fmt.Errorf("transport name %q is reserved for the built-in maestro transport", transportName)
-	}
 	client, err := re.registry.Get(transportName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get transport client %q: %w", transportName, err)
-	}
-
-	if transportName == configloader.TransportClientMaestro {
-		if resource.Transport == nil || resource.Transport.Maestro == nil {
-			return nil, nil, fmt.Errorf("maestro transport config is required")
-		}
-		targetCluster, templateErr := utils.RenderTemplate(
-			resource.Transport.Maestro.TargetCluster, execCtx.templateVariables())
-		if templateErr != nil {
-			return nil, nil, fmt.Errorf("render maestro target cluster: %w", templateErr)
-		}
-		return client, &maestroclient.TransportContext{ConsumerName: targetCluster}, nil
 	}
 
 	if !configured || definition.Type != configloader.TransportTypeRemote {
@@ -722,9 +705,8 @@ func (re *ResourceExecutor) resolveTransport(
 // current execution context and records the result for observability.
 //
 // The evaluation uses the same CEL context as post-actions: params + adapter metadata + resources.
-// A CEL evaluation error is surfaced (not swallowed) so the executor marks executionStatus=failed
-// and the operator sees Health=False. A common cause is a variable used in the expression that was
-// never captured in the precondition phase (e.g. a typo in a capture name).
+// A parse error fails the phase. An evaluation error, such as a missing field or an unknown
+// function, makes the expression read as false: the gate does not fire, and a warning is logged.
 func (re *ResourceExecutor) evaluateLifecycleWhen(
 	ctx context.Context,
 	resource configloader.Resource,
@@ -745,6 +727,11 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 			"(check that all variables are captured in preconditions): %w", kind, expression, err)
 	}
 
+	if celResult.HasError() {
+		slog.WarnContext(ctx, "resource lifecycle when failed to evaluate, treating it as false",
+			"resource", resource.Name, "kind", kind, "error", celResult.Error)
+	}
+
 	execCtx.AddCELEvaluation(PhaseResources, resource.Name+"/"+kind, expression, celResult.Matched)
 	slog.DebugContext(ctx, "resource lifecycle when evaluated",
 		"resource", resource.Name, "kind", kind, "expression", expression, "matched", celResult.Matched)
@@ -759,12 +746,11 @@ func (re *ResourceExecutor) evaluateLifecycleWhen(
 //   - If the resource is found: send delete request, then rediscover to check actual state:
 //   - Post-delete NotFound: resource is truly gone (no finalizers, instant K8s delete).
 //     Store nil — dependent resources can cascade in the same reconciliation.
-//   - Post-delete still present: finalizers are running, or Maestro deletion is async.
+//   - Post-delete still present: finalizers are running.
 //     Store the object — dependent resources wait for the next reconciliation.
 //
 // This allows same-reconciliation cascading for K8s resources without finalizers, while
-// correctly deferring to the next reconciliation for resources with finalizers or async
-// Maestro deletions.
+// correctly deferring to the next reconciliation for resources with finalizers.
 //
 // Transports that implement transportclient.DeletionLifecycle confirm deletion from their
 // own delete status instead; see executeDesireResourceDelete.
@@ -887,7 +873,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 	// Step 6: Re-discover the resource after deletion to determine its actual state.
 	// - If NotFound: resource is truly gone (no finalizers, or K8s Background delete was instant).
 	//   Store nil so dependent resources can cascade in the same reconciliation.
-	// - If still present (e.g., deletionTimestamp set, finalizers running, or Maestro async):
+	// - If still present (e.g., deletionTimestamp set, finalizers running):
 	//   Store the object so dependent resources wait for the next reconciliation.
 	postDeleteDiscovered, postDiscoverErr := re.discoverResource(ctx, resource, execCtx, transportClient, transportTarget)
 	postIsNotFound := postDiscoverErr != nil && apierrors.IsNotFound(postDiscoverErr)

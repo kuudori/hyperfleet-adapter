@@ -11,8 +11,8 @@ import (
 )
 
 // otherTransportContext stands in for a different transport's context type
-// (e.g. *maestroclient.TransportContext) to exercise the type-assertion branch
-// of resolveTransportContext without importing another transport package.
+// to exercise the type-assertion branch of resolveTransportContext without
+// importing another transport package.
 type otherTransportContext struct{}
 
 func TestResolveTransportContext_Invalid(t *testing.T) {

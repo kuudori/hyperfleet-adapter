@@ -26,7 +26,7 @@ The adapter requires a running message broker and HyperFleet API. The [hyperflee
 
 | Command | What it deploys |
 |---------|-----------------|
-| `make local-up-gcp` | GKE cluster + images + API + adapters + Maestro |
+| `make local-up-gcp` | GKE cluster + images + API + adapters + applier + Redis desire store |
 | `make install-hyperfleet` | Everything on an existing K8s cluster using RabbitMQ (no GCP needed) |
 | `make install-adapters` | Install sample Hyperfleet Adapters |
 | `make status` | Verify the deployment |

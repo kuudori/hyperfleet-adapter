@@ -37,7 +37,7 @@ Dry run processes one event with mock clients and needs no broker, cluster or AP
 
 Templates live in `configs/`, and working examples in `charts/examples/`. `docs/configuration.md` is the reference for every field, flag and env var.
 
-Every example and template task in this repo declares `schema_version: "2.0"` (some legacy Go test fixtures do not). A v2 resource may name the built-in `kubernetes` transport or a transport declared in deployment config (for example, `remote-primary` with `type: remote`); without `transport`, it uses the local Kubernetes client. Unversioned legacy tasks still load until HYPERFLEET-1504 removes them. Write new configs and fixtures as v2.
+Every task declares `schema_version: "2.0"`, and the loader rejects a task without it. A resource may name the built-in `kubernetes` transport or a transport declared in deployment config (for example, `remote-primary` with `type: remote`); without `transport`, it uses the local Kubernetes client.
 
 Every flag except `--dry-run-*` has an env var equivalent. When you add a deployment config override, update `viperKeyMappings` and `cliFlags` in `internal/configloader/viper_loader.go`, register the flag in `cmd/adapter/main.go` with `Env: <VAR>` in its help text, and document both in `docs/configuration.md`.
 
@@ -60,10 +60,10 @@ These return `*ServiceError`, not `error`. Use `.AsError()` to convert.
 ## Packages
 
 - `internal/executor/`: the event pipeline (params → preconditions → resources → post-actions).
-- `internal/configloader/`: loads, merges and validates both configs, including CEL compilation at load time.
+- `internal/configloader/`: loads, merges and validates both configs, including a CEL syntax check at load time. Unknown functions and type errors surface only at runtime.
 - `internal/criteria/`: the CEL evaluator and the custom functions.
 - `internal/transportclient/`: the apply and discovery interface shared by every backend. `internal/transportregistry/` builds the named transport clients from deployment config.
-- Backends: `internal/k8sclient/` (local), `internal/desireclient/` (the `remote` transport) and `internal/maestroclient/` (legacy, removed by HYPERFLEET-1504).
+- Backends: `internal/k8sclient/` (local) and `internal/desireclient/` (the `remote` transport).
 - `internal/dryrun/`: the mock API client, recording transport and trace output behind `--dry-run-*`.
 - `internal/logctx/`: adapter-specific log context keys and the stack-trace filter (see the logging conventions above).
 

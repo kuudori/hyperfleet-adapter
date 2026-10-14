@@ -12,7 +12,7 @@ import (
 // a real Kubernetes cluster or DryRun mode.
 //
 // K8sClient extends TransportClient with K8s-specific operations.
-// Both k8sclient.Client and maestroclient.Client implement TransportClient,
+// Both k8sclient.Client and desireclient.Client implement TransportClient,
 // allowing the executor to use either as the transport backend.
 type K8sClient interface {
 	// Embed TransportClient interface

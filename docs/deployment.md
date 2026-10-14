@@ -26,7 +26,7 @@ There are three ways to set deployment config fields, in decreasing order of con
 |-----------|------------|---------|
 | **`adapterConfig.yaml` blob** | Fields with no env var support | Provide the full adapter config as inline YAML |
 | **Dedicated Helm value** | Fields the chart exposes directly | `adapterConfig.log.level: debug` |
-| **`env` list** | Fields with env var support but no dedicated Helm value | `env: [{name: HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS, value: "..."}]` |
+| **`env` list** | Fields with env var support but no dedicated Helm value | `env: [{name: HYPERFLEET_KUBERNETES_QPS, value: "..."}]` |
 
 The [Configuration Reference](configuration.md) lists every field with its env var and CLI flag equivalents.
 
@@ -34,7 +34,7 @@ The [Configuration Reference](configuration.md) lists every field with its env v
 
 ## Adapter Config (yaml blob)
 
-The adapter config defines the adapter identity, logging, and client connections (Maestro, HyperFleet API, Kubernetes). It can be sourced in three ways:
+The adapter config defines the adapter identity, logging, and client connections (HyperFleet API, Kubernetes). It can be sourced in three ways:
 
 | Option | Helm value | Description |
 |--------|-----------|-------------|
@@ -97,9 +97,9 @@ Many adapter config fields have environment variable overrides but no dedicated 
 
 ```yaml
 env:
-  - name: HYPERFLEET_MAESTRO_GRPC_SERVER_ADDRESS
-    value: "maestro-grpc.maestro.svc.cluster.local:8090"
-  - name: HYPERFLEET_MAESTRO_TIMEOUT
+  - name: HYPERFLEET_KUBERNETES_QPS
+    value: "50"
+  - name: HYPERFLEET_API_TIMEOUT
     value: "30s"
   - name: LOG_FORMAT
     value: "text"
@@ -270,7 +270,7 @@ broker:
     routingKey: adapter.events # Optional
 ```
 
-### Full (inline adapter config, external task config, Maestro, Pub/Sub, tracing)
+### Full (inline adapter config, external task config, Pub/Sub, tracing)
 
 ```yaml
 image:
@@ -291,19 +291,6 @@ adapterConfig:
         timeout: 10s
         retry_attempts: 3
         retry_backoff: exponential
-      maestro:
-        grpc_server_address: "maestro-grpc.maestro.svc.cluster.local:8090"
-        source_id: "my-adapter"
-        auth:
-          type: tls
-          tls_config:
-            ca_file: /etc/maestro/certs/grpc/ca.crt
-            cert_file: /etc/maestro/certs/grpc/client.crt
-            key_file: /etc/maestro/certs/grpc/client.key
-        timeout: 30s
-        keepalive:
-          time: 30s
-          timeout: 10s
       broker:
         subscription_id: my-adapter-sub
         topic: cluster-events
@@ -316,6 +303,7 @@ adapterTaskConfig:
   create: true
   external:
     task-config: |
+      schema_version: "2.0"
       params:
         - name: "resourceId"
           source: "event.id"
@@ -349,15 +337,6 @@ rbac:
   resources:
     - namespaces
     - configmaps
-
-extraVolumes:
-  - name: maestro-certs
-    secret:
-      secretName: maestro-client-certs
-extraVolumeMounts:
-  - name: maestro-certs
-    mountPath: /etc/maestro/certs/grpc
-    readOnly: true
 ```
 
 See `charts/examples/kubernetes/` for additional working examples.

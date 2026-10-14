@@ -268,7 +268,7 @@ func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiCl
 	}
 
 	// Templates and CEL read a redacted config, so rendered manifests and logs do
-	// not show sensitive values such as TLS file paths.
+	// not show sensitive values such as store credentials.
 	redactedMap, err := configToMap(config.Redacted())
 	if err != nil {
 		return NewExecutorError(PhaseParamExtraction, "config", "failed to marshal redacted config", err)
@@ -276,7 +276,7 @@ func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiCl
 	execCtx.configVariable = redactedMap
 
 	// config.* param sources resolve against the real (unredacted) config so that
-	// sensitive fields like cert paths can still be explicitly extracted when needed.
+	// sensitive fields like store URLs can still be explicitly extracted when needed.
 	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient)
 }
 

@@ -2,7 +2,7 @@
 
 > **Audience:** Adapter authors writing task configurations for HyperFleet resource lifecycle events.
 
-> **Version:** This guide covers task configs that declare `schema_version: "2.0"`. If you maintain an unversioned (v1) task config, use the [v0.3.1 guide](https://github.com/openshift-hyperfleet/hyperfleet-adapter/blob/v0.3.1/docs/adapter-authoring-guide.md). [Appendix E](#appendix-e-concepts-changed-in-v2) summarizes what changed in v2. Some newer load-time rules apply to unversioned tasks as well and are not in the v0.3.1 guide: reserved param names and literal `apiVersion`/`kind` (see Appendix E).
+> **Version:** This guide covers task configs that declare `schema_version: "2.0"`, which every task requires. If you maintain a v1 task config, use the [v0.3.1 guide](https://github.com/openshift-hyperfleet/hyperfleet-adapter/blob/v0.3.1/docs/adapter-authoring-guide.md). [Appendix E](#appendix-e-concepts-changed-in-v2) summarizes what changed in v2.
 
 ---
 
@@ -128,7 +128,7 @@ Three languages appear in adapter configs, each for a different purpose:
 ### File skeleton
 
 ```yaml
-schema_version: "2.0"  # Declares a v2 task. Required when a resource names a transport
+schema_version: "2.0"  # Required on every task
 params: []            # Phase 1: Extract variables from event and environment
 preconditions: []     # Phase 2: Evaluate conditions against extracted params
 resources: []         # Phase 3: Create/update Kubernetes resources
@@ -655,7 +655,7 @@ Always label your resources for discovery and traceability:
 
 ### Transports
 
-A resource's `transport` selects how its manifest is delivered and read back. The task config only names a transport. The transport itself is declared in the deployment config, and naming one requires `schema_version: "2.0"` in the task config.
+A resource's `transport` selects how its manifest is delivered and read back. The task config only names a transport. The transport itself is declared in the deployment config. Every task config declares `schema_version: "2.0"`.
 
 | Transport | Declared | Delivery |
 |-----------|----------|----------|
@@ -1681,7 +1681,7 @@ post:
         body: "{{ .statusPayload }}"
 ```
 
-> For a complete working example of conditional payloads and post-actions, see the `adapter1` configuration in [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra/tree/main/helmfile/configs/base/adapters/adapter1/adapter-task-config.yaml). It is still an unversioned (v1) task: its `transport: {client: kubernetes}` blocks must be removed and `schema_version: "2.0"` added before it loads as v2 (see [Appendix E](#appendix-e-concepts-changed-in-v2)).
+> For a complete working example of conditional payloads and post-actions, see the `adapter1` configuration in [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra/tree/main/helmfile/configs/base/adapters/adapter1/adapter-task-config.yaml).
 
 ### Building payloads
 
@@ -2146,7 +2146,7 @@ The framework validates your config at load time in two passes:
 
 **Routing validation** — checked always, even when semantic validation is skipped:
 
-- `schema_version` is `"2.0"` when a resource names a transport
+- `schema_version` is `"2.0"`
 - Each resource names `kubernetes` or a transport declared in the deployment config
 - A remote resource has a `resource_plurals` entry for its kind, uses `discovery.by_name` when it has `lifecycle.delete`, and builds `target_cluster` from defined variables
 
@@ -2606,7 +2606,7 @@ No other operator is accepted. Express negated existence and inclusive compariso
 | `resources[N].lifecycle.delete: selector-based lifecycle deletion is unsupported for remote transport; use discovery.by_name` | A remote resource uses `by_selectors` with `lifecycle.delete` | Use `discovery.by_name` |
 | `resources[N].transport "<name>" target_cluster uses undefined variable "<var>"` | The transport's `target_cluster` template names a variable the task does not define | Define the param, or fix the template |
 | `resources[N].transport references unknown transport "<name>"; available: [...]` | The transport is not declared | Declare it under `transports` in the deployment config, or fix the name |
-| `resources[N].transport: schema_version is required for named transport references; use "2.0"` | The task names a transport without `schema_version` | Add `schema_version: "2.0"` to the task config |
+| `schema_version is required; use "2.0". v1 task configs are not supported` | The task has no `schema_version` | Add `schema_version: "2.0"` to the task config |
 | `resources[N].recreate_on_change is unsupported for remote transport` | A remote resource sets `recreate_on_change` | Remove it. It works only on the local transport |
 | `resources[N].discovery is required` | A resource has no `discovery` | Add `by_name` or `by_selectors` |
 | `"<name>" is a reserved variable name` | A param or capture uses `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rename it |
@@ -2626,14 +2626,14 @@ This is a summary of what changed from the v1 task config, not a migration proce
 | Removed or changed in v1 | Replacement in v2 |
 |---|---|
 | `transport: {client: kubernetes}` | Omit `transport`, or write `transport: kubernetes` |
-| `transport: {client: maestro, maestro: {target_cluster: ...}}` | `transport: <name>`, with a `transports.<name>` entry of `type: remote` in the deployment config. The loader rejects the object form of `transport` in a v2 task |
-| `clients.maestro` (and the `--maestro-*` flags and `HYPERFLEET_MAESTRO_*` variables) | `stores` and `transports` in the deployment config. The loader rejects `clients.maestro` when `transports` is set |
-| `nested_discoveries` | One resource per object, each with its own `discovery`. The loader rejects `nested_discoveries` in a v2 task |
+| `transport: {client: maestro, maestro: {target_cluster: ...}}` | `transport: <name>`, with a `transports.<name>` entry of `type: remote` in the deployment config. Removed; the loader rejects it |
+| `clients.maestro` (and the `--maestro-*` flags and `HYPERFLEET_MAESTRO_*` variables) | `stores` and `transports` in the deployment config. Removed; the loader rejects `clients.maestro`, the CLI rejects the `--maestro-*` flags, and the adapter ignores `HYPERFLEET_MAESTRO_*` variables |
+| `nested_discoveries` | One resource per object, each with its own `discovery`. Removed; the loader rejects it |
 | Fields copied onto nested results (`statusFeedback`, promoted keys) | The object's own `status`, read from `resources.<name>` |
-| `statusFeedbackValue()` | Read `resources.<name>.status...` directly. The function is still registered for v1 configs, but nothing in v2 produces `statusFeedback` |
+| `statusFeedbackValue()` | Read `resources.<name>.status...` directly. Removed. A task that still calls it loads, but the call fails when it is evaluated (`no such overload`). A precondition or a `lifecycle.*.when` gate then reads as false, so `lifecycle.delete.when` never deletes. A payload build expression falls back to its `default`. A param is dropped, or fails the event if it is `required`. A payload or `post_action` `when` fails the event |
 | `!resources.?X.hasValue()` as an absence test | `resource_states.?X.orValue("") == "confirmed_deleted"`. `hasValue()` is also `true` for the placeholder of an `unsynced` remote resource |
 | `resources.?X.hasValue()` or `has(resources.X)` as a presence test | `resource_states.?X.orValue("") == "present"`. Both forms are `true` for the placeholder of an `unsynced` remote resource; on a local transport they keep working |
-| No `schema_version` | `schema_version: "2.0"`. An unversioned task that names a transport is rejected |
-| Params named `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rejected at load time, in unversioned tasks too. Rename the param |
-| Templated `apiVersion` or `kind` in a manifest | Write literal values. The loader reads them without rendering and rejects a template (`apiVersion must be a literal value` or `kind must be a literal value`), in unversioned tasks too |
+| No `schema_version` | `schema_version: "2.0"`. The loader rejects a task without it |
+| Params named `adapter`, `config`, `env`, `event`, `resources` or `resource_states` | Rejected at load time. Rename the param |
+| Templated `apiVersion` or `kind` in a manifest | Write literal values. The loader reads them without rendering and rejects a template (`apiVersion must be a literal value` or `kind must be a literal value`) |
 | One manifest bundling several resources, applied atomically | One resource per object, delivered individually. Use list order and `lifecycle.*.when` gates; see [Ordering resources](#ordering-resources) |

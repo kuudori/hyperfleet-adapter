@@ -1,5 +1,5 @@
 // Package transportclient provides a unified interface for applying Kubernetes resources
-// across different backends (direct K8s API, Maestro/OCM ManifestWork, etc.).
+// across different backends (direct K8s API, desire store for an applier).
 package transportclient
 
 import (
@@ -17,7 +17,7 @@ type ApplyOptions struct {
 type DeleteOptions struct {
 	// PropagationPolicy is the Kubernetes deletion propagation policy.
 	// Valid values: "Background" (default), "Foreground", "Orphan".
-	// Ignored for Maestro transport — ManifestWork handles its own cleanup semantics.
+	// Ignored for remote transport — the applier owns deletion semantics on the target cluster.
 	PropagationPolicy string
 }
 
@@ -33,7 +33,6 @@ type ApplyResult struct {
 // TransportContext carries per-request routing information for the transport backend.
 // Each transport client defines its own concrete context type and type-asserts:
 //   - k8sclient: ignores it (nil)
-//   - maestroclient: expects *maestroclient.TransportContext with ConsumerName
 //   - desireclient: expects *desireclient.TransportContext with ManagementCluster and Resource
 //
 // This is typed as `any` to allow each backend to define its own context shape.

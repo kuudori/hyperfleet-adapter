@@ -1,11 +1,44 @@
 package executor
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"testing"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExtractConfigParams_OptionalParamFailureIsLogged(t *testing.T) {
+	prev := slog.Default()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+		Params: []configloader.Parameter{
+			// The expression parses, but evaluating an undeclared function fails.
+			{Name: "dropped", Source: configloader.ExpressionSource(`noSuchFunction("x")`)},
+			{Name: "defaulted", Source: configloader.ExpressionSource(`noSuchFunction("y")`), Default: "fallback"},
+		},
+	}
+	execCtx := NewExecutionContext(t.Context(), map[string]interface{}{"id": "abc"}, config)
+	configMap, err := configToMap(config)
+	require.NoError(t, err)
+
+	err = extractConfigParams(context.Background(), config, execCtx, configMap, nil)
+
+	require.NoError(t, err, "a failing optional param must not fail extraction")
+	assert.NotContains(t, execCtx.Params, "dropped")
+	assert.Equal(t, "fallback", execCtx.Params["defaulted"])
+	logs := buf.String()
+	assert.Contains(t, logs, `msg="optional parameter not extracted" param=dropped default_applied=false`)
+	assert.Contains(t, logs, `msg="optional parameter not extracted" param=defaulted default_applied=true`)
+	assert.Contains(t, logs, "noSuchFunction")
+}
 
 func TestConvertParamType(t *testing.T) {
 	tests := []struct {

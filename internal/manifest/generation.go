@@ -4,10 +4,9 @@
 // This package handles:
 //   - Manifest validation (apiVersion, kind, name, generation annotation)
 //   - Generation annotation extraction and comparison
-//   - ManifestWork validation for OCM
 //   - Discovery interface for finding resources/manifests
 //
-// Used by both k8sclient (Kubernetes resources) and maestroclient (ManifestWork).
+// Used by the executor and the transport backends (k8sclient, desireclient).
 package manifest
 
 import (
@@ -20,7 +19,6 @@ import (
 	apperrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	workv1 "open-cluster-management.io/api/work/v1"
 )
 
 // Operation represents the type of operation to perform on a resource
@@ -60,8 +58,8 @@ type ApplyDecision struct {
 //   - If generations match: Skip (no changes needed)
 //   - If generations differ: Update (apply changes)
 //
-// This function encapsulates the generation comparison logic used by both
-// resource_executor (for k8s resources) and maestroclient (for ManifestWorks).
+// This function encapsulates the generation comparison logic used by the
+// transport backends when they decide how to apply a resource.
 func CompareGenerations(newGen, existingGen int64, exists bool) ApplyDecision {
 	if !exists {
 		return ApplyDecision{
@@ -94,7 +92,6 @@ func CompareGenerations(newGen, existingGen int64, exists bool) ApplyDecision {
 //
 // This works with any Kubernetes resource that has ObjectMeta, including:
 //   - Unstructured objects (via obj.GetAnnotations())
-//   - ManifestWork objects (via work.ObjectMeta or work.Annotations)
 //   - Any typed Kubernetes resource (via resource.ObjectMeta)
 func GetGeneration(meta metav1.ObjectMeta) int64 {
 	if meta.Annotations == nil {
@@ -170,40 +167,6 @@ func ValidateGeneration(meta metav1.ObjectMeta) error {
 
 	if gen <= 0 {
 		return apperrors.Validation("%s annotation must be > 0, got %d", constants.AnnotationGeneration, gen).AsError()
-	}
-
-	return nil
-}
-
-// ValidateManifestWorkGeneration validates that the generation annotation exists on both:
-// 1. The ManifestWork metadata (required)
-// 2. All manifests within the ManifestWork workload (required)
-//
-// Returns error if any generation annotation is missing or invalid.
-// This ensures templates properly set generation annotations throughout the ManifestWork.
-func ValidateManifestWorkGeneration(work *workv1.ManifestWork) error {
-	if work == nil {
-		return apperrors.Validation("work cannot be nil").AsError()
-	}
-
-	// Validate ManifestWork-level generation (required)
-	if err := ValidateGeneration(work.ObjectMeta); err != nil {
-		return apperrors.Validation("ManifestWork %q: %v", work.Name, err).AsError()
-	}
-
-	// Validate each manifest has generation annotation (required)
-	for i, m := range work.Spec.Workload.Manifests {
-		obj := &unstructured.Unstructured{}
-		if err := obj.UnmarshalJSON(m.Raw); err != nil {
-			return apperrors.Validation("ManifestWork %q manifest[%d]: failed to unmarshal: %v", work.Name, i, err).AsError()
-		}
-
-		// Validate generation annotation exists
-		if err := ValidateGenerationFromUnstructured(obj); err != nil {
-			kind := obj.GetKind()
-			name := obj.GetName()
-			return apperrors.Validation("ManifestWork %q manifest[%d] %s/%s: %v", work.Name, i, kind, name, err).AsError()
-		}
 	}
 
 	return nil
@@ -291,8 +254,7 @@ func GetLatestGenerationFromList(list *unstructured.UnstructuredList) *unstructu
 // =============================================================================
 
 // Discovery defines the interface for resource/manifest discovery configuration.
-// This interface is used by both k8sclient (for K8s resources)
-// and maestroclient (for ManifestWork manifests).
+// This interface is used by the transport backends (k8sclient, desireclient).
 type Discovery interface {
 	// GetNamespace returns the namespace to search in.
 	// Empty string means cluster-scoped or all namespaces.
@@ -312,7 +274,7 @@ type Discovery interface {
 }
 
 // DiscoveryConfig is the default implementation of the Discovery interface.
-// Used by both k8sclient and maestroclient for consistent discovery configuration.
+// The executor builds it and passes it to the transport backends.
 type DiscoveryConfig struct {
 	// Namespace to search in (empty for cluster-scoped or all namespaces)
 	Namespace string

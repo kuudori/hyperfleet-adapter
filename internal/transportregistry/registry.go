@@ -12,7 +12,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/maestroclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
@@ -74,21 +73,6 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 		}
 		runtime.Registry[configloader.TransportClientKubernetes] = kubernetesClient
 	}
-	// TODO(HYPERFLEET-1504): remove with the Maestro transport.
-	if configloader.UsesMaestro(config.Resources) {
-		if config.Clients.Maestro == nil {
-			closeAfterBuildFailure(ctx, runtime)
-			return nil, fmt.Errorf("build transport %q: clients.maestro is not configured",
-				configloader.TransportClientMaestro)
-		}
-		client, err := buildMaestro(ctx, config.Clients.Maestro)
-		if err != nil {
-			closeAfterBuildFailure(ctx, runtime)
-			return nil, fmt.Errorf("build transport %q: %w", configloader.TransportClientMaestro, err)
-		}
-		runtime.Registry[configloader.TransportClientMaestro] = client
-		runtime.closers = append(runtime.closers, client)
-	}
 
 	return runtime, nil
 }
@@ -128,10 +112,6 @@ func BuildRecording(
 	}
 	if needsImplicitKubernetes(config) {
 		runtime.Registry[configloader.TransportClientKubernetes] = client
-	}
-	// TODO(HYPERFLEET-1504): remove with the Maestro transport.
-	if configloader.UsesMaestro(config.Resources) {
-		runtime.Registry[configloader.TransportClientMaestro] = client
 	}
 	return runtime, nil
 }
@@ -226,44 +206,4 @@ func buildKubernetes(
 		QPS:            config.QPS,
 		Burst:          config.Burst,
 	})
-}
-
-// buildMaestro builds the Maestro client for resources that select it through
-// the legacy transport form.
-// TODO(HYPERFLEET-1504): remove with the Maestro transport.
-func buildMaestro(
-	ctx context.Context,
-	config *configloader.MaestroClientConfig,
-) (*maestroclient.Client, error) {
-	maestroConfig := &maestroclient.Config{
-		MaestroServerAddr: config.HTTPServerAddress,
-		GRPCServerAddr:    config.GRPCServerAddress,
-		SourceID:          config.SourceID,
-		Insecure:          config.Insecure,
-	}
-	if config.Timeout != "" {
-		timeout, err := time.ParseDuration(config.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("invalid maestro timeout %q: %w", config.Timeout, err)
-		}
-		maestroConfig.HTTPTimeout = timeout
-	}
-	if config.ServerHealthinessTimeout != "" {
-		timeout, err := time.ParseDuration(config.ServerHealthinessTimeout)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"invalid maestro serverHealthinessTimeout %q: %w",
-				config.ServerHealthinessTimeout,
-				err,
-			)
-		}
-		maestroConfig.ServerHealthinessTimeout = timeout
-	}
-	if config.Auth.TLSConfig != nil {
-		maestroConfig.CAFile = config.Auth.TLSConfig.CAFile
-		maestroConfig.ClientCertFile = config.Auth.TLSConfig.CertFile
-		maestroConfig.ClientKeyFile = config.Auth.TLSConfig.KeyFile
-		maestroConfig.HTTPCAFile = config.Auth.TLSConfig.HTTPCAFile
-	}
-	return maestroclient.NewMaestroClient(ctx, maestroConfig)
 }

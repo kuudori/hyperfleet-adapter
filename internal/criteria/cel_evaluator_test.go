@@ -308,7 +308,7 @@ func TestCELEvaluatorCustomFunctions(t *testing.T) {
 				},
 			},
 		},
-		"manifestWork": map[string]interface{}{
+		"bundle": map[string]interface{}{
 			"clusterClaim": map[string]interface{}{
 				"status": map[string]interface{}{
 					"value": "prod",
@@ -328,7 +328,7 @@ func TestCELEvaluatorCustomFunctions(t *testing.T) {
 		jsonText, ok := result.Value.(string)
 		require.True(t, ok)
 		assert.Contains(t, jsonText, `"managedCluster"`)
-		assert.Contains(t, jsonText, `"manifestWork"`)
+		assert.Contains(t, jsonText, `"bundle"`)
 	})
 
 	t.Run("dig safely reads nested fields", func(t *testing.T) {
@@ -401,7 +401,6 @@ func TestCELEvaluatorDomainFunctions(t *testing.T) {
 			},
 		},
 	})
-	ctx.Set("emptyFeedback", map[string]interface{}{})
 
 	evaluator, err := newCELEvaluator(ctx)
 	require.NoError(t, err)
@@ -485,25 +484,11 @@ func TestCELEvaluatorDomainFunctions(t *testing.T) {
 		assert.Equal(t, false, result.Value)
 	})
 
-	t.Run("statusFeedbackValue returns value for existing name", func(t *testing.T) {
+	t.Run("statusFeedbackValue is not registered", func(t *testing.T) {
 		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(statusFeedback, "phase")`)
 		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "Active", result.Value)
-	})
-
-	t.Run("statusFeedbackValue returns empty for missing name", func(t *testing.T) {
-		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(statusFeedback, "missing")`)
-		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "", result.Value)
-	})
-
-	t.Run("statusFeedbackValue returns empty for empty feedback", func(t *testing.T) {
-		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(emptyFeedback, "phase")`)
-		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "", result.Value)
+		require.True(t, result.HasError())
+		assert.ErrorContains(t, result.Error, "no such overload: statusFeedbackValue")
 	})
 
 	t.Run("triState returns True when first arg true", func(t *testing.T) {
@@ -567,17 +552,6 @@ func TestCELEvaluatorDomainFunctions_MalformedInputs(t *testing.T) {
 			"status": "True",
 		},
 	})
-	ctx.Set("malformedFeedback", map[string]interface{}{
-		"values": "not-a-list",
-	})
-	ctx.Set("feedbackBadEntry", map[string]interface{}{
-		"values": []interface{}{"not-a-map"},
-	})
-	ctx.Set("feedbackNoFieldValue", map[string]interface{}{
-		"values": []interface{}{
-			map[string]interface{}{"name": "phase"},
-		},
-	})
 
 	evaluator, err := newCELEvaluator(ctx)
 	require.NoError(t, err)
@@ -608,27 +582,6 @@ func TestCELEvaluatorDomainFunctions_MalformedInputs(t *testing.T) {
 		require.NoError(t, err)
 		require.False(t, result.HasError())
 		assert.Equal(t, false, result.Value)
-	})
-
-	t.Run("statusFeedbackValue returns empty for non-list values", func(t *testing.T) {
-		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(malformedFeedback, "phase")`)
-		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "", result.Value)
-	})
-
-	t.Run("statusFeedbackValue returns empty for non-map entry", func(t *testing.T) {
-		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(feedbackBadEntry, "phase")`)
-		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "", result.Value)
-	})
-
-	t.Run("statusFeedbackValue returns empty when fieldValue is missing", func(t *testing.T) {
-		result, err := evaluator.EvaluateSafe(`statusFeedbackValue(feedbackNoFieldValue, "phase")`)
-		require.NoError(t, err)
-		require.False(t, result.HasError())
-		assert.Equal(t, "", result.Value)
 	})
 }
 

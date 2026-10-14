@@ -11,8 +11,8 @@ import (
 // TransportClient defines the interface for applying Kubernetes resources.
 // This interface abstracts the underlying implementation, allowing resources
 // to be applied via different backends:
-//   - Direct Kubernetes API (k8sclient)
-//   - Maestro/OCM ManifestWork (maestroclient)
+//   - Direct Kubernetes API (k8sclient), the local transport
+//   - Desire store read by an applier (desireclient), the remote transport
 //
 // All implementations must support generation-aware apply operations:
 //   - Create if resource doesn't exist
@@ -22,7 +22,7 @@ type TransportClient interface {
 	// ApplyResource applies a rendered manifest (JSON/YAML bytes).
 	// Each backend parses the bytes into its expected type:
 	//   - k8sclient: parses as K8s resource (unstructured), applies to K8s API
-	//   - maestroclient: parses as ManifestWork, applies via Maestro gRPC
+	//   - desireclient: parses as K8s resource (unstructured), writes an apply desire to the store
 	//
 	// The backend handles discovery of existing resources internally for generation comparison.
 	//
@@ -61,7 +61,7 @@ type TransportClient interface {
 
 	// DeleteResource deletes a resource by GVK, namespace, and name.
 	// For K8s transport: uses the propagationPolicy from opts.
-	// For Maestro transport: calls ManifestWork delete; propagationPolicy is ignored.
+	// For remote transport: writes a delete desire; propagationPolicy is ignored.
 	// Returns nil if the resource is not found (idempotent).
 	DeleteResource(
 		ctx context.Context,

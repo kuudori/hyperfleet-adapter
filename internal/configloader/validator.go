@@ -109,9 +109,6 @@ func validateCollisions[V any](field, noun string, entries map[string]V) error {
 }
 
 func (v *AdapterConfigValidator) validateTransportRegistry() error {
-	if len(v.config.Transports) > 0 && v.config.Clients.Maestro != nil {
-		return fmt.Errorf("clients.maestro cannot be configured when transports are set")
-	}
 	if err := ValidateStoreNameCollisions(v.config.Stores); err != nil {
 		return err
 	}
