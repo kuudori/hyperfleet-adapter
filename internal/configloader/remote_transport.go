@@ -105,7 +105,7 @@ func (d TransportDefinition) PluralForGVK(gvk schema.GroupVersionKind) (string, 
 // ValidateResourceTransports checks resource routing in the merged config after manifest refs load.
 // These are structural safety checks and also run when semantic checks are skipped.
 func ValidateResourceTransports(config *Config) error {
-	if err := validateTaskSchema(config.SchemaVersion, config.Resources); err != nil {
+	if err := validateTaskSchema(config.SchemaVersion); err != nil {
 		return err
 	}
 	available := utils.SortedMapKeys(config.Transports)

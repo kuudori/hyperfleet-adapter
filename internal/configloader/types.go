@@ -475,23 +475,21 @@ func (c *Condition) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // Transport names a deployment transport; omission selects local Kubernetes.
 // Manifest holds the Kubernetes resource delivered through that transport.
 type Resource struct {
-	Name string `yaml:"name" validate:"required,resourcename"`
+	Manifest interface{} `yaml:"manifest,omitempty"`
 	// Transport references a named deployment route; omission uses local Kubernetes.
 	Transport *ResourceTransport `yaml:"transport,omitempty"`
-	Manifest  interface{}        `yaml:"manifest,omitempty"`
 	Discovery *DiscoveryConfig   `yaml:"discovery,omitempty" validate:"required"`
-	// NestedDiscoveries defines how to discover sub-resources of the applied resource.
 	// Lifecycle defines the resource lifecycle behavior, including deletion triggers and policy.
 	// If not set, the resource uses the default apply-only behavior.
-	Lifecycle         *ResourceLifecycle `yaml:"lifecycle,omitempty"`
-	NestedDiscoveries []NestedDiscovery  `yaml:"nested_discoveries,omitempty" validate:"dive"`
-	RecreateOnChange  bool               `yaml:"recreate_on_change,omitempty"`
+	Lifecycle        *ResourceLifecycle `yaml:"lifecycle,omitempty"`
+	Name             string             `yaml:"name" validate:"required,resourcename"`
+	RecreateOnChange bool               `yaml:"recreate_on_change,omitempty"`
 }
 
 // ResourceTransport is a resource's reference to a named deployment transport.
 type ResourceTransport struct {
 	// Name is the transport name.
-	Name string
+	Name string `yaml:"name"`
 }
 
 // NamedTransport returns a reference to the named deployment transport.
@@ -537,12 +535,6 @@ type LifecycleWhen struct {
 	// The resource is deleted only when the expression evaluates to true.
 	// Required when lifecycle.delete is configured.
 	Expression string `yaml:"expression,omitempty"`
-}
-
-// NestedDiscovery defines a named discovery for a sub-resource within the parent manifest.
-type NestedDiscovery struct {
-	Discovery *DiscoveryConfig `yaml:"discovery" validate:"required"`
-	Name      string           `yaml:"name" validate:"required,resourcename"`
 }
 
 // DiscoveryConfig represents resource discovery configuration

@@ -10,11 +10,21 @@ const (
 	schemaVersionV2 = "2.0"
 	v2ConceptsURL   = "https://github.com/openshift-hyperfleet/hyperfleet-adapter/" +
 		"blob/main/docs/configuration.md#v2-concepts-changed"
+
+	// removedFieldNestedDiscoveries names the removed v1 key, kept only for
+	// the load-time rejection that tells authors what replaced it.
+	removedFieldNestedDiscoveries = "nested_discoveries"
 )
 
-func v1ResourceShapeError(index int, field string) error {
+const (
+	v1ShapeTransportReplacement = "v2 resources name a transport and use plain live resources"
+	v1ShapeNestedReplacement    = "declare each object as its own resource with its own discovery, " +
+		"and read it in CEL as resources.<name>"
+)
+
+func v1ResourceShapeError(index int, field, replacement string) error {
 	return fmt.Errorf("resources[%d].%s: this is a v1 configuration shape; "+
-		"v2 resources name a transport and use plain live resources; see %s", index, field, v2ConceptsURL)
+		"%s; see %s", index, field, replacement, v2ConceptsURL)
 }
 
 func schemaVersionRequiredError() error {
@@ -56,11 +66,11 @@ func checkTaskSchemaYAML(data []byte) error {
 		if transport.Kind == yaml.ScalarNode && transport.ShortTag() == "!!null" {
 			return fmt.Errorf("resources[%d].%s must name a transport", i, FieldTransport)
 		}
-		if _, old := resource[FieldNestedDiscoveries]; old {
-			return v1ResourceShapeError(i, FieldNestedDiscoveries)
+		if _, old := resource[removedFieldNestedDiscoveries]; old {
+			return v1ResourceShapeError(i, removedFieldNestedDiscoveries, v1ShapeNestedReplacement)
 		}
 		if transport.Kind == yaml.MappingNode {
-			return v1ResourceShapeError(i, FieldTransport)
+			return v1ResourceShapeError(i, FieldTransport, v1ShapeTransportReplacement)
 		}
 	}
 	return nil
@@ -83,16 +93,10 @@ func validateSupportedSchemaVersion(value string) error {
 	return fmt.Errorf("schema_version %q is unsupported; use %q", value, schemaVersionV2)
 }
 
-func validateTaskSchema(value string, resources []Resource) error {
+func validateTaskSchema(value string) error {
 	if value != "" {
 		if err := validateSupportedSchemaVersion(value); err != nil {
 			return err
-		}
-	}
-	for i, resource := range resources {
-		// TODO(HYPERFLEET-1445): remove this typed check with the field; keep the YAML diagnostic.
-		if len(resource.NestedDiscoveries) > 0 {
-			return v1ResourceShapeError(i, FieldNestedDiscoveries)
 		}
 	}
 	return nil

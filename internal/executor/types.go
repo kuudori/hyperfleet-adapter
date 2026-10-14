@@ -209,7 +209,6 @@ type ExecutionContext struct {
 	// read. NewExecutionContext takes the snapshot.
 	envVariable map[string]any
 	// Resources holds discovered resources keyed by resource name.
-	// Nested discoveries are also added as top-level entries keyed by nested discovery name.
 	// Values are expected to be *unstructured.Unstructured.
 	Resources map[string]interface{}
 	// ResourceStates holds the latest discovery state keyed by resource name.
@@ -444,19 +443,8 @@ func (ec *ExecutionContext) GetCELVariables() map[string]any {
 		if val == nil {
 			continue // deleted resources are absent from CEL; resources.?X.hasValue() returns false
 		}
-		switch v := val.(type) {
-		case *unstructured.Unstructured:
-			if v != nil {
-				resources[name] = v.Object
-			}
-		case map[string]*unstructured.Unstructured:
-			nested := make(map[string]interface{})
-			for nestedName, nestedRes := range v {
-				if nestedRes != nil {
-					nested[nestedName] = nestedRes.Object
-				}
-			}
-			resources[name] = nested
+		if u, ok := val.(*unstructured.Unstructured); ok && u != nil {
+			resources[name] = u.Object
 		}
 	}
 	resourceStates := make(map[string]any, len(ec.ResourceStates))

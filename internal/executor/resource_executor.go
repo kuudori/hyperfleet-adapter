@@ -273,38 +273,8 @@ func (re *ResourceExecutor) executeResource(
 		}
 		if discovered != nil {
 			// Always store the discovered top-level resource by resource name.
-			// Nested discoveries are added as independent entries keyed by nested name.
 			execCtx.Resources[resource.Name] = discovered
 			slog.DebugContext(ctx, "resource discovered and stored in context", "resource", resource.Name)
-
-			// Step 8: Nested discoveries — find sub-resources within the discovered parent (e.g., ManifestWork)
-			if len(resource.NestedDiscoveries) > 0 {
-				nestedResults := re.discoverNestedResources(ctx, resource, execCtx, discovered)
-				for nestedName, nestedObj := range nestedResults {
-					if nestedName == resource.Name {
-						slog.WarnContext(ctx,
-							"nested discovery has same name as parent resource; skipping to avoid overwriting parent",
-							"nested_discovery", nestedName)
-						continue
-					}
-					if nestedObj == nil {
-						continue
-					}
-					if _, exists := execCtx.Resources[nestedName]; exists {
-						collisionErr := fmt.Errorf(
-							"nested discovery key collision: %q already exists in context",
-							nestedName,
-						)
-						result.Status = StatusFailed
-						result.Error = collisionErr
-						return result, execCtx.failPhase(
-							PhaseResources, resource.Name, "duplicate resource context key", collisionErr)
-					}
-					execCtx.Resources[nestedName] = nestedObj
-				}
-				slog.DebugContext(ctx, "resource discovered with nested resources added to context",
-					"resource", resource.Name, "nested_count", len(nestedResults))
-			}
 		}
 	}
 
@@ -495,101 +465,6 @@ func (re *ResourceExecutor) tryCleanupDesires(
 		return err
 	}
 	return cleaner.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, transportTarget)
-}
-
-// discoverNestedResources discovers sub-resources within a parent resource (e.g., manifests inside a ManifestWork).
-// Each nestedDiscovery is matched against the parent's nested manifests using manifest.DiscoverNestedManifest.
-func (re *ResourceExecutor) discoverNestedResources(
-	ctx context.Context,
-	resource configloader.Resource,
-	execCtx *ExecutionContext,
-	parent *unstructured.Unstructured,
-) map[string]*unstructured.Unstructured {
-	nestedResults := make(map[string]*unstructured.Unstructured)
-	vars := execCtx.templateVariables()
-
-	for _, nd := range resource.NestedDiscoveries {
-		if nd.Discovery == nil {
-			continue
-		}
-
-		// Build discovery config with rendered templates
-		discoveryConfig, err := re.buildNestedDiscoveryConfig(nd.Discovery, vars)
-		if err != nil {
-			slog.WarnContext(ctx, "resource nested discovery failed to build config",
-				"resource", resource.Name, "nested_discovery", nd.Name, "error", err)
-			continue
-		}
-
-		// Search within the parent resource
-		list, err := manifest.DiscoverNestedManifest(parent, discoveryConfig)
-		if err != nil {
-			slog.WarnContext(ctx, "resource nested discovery failed",
-				"resource", resource.Name, "nested_discovery", nd.Name, "error", err)
-			continue
-		}
-
-		// No match is expected under eventual consistency; omit the nested key.
-		if len(list.Items) == 0 {
-			slog.DebugContext(ctx, "resource nested discovery found no matches",
-				"resource", resource.Name, "nested_discovery", nd.Name)
-			continue
-		}
-
-		// Use the latest generation match
-		best := manifest.GetLatestGenerationFromList(list)
-		if best != nil {
-			manifest.EnrichWithResourceStatus(parent, best)
-			nestedResults[nd.Name] = best
-			slog.DebugContext(ctx, "resource nested discovery found",
-				"resource", resource.Name, "nested_discovery", nd.Name, "kind", best.GetKind(), "name", best.GetName())
-		}
-	}
-
-	return nestedResults
-}
-
-// buildNestedDiscoveryConfig renders templates in a discovery config and returns a manifest.DiscoveryConfig.
-func (re *ResourceExecutor) buildNestedDiscoveryConfig(
-	discovery *configloader.DiscoveryConfig,
-	params map[string]interface{},
-) (*manifest.DiscoveryConfig, error) {
-	namespace, err := utils.RenderTemplate(discovery.Namespace, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to render namespace template: %w", err)
-	}
-
-	if discovery.ByName != "" {
-		name, err := utils.RenderTemplate(discovery.ByName, params)
-		if err != nil {
-			return nil, fmt.Errorf("failed to render byName template: %w", err)
-		}
-		return &manifest.DiscoveryConfig{
-			Namespace: namespace,
-			ByName:    name,
-		}, nil
-	}
-
-	if discovery.BySelectors != nil && len(discovery.BySelectors.LabelSelector) > 0 {
-		renderedLabels := make(map[string]string)
-		for k, v := range discovery.BySelectors.LabelSelector {
-			renderedK, err := utils.RenderTemplate(k, params)
-			if err != nil {
-				return nil, fmt.Errorf("failed to render label key template: %w", err)
-			}
-			renderedV, err := utils.RenderTemplate(v, params)
-			if err != nil {
-				return nil, fmt.Errorf("failed to render label value template: %w", err)
-			}
-			renderedLabels[renderedK] = renderedV
-		}
-		return &manifest.DiscoveryConfig{
-			Namespace:     namespace,
-			LabelSelector: manifest.BuildLabelSelector(renderedLabels),
-		}, nil
-	}
-
-	return nil, fmt.Errorf("discovery must specify byName or bySelectors")
 }
 
 // hasLifecycleConfig reports whether any resource in the list has lifecycle.create or lifecycle.delete configured.
