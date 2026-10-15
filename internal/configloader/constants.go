@@ -106,11 +106,10 @@ const (
 
 // Resource field names
 const (
-	FieldManifest          = "manifest"
-	FieldRecreateOnChange  = "recreate_on_change"
-	FieldDiscovery         = "discovery"
-	FieldNestedDiscoveries = "nested_discoveries"
-	FieldLifecycle         = "lifecycle"
+	FieldManifest         = "manifest"
+	FieldRecreateOnChange = "recreate_on_change"
+	FieldDiscovery        = "discovery"
+	FieldLifecycle        = "lifecycle"
 )
 
 // Lifecycle field names

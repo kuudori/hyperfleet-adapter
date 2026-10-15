@@ -619,20 +619,6 @@ func (v *TaskConfigValidator) validateTemplateVariables() {
 				}
 			}
 		}
-		// Validate nestedDiscoveries template variables
-		for j, md := range resource.NestedDiscoveries {
-			mdPath := fmt.Sprintf("%s.%s[%d].%s", resourcePath, FieldNestedDiscoveries, j, FieldDiscovery)
-			if md.Discovery != nil {
-				v.validateTemplateString(md.Discovery.Namespace, mdPath+"."+FieldNamespace)
-				v.validateTemplateString(md.Discovery.ByName, mdPath+"."+FieldByName)
-				if md.Discovery.BySelectors != nil {
-					for k, val := range md.Discovery.BySelectors.LabelSelector {
-						v.validateTemplateString(val,
-							fmt.Sprintf("%s.%s.%s[%s]", mdPath, FieldBySelectors, FieldLabelSelector, k))
-					}
-				}
-			}
-		}
 	}
 
 	// Validate post action API calls

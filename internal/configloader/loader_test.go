@@ -394,6 +394,8 @@ resources:
   - manifest:
       apiVersion: v1
       kind: Namespace
+    discovery:
+      by_name: "test-ns"
 `,
 			wantError: true,
 			errorMsg:  "resources[0].name is required",

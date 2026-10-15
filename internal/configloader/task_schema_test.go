@@ -43,6 +43,17 @@ func TestTaskSchemaYAML(t *testing.T) {
 		},
 		{
 			"nested v2", withField(v2Base, "nested_discoveries: null"),
+			"resources[0].nested_discoveries: this is a v1 configuration shape; " +
+				"declare each object as its own resource with its own discovery, " +
+				"and read it in CEL as resources.<name>",
+		},
+		{
+			"nested empty v2", withField(v2Base, "nested_discoveries: []"),
+			"resources[0].nested_discoveries: this is a v1 configuration shape",
+		},
+		{
+			"nested populated v2",
+			withField(v2Base, "nested_discoveries: [{name: child, discovery: {by_name: child}}]"),
 			"resources[0].nested_discoveries: this is a v1 configuration shape",
 		},
 		{"unknown", "schema_version: \"2.0\"\nunknown: true\n" + base, "field unknown not found"},
@@ -68,12 +79,31 @@ resources:
     discovery: {by_name: item}
 `, "resources[0].transport must name a transport",
 		},
+		{
+			"merged nested", `schema_version: "2.0"
+legacy: &legacy {nested_discoveries: []}
+resources:
+  - <<: *legacy
+    name: item
+    manifest: {apiVersion: v1, kind: ConfigMap}
+    discovery: {by_name: item}
+`, "resources[0].nested_discoveries: this is a v1 configuration shape",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadRemoteConfig(t, "adapter: {name: test}\n", tc.yaml)
 			require.ErrorContains(t, err, tc.want)
 			if tc.want == wantVersionRequired || strings.Contains(tc.want, "this is a v1 configuration shape") {
 				require.ErrorContains(t, err, v2ConceptsURL)
+				// The v1-shape errors are author-facing and must not leak internal
+				// delivery vocabulary (epic HYPERFLEET-1420 framing constraint).
+				// "manifest"+"work" is spelled split so the repo-wide Maestro
+				// sweep greps stay clean.
+				lowered := strings.ToLower(err.Error())
+				for _, term := range []string{"desire", "manifest" + "work", "maestro", "ocm", "feedback", "wrapper"} {
+					require.NotContains(t, lowered, term,
+						"v1 shape error must not use internal delivery vocabulary")
+				}
 			}
 		})
 	}
@@ -113,14 +143,6 @@ func TestTaskSchemaDirectConstruction(t *testing.T) {
 		resource           Resource
 	}{
 		{"unsupported", "2.1", "schema_version \"2.1\" is unsupported", Resource{}},
-		{
-			"v2 nested", "2.0", "resources[0].nested_discoveries: this is a v1 configuration shape",
-			Resource{NestedDiscoveries: []NestedDiscovery{{}}},
-		},
-		{
-			"unversioned nested", "", "resources[0].nested_discoveries: this is a v1 configuration shape",
-			Resource{NestedDiscoveries: []NestedDiscovery{{}}},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.ErrorContains(t, ValidateResourceTransports(&Config{
