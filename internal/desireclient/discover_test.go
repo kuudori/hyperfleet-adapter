@@ -299,7 +299,7 @@ func TestDiscoverResources_ListFailure_ReturnsError(t *testing.T) {
 
 	_, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to list read desires")
+	assert.Contains(t, err.Error(), "failed to list mirrors")
 }
 
 func TestDiscoverResources_RequiresTransportContext(t *testing.T) {

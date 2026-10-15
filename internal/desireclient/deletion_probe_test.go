@@ -73,5 +73,5 @@ func TestProbeDeletion_StoreErrorIsReturned(t *testing.T) {
 
 	_, err := client.ProbeDeletion(t.Context(), testGVK(), testNamespace, testName, testTransportContext())
 
-	require.ErrorContains(t, err, "probe delete desire")
+	require.ErrorContains(t, err, "probe the delete request")
 }
