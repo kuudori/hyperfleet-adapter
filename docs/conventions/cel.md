@@ -1,6 +1,6 @@
 # CEL Expressions
 
-> **Audience:** Framework developers contributing to the adapter codebase. For practical CEL patterns aimed at adapter authors, see [Adapter Authoring Guide — Appendix A](../adapter-authoring-guide.md#appendix-a-cel-quick-reference).
+> **Audience:** Framework developers contributing to the adapter codebase. For practical CEL patterns aimed at adapter authors, see [Adapter Authoring Reference — CEL quick reference](../adapter-authoring-reference.md#cel-quick-reference).
 
 Used in precondition expressions, lifecycle delete conditions, and post-action `when` gates.
 

@@ -54,7 +54,8 @@ See [hyperfleet-infra](https://github.com/openshift-hyperfleet/hyperfleet-infra)
 
 ### For Adapter Authors (writing task configurations)
 
-- **[Adapter Authoring Guide](docs/adapter-authoring-guide.md)** — params, preconditions, resources, named transports, ordering, remote reads, CEL expressions, status reporting
+- **[Adapter Authoring Guide](docs/adapter-authoring-guide.md)** — write a task config: a first task with a dry run, params, preconditions, resources, remote transports, ordering and deletion, status reporting, NodePool adapters, test and deploy
+- **[Adapter Authoring Reference](docs/adapter-authoring-reference.md)** — CEL and Go template quick references, operators, validation errors, troubleshooting, dry-run mock files, edge-case behavior, v2 changes
 
 ### For Developers
 

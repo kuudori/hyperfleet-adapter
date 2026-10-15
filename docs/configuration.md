@@ -340,5 +340,5 @@ Every task declares `schema_version: "2.0"`. The loader rejects these v1 shapes:
 | `transport: {client: ...}` object on a resource | `transport: <name>` naming a `transports` entry, or no `transport` for local Kubernetes |
 | `nested_discoveries` on a resource | One resource per object, each with its own `discovery` |
 
-The authoring guide lists every removed key and its replacement in
-[Appendix E: Concepts changed in v2](adapter-authoring-guide.md#appendix-e-concepts-changed-in-v2).
+The authoring reference lists every removed key and its replacement in
+[Concepts changed in v2](adapter-authoring-reference.md#concepts-changed-in-v2).
