@@ -13,7 +13,8 @@ The [Adapter Authoring Reference](adapter-authoring-reference.md) holds the synt
 | [Params](#params) | How to read values from the event, the environment and the API |
 | [Preconditions](#preconditions) | How to decide whether the resources phase runs |
 | [Resources and discovery](#resources-and-discovery) | How to apply Kubernetes objects and read them back |
-| [Remote transports](#remote-transports) | How to deliver objects to another cluster, and how to read them there |
+| [Remote transports](#remote-transports) | How to deliver objects to another cluster |
+| [The eventual-consistency contract for remote reads](#the-eventual-consistency-contract-for-remote-reads) | How to read remote objects, and how to report conditions on them |
 | [Ordering and deletion](#ordering-and-deletion) | How to order resources and delete them when the cluster is deleted |
 | [Status reporting](#status-reporting) | How to build the status report and send it to the API |
 | [Worked example](#worked-example) | Two ordered remote resources, pass by pass |
@@ -725,7 +726,9 @@ These behaviors also differ from the local transport:
 - `propagationPolicy` has no effect on a remote delete.
 - A successful apply means the store accepted the write. It does not mean the target cluster has the object yet.
 
-### The eventual-consistency contract for remote reads
+---
+
+## The eventual-consistency contract for remote reads
 
 A remote read is not a live query. It returns the last state the remote cluster side mirrored. Until the remote cluster side updates the mirror, discovery returns the old state. If the object was never mirrored, discovery reports `unsynced`. Treat every remote read as possibly stale.
 
@@ -1118,17 +1121,85 @@ Your adapter counts only when the API configuration lists it under `required_ada
 
 ## Worked example
 
-The shipped example [`charts/examples/remote-two-resources`](https://github.com/openshift-hyperfleet/hyperfleet-adapter/tree/main/charts/examples/remote-two-resources) delivers a Namespace and a ConfigMap through one remote transport. It applies them in list order, deletes the ConfigMap first, and reports three-outcome conditions. Open its files for the complete config. Its deployment config declares the store and transport shown in [Remote transports](#remote-transports).
+This example delivers a Namespace and a ConfigMap through one remote transport. It applies them in list order, deletes the ConfigMap first, and reports three-outcome conditions. The two configs below are complete. They are the shipped [`charts/examples/remote-two-resources`](https://github.com/openshift-hyperfleet/hyperfleet-adapter/tree/main/charts/examples/remote-two-resources) example, with the manifests inline. Save them as `adapter-config.yaml` and `adapter-task-config.yaml` in one directory to run [the passes](#the-passes).
 
-The params are `resourceId`, `resourceStatus` and `generation`, as in [Your first task](#write-the-task-config), plus `is_deleting` from [How deletion works](#how-deletion-works). The resources:
+The deployment config declares the store and transport from [Remote transports](#remote-transports). A dry run does not connect to the store or the broker, so the placeholders can stay:
 
 ```yaml
+adapter:
+  name: remote-two-resources-example
+  version: "0.3.0"
+log:
+  level: info
+clients:
+  hyperfleet_api:
+    base_url: http://hyperfleet-api:8000
+    version: v1
+    timeout: 2s
+    retry_attempts: 3
+    retry_backoff: exponential
+  broker:
+    subscription_id: CHANGE_ME
+    topic: CHANGE_ME
+  kubernetes:
+    api_version: v1
+
+# A separately provisioned shared Redis store and remote applier are required.
+# The chart overrides this placeholder URL from the Redis Secret at startup.
+stores:
+  remote-store:
+    type: redis
+    url: rediss://CHANGE_ME:6379
+transports:
+  remote-primary:
+    type: remote
+    store: remote-store
+    target_cluster: "{{ .resourceId }}"
+    resource_plurals:
+      "v1/Namespace": namespaces
+      "v1/ConfigMap": configmaps
+```
+
+The task config. The params are `resourceId`, `resourceStatus` and `generation`, as in [Your first task](#write-the-task-config), plus `is_deleting` from [How deletion works](#how-deletion-works):
+
+```yaml
+schema_version: "2.0"
+
+# This example manages clusters. For another kind, change the /clusters/ API
+# paths, the hyperfleet.io/cluster-* labels, and the cluster-config ConfigMap
+# name and its cluster_id key; resourceId is the event's resource ID.
+params:
+  - name: resourceId
+    source: event.id
+    type: string
+    required: true
+  - name: resourceStatus
+    source:
+      api_call:
+        method: GET
+        url: /clusters/{{ .resourceId }}
+        timeout: 10s
+  - name: generation
+    source: resourceStatus.generation
+    type: int
+  - name: is_deleting
+    source:
+      expression: "resourceStatus.?deleted_time.hasValue()"
+
+# Apply order is list order. Deletion waits for confirmed child deletion.
 resources:
   # Applied first. On delete, it waits until the ConfigMap is confirmed gone.
   - name: namespace
     transport: remote-primary
     manifest:
-      ref: namespace.yaml
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ .resourceId }}-remote"
+        labels:
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
     discovery:
       by_name: "{{ .resourceId }}-remote"
     lifecycle:
@@ -1140,15 +1211,166 @@ resources:
   - name: configMap
     transport: remote-primary
     manifest:
-      ref: configmap.yaml
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: cluster-config
+        namespace: "{{ .resourceId }}-remote"
+        labels:
+          hyperfleet.io/cluster-id: "{{ .resourceId }}"
+        annotations:
+          hyperfleet.io/generation: "{{ .generation }}"
+      data:
+        cluster_id: "{{ .resourceId }}"
     discovery:
       namespace: "{{ .resourceId }}-remote"
       by_name: cluster-config
     lifecycle:
+      # Without a create gate, the first pass writes the ConfigMap before the
+      # Namespace is mirrored. To wait for the Namespace, uncomment this gate.
+      # is_deleting lets it pass during deletion; see "Delete in order".
+      # create:
+      #   when:
+      #     expression: 'is_deleting || resource_states.?namespace.orValue("") == "present"'
       delete:
         when:
           expression: "is_deleting"
+
+post:
+  payloads:
+    - name: resourceStatusPayload
+      build:
+        adapter: "{{ .adapter.name }}"
+        # Remote reads are tri-state. An unsynced or stale mirror is Unknown, not
+        # False: only a confirmed absence or a bad current status is False.
+        conditions:
+          - type: Applied
+            status:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "False"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                    ? "True" : "Unknown"
+            reason:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "ResourceNotFound"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                    ? "ResourcesObserved" : "MirrorNotSynced"
+            message:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted"
+                  ? "A resource is confirmed absent from the target cluster"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                    ? "Namespace and ConfigMap read from the target cluster"
+                    : "Waiting for the target cluster mirrors to sync"
+          - type: Available
+            status:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "False"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                      && "hyperfleet.io/generation" in resources.namespace.?metadata.?annotations.orValue({})
+                      && resources.namespace.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                      && "hyperfleet.io/generation" in resources.configMap.?metadata.?annotations.orValue({})
+                      && resources.configMap.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                    ? (resources.namespace.?status.?phase.orValue("") == "Active" ? "True" : "False")
+                    : "Unknown"
+            reason:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted" ? "ResourceNotFound"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                      && "hyperfleet.io/generation" in resources.namespace.?metadata.?annotations.orValue({})
+                      && resources.namespace.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                      && "hyperfleet.io/generation" in resources.configMap.?metadata.?annotations.orValue({})
+                      && resources.configMap.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                    ? (resources.namespace.?status.?phase.orValue("") == "Active" ? "LiveResourcesReady" : "NamespaceNotActive")
+                    : "GenerationPending"
+            message:
+              expression: |
+                resource_states.?namespace.orValue("") == "confirmed_deleted"
+                    || resource_states.?configMap.orValue("") == "confirmed_deleted"
+                  ? "A resource is confirmed absent from the target cluster"
+                  : resource_states.?namespace.orValue("") == "present"
+                      && resource_states.?configMap.orValue("") == "present"
+                      && "hyperfleet.io/generation" in resources.namespace.?metadata.?annotations.orValue({})
+                      && resources.namespace.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                      && "hyperfleet.io/generation" in resources.configMap.?metadata.?annotations.orValue({})
+                      && resources.configMap.metadata.annotations["hyperfleet.io/generation"] == string(generation)
+                    ? (resources.namespace.?status.?phase.orValue("") == "Active"
+                        ? "Namespace active and both resource generations match"
+                        : "Namespace is not Active")
+                    : "Waiting for both mirrors to report the requested generation"
+          - type: Health
+            status:
+              expression: |
+                adapter.?executionStatus.orValue("") == "success"
+                  && !adapter.?resourcesSkipped.orValue(false)
+                  ? "True" : "False"
+            reason:
+              expression: |
+                adapter.?executionStatus.orValue("") != "success"
+                  ? "ExecutionFailed:" + adapter.?executionError.?phase.orValue("unknown")
+                  : adapter.?resourcesSkipped.orValue(false) ? "ResourcesSkipped" : "Healthy"
+            message:
+              expression: |
+                adapter.?executionStatus.orValue("") != "success"
+                  ? "Adapter failed at phase ["
+                      + adapter.?executionError.?phase.orValue("unknown")
+                      + "] step ["
+                      + adapter.?executionError.?step.orValue("unknown")
+                      + "]: "
+                      + adapter.?executionError.?message.orValue(adapter.?errorMessage.orValue("no details"))
+                  : adapter.?resourcesSkipped.orValue(false)
+                    ? "Resources skipped: " + adapter.?skipReason.orValue("unknown reason")
+                    : "Adapter execution completed successfully"
+          - type: Finalized
+            status:
+              expression: |
+                is_deleting
+                  && adapter.?executionStatus.orValue("") == "success"
+                  && !adapter.?resourcesSkipped.orValue(false)
+                  && resource_states.?configMap.orValue("") == "confirmed_deleted"
+                  && resource_states.?namespace.orValue("") == "confirmed_deleted"
+                  ? "True" : "False"
+            reason:
+              expression: |
+                !is_deleting ? ""
+                  : adapter.?executionStatus.orValue("") != "success" ? "AdapterUnhealthy"
+                  : resource_states.?namespace.orValue("") == "confirmed_deleted"
+                      && resource_states.?configMap.orValue("") == "confirmed_deleted" ? "CleanupConfirmed"
+                  : "CleanupInProgress"
+            message:
+              expression: |
+                !is_deleting ? ""
+                  : adapter.?executionStatus.orValue("") != "success"
+                    ? "Cannot confirm cleanup while the adapter is unhealthy"
+                    : resource_states.?namespace.orValue("") == "confirmed_deleted"
+                      && resource_states.?configMap.orValue("") == "confirmed_deleted"
+                      ? "Namespace and ConfigMap deletion confirmed"
+                      : "Waiting for confirmed deletion of both resources"
+        observed_generation:
+          expression: generation
+        observed_time: '{{ now | date "2006-01-02T15:04:05Z07:00" }}'
+  post_actions:
+    - name: reportResourceStatus
+      api_call:
+        method: PUT
+        url: /clusters/{{ .resourceId }}/statuses
+        headers:
+          - name: Content-Type
+            value: application/json
+        body: "{{ .resourceStatusPayload }}"
 ```
+
+The ConfigMap has no create gate, as in the shipped example. The commented-out gate is the form from [Delete in order](#delete-in-order): it waits for the Namespace and still lets the delete run.
 
 The conditions follow the [three-outcome pattern](#status-conditions-for-remote-resources) over both resources:
 
@@ -1163,13 +1385,14 @@ Run each pass as a dry run from the repository root. The create passes use `test
 
 ```bash
 EX=charts/examples/remote-two-resources
+CFG=/tmp/remote-two-resources   # the directory with your two configs; CFG=$EX runs the shipped copy
 jq '(.[] | .metadata.annotations["hyperfleet.io/generation"]) |= "76"' $EX/dryrun-discovery.json > stale.json
 jq 'with_entries(select(.key != "cluster-config"))' $EX/dryrun-discovery.json > no-configmap.json
 echo '{}' > empty.json
 
 pass() {  # pass <api-responses file> <discovery file>
   HYPERFLEET_TRACING_ENABLED=false bin/hyperfleet-adapter serve \
-    --config $EX/adapter-config.yaml --task-config $EX/adapter-task-config.yaml \
+    --config $CFG/adapter-config.yaml --task-config $CFG/adapter-task-config.yaml \
     --dry-run-event test/testdata/dryrun/event.json \
     --dry-run-api-responses test/testdata/dryrun/$1 --dry-run-discovery $2 \
     --dry-run-verbose --dry-run-output json
