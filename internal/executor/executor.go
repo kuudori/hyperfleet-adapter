@@ -80,10 +80,8 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 		}
 	}
 
-	// This is intended to set OwnerReferences and ResourceID for the event when it exists
-	// For example, when a NodePool event arrived
-	// the logger will set the cluster_id=owner_id, nodepool_id=resource_id, resource_type=nodepool
-	// but when a resource is cluster type, it will just record cluster_id=resource_id
+	// Map the event ID to resource_id. For an owned resource, also map its kind
+	// to resource_type and its owner's kind and ID to owner_resource_type and owner_resource_id.
 	if eventData.OwnerReferences != nil {
 		ctx = hfl.WithResourceType(ctx, eventData.Kind)
 		ctx = hfl.WithResourceID(ctx, eventData.ID)

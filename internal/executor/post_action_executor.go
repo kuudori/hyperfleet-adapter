@@ -360,8 +360,8 @@ func (pae *PostActionExecutor) executeAPICall(
 
 		attrs := []any{"post_action", result.Name}
 		if execCtx != nil {
-			if clusterID, ok := execCtx.EventData["id"].(string); ok {
-				attrs = append(attrs, "cluster_id", clusterID)
+			if kind, ok := execCtx.EventData["kind"].(string); ok {
+				attrs = append(attrs, "kind", kind)
 			}
 		}
 		logAPIAuthFailure(ctx, validationErr, attrs...)

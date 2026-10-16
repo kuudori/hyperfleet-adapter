@@ -17,16 +17,6 @@ const (
 	// Example value: "5" (integer as string)
 	LabelGeneration = "hyperfleet.io/generation"
 
-	// AnnotationClusterID is the annotation key for cluster identification.
-	// Links resources to their target cluster.
-	// Format: "hyperfleet.io/cluster-id"
-	AnnotationClusterID = "hyperfleet.io/cluster-id"
-
-	// LabelClusterID is the label key for cluster identification.
-	// Used for label-based filtering and selection of resources by cluster.
-	// Format: "hyperfleet.io/cluster-id"
-	LabelClusterID = "hyperfleet.io/cluster-id"
-
 	// AnnotationAdapter is the annotation key for adapter identification.
 	// Identifies which adapter created or manages the resource.
 	// Format: "hyperfleet.io/adapter"
