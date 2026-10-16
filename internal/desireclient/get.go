@@ -44,7 +44,8 @@ func (c *Client) GetResource(
 	case errors.Is(err, desire.ErrNotFound):
 		// No mirror to decode; in-flight work below decides whether it is absent.
 	case err != nil:
-		return nil, fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf(
+			"remote transport: failed to get the mirror for %s/%s: %w", namespace, name, storeErr(err))
 	default:
 		object, readErr := c.decodeReadDesire(gvk, namespace, name, rd)
 		if !apierrors.IsNotFound(readErr) {

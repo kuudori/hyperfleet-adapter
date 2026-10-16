@@ -66,7 +66,7 @@ func (c *Client) ApplyResource(
 	existing, err := c.store.GetApplyDesire(ctx, applyID)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
 		return nil, fmt.Errorf(
-			"remote transport: failed to get the apply request for %s/%s: %w", applyID.Namespace, applyID.Name, err)
+			"remote transport: failed to get the apply request for %s/%s: %w", applyID.Namespace, applyID.Name, storeErr(err))
 	}
 	exists := err == nil
 
@@ -74,7 +74,7 @@ func (c *Client) ApplyResource(
 	var existingGen int64
 	if exists {
 		if err = desire.CheckOwner(ctx, applyID, existing.Owner, c.owner); err != nil {
-			return nil, fmt.Errorf("remote transport: apply request owner: %w", err)
+			return nil, fmt.Errorf("remote transport: apply request owner: %w", storeErr(err))
 		}
 		existingGen = generationFromKubeContent(existing.Spec.KubeContent)
 	}
@@ -82,12 +82,12 @@ func (c *Client) ApplyResource(
 	read, err := c.store.GetReadDesire(ctx, readID)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
 		return nil, fmt.Errorf("remote transport: failed to get the paired mirror for %s/%s: %w",
-			readID.Namespace, readID.Name, err)
+			readID.Namespace, readID.Name, storeErr(err))
 	}
 	var paired *desire.ReadDesire
 	if err == nil {
 		if err = desire.CheckOwner(ctx, readID, read.Owner, c.owner); err != nil {
-			return nil, fmt.Errorf("remote transport: mirror owner: %w", err)
+			return nil, fmt.Errorf("remote transport: mirror owner: %w", storeErr(err))
 		}
 		paired = &read
 	}
@@ -148,7 +148,8 @@ func (c *Client) ApplyResource(
 			Spec:     desire.ApplySpec{KubeContent: kubeContent},
 		}); err != nil {
 			c.logApplyError(ctx, applyID, err)
-			return nil, fmt.Errorf("remote transport: failed to create the apply request for %s/%s: %w", namespace, name, err)
+			return nil, fmt.Errorf(
+				"remote transport: failed to create the apply request for %s/%s: %w", namespace, name, storeErr(err))
 		}
 	case manifest.OperationUpdate:
 		if _, err = c.store.UpdateApplyDesireSpec(
@@ -156,7 +157,8 @@ func (c *Client) ApplyResource(
 		); err != nil {
 			c.logApplyError(ctx, applyID, err)
 			return nil, fmt.Errorf(
-				"remote transport: failed to update the apply request for %s/%s: %w", applyID.Namespace, applyID.Name, err)
+				"remote transport: failed to update the apply request for %s/%s: %w",
+				applyID.Namespace, applyID.Name, storeErr(err))
 		}
 	case manifest.OperationSkip:
 		// Nothing to do.
@@ -201,7 +203,7 @@ func (c *Client) logApplyError(ctx context.Context, id desire.Identity, err erro
 func (c *Client) ensureReadDesire(ctx context.Context, id desire.Identity, targetVersion string, recreate bool) error {
 	read, err := c.store.GetReadDesire(ctx, id)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", id.Namespace, id.Name, err)
+		return fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 	}
 	if err == nil {
 		return c.ensureReadDesireWithExisting(ctx, id, targetVersion, recreate, &read)
@@ -217,14 +219,14 @@ func (c *Client) ensureReadDesireWithExisting(
 	for attempt := 0; ; attempt++ {
 		if existing != nil {
 			if err := desire.CheckOwner(ctx, id, existing.Owner, c.owner); err != nil {
-				return err
+				return storeErr(err)
 			}
 			if !recreate || existing.TargetVersion == targetVersion {
 				return nil
 			}
 			if err := c.store.DeleteReadDesire(ctx, id, c.owner, existing.Version); err != nil {
 				return fmt.Errorf(
-					"remote transport: failed to delete the existing mirror for %s/%s: %w", id.Namespace, id.Name, err)
+					"remote transport: failed to delete the existing mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 			}
 		}
 
@@ -237,12 +239,14 @@ func (c *Client) ensureReadDesireWithExisting(
 			return nil
 		}
 		if !errors.Is(err, desire.ErrAlreadyExists) || attempt > 0 {
-			return fmt.Errorf("remote transport: failed to create the mirror for %s/%s: %w", id.Namespace, id.Name, err)
+			return fmt.Errorf(
+				"remote transport: failed to create the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 		}
 
 		des, err := c.store.GetReadDesire(ctx, id)
 		if err != nil {
-			return fmt.Errorf("remote transport: failed to get the existing mirror for %s/%s: %w", id.Namespace, id.Name, err)
+			return fmt.Errorf(
+				"remote transport: failed to get the existing mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 		}
 		existing = &des
 	}

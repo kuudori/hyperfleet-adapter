@@ -97,7 +97,8 @@ func (c *Client) hasActiveApplyDesire(
 	case errors.Is(err, desire.ErrNotFound):
 		return false, nil
 	default:
-		return false, fmt.Errorf("remote transport: failed to get the apply request for %s/%s: %w", namespace, name, err)
+		return false, fmt.Errorf(
+			"remote transport: failed to get the apply request for %s/%s: %w", namespace, name, storeErr(err))
 	}
 }
 

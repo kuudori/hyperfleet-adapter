@@ -172,7 +172,7 @@ func TestApplyResource_VersionConflictSurfacesAsError(t *testing.T) {
 
 	staleClient := newTestClient(&staleApplyVersionStore{SpecStore: memStore})
 	_, err = staleClient.ApplyResource(ctx, configMapManifest(3), nil, testTransportContext())
-	require.Error(t, err)
+	assertNoDesireText(t, err)
 	assert.True(t, errors.Is(err, desire.ErrVersionConflict))
 }
 

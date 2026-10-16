@@ -53,7 +53,8 @@ func (c *Client) DeleteResource(
 		Identity: deleteID,
 		Owner:    c.owner,
 	}); err != nil && !errors.Is(err, desire.ErrAlreadyExists) {
-		return fmt.Errorf("remote transport: failed to create the delete request for %s/%s: %w", namespace, name, err)
+		return fmt.Errorf(
+			"remote transport: failed to create the delete request for %s/%s: %w", namespace, name, storeErr(err))
 	}
 
 	return nil
