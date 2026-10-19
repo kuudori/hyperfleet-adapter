@@ -34,7 +34,7 @@ func testGVK() schema.GroupVersionKind {
 
 // configMapManifest builds a minimal ConfigMap manifest carrying the
 // hyperfleet.io/generation annotation task authors are required to set
-// (docs/adapter-authoring-guide.md, "Resources" section).
+// (docs/adapter-authoring-guide.md, "Resources and discovery" section).
 func configMapManifest(generation int64) []byte {
 	return fmt.Appendf(nil, `{
 		"apiVersion": "v1",

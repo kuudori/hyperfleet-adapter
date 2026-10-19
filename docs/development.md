@@ -123,4 +123,4 @@ hyperfleet-adapter serve \
 
 </details>
 
-For mock file formats and a step-by-step development workflow, see [Adapter Authoring Guide — Dry-Run Mode](adapter-authoring-guide.md#10-dry-run-mode). Example input files are in `test/testdata/dryrun/`.
+For mock file formats, see [Adapter Authoring Reference — Dry-run mock files](adapter-authoring-reference.md#dry-run-mock-files). For a step-by-step development workflow, see [Adapter Authoring Guide — Dry-run mode](adapter-authoring-guide.md#dry-run-mode). Example input files are in `test/testdata/dryrun/`.

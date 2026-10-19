@@ -314,7 +314,7 @@ go test -v ./internal/criteria/... -run Integration
 
 ## Configuration Template Examples
 
-See the [adapter authoring guide](../../docs/adapter-authoring-guide.md#5-preconditions) for precondition usage. Example conditions:
+See the [adapter authoring guide](../../docs/adapter-authoring-guide.md#preconditions) for precondition usage. Example conditions:
 
 ```yaml
 preconditions:
