@@ -32,7 +32,7 @@ func TestApplyResource_CreatesApplyAndReadDesire(t *testing.T) {
 	readID := applyID
 	readID.Type = desire.TypeRead
 	readDesire, err := store.GetReadDesire(ctx, readID)
-	require.NoError(t, err, "paired read desire must be auto-created")
+	require.NoError(t, err, "paired mirror must be auto-created")
 	assert.Equal(t, "v1", readDesire.TargetVersion)
 	assert.Equal(t, testOwner, readDesire.Owner)
 }
@@ -117,7 +117,7 @@ func TestApplyResource_ReadDesirePairingFailureIsError(t *testing.T) {
 
 	_, err := c.ApplyResource(ctx, configMapManifest(1), nil, testTransportContext())
 	require.Error(t, err, "a read-desire pairing failure must surface as an error, not a warning")
-	assert.Contains(t, err.Error(), "paired read desire")
+	assert.Contains(t, err.Error(), "paired mirror")
 }
 
 func TestApplyResource_RequiresTransportContext(t *testing.T) {
@@ -172,7 +172,7 @@ func TestApplyResource_VersionConflictSurfacesAsError(t *testing.T) {
 
 	staleClient := newTestClient(&staleApplyVersionStore{SpecStore: memStore})
 	_, err = staleClient.ApplyResource(ctx, configMapManifest(3), nil, testTransportContext())
-	require.Error(t, err)
+	assertNoDesireText(t, err)
 	assert.True(t, errors.Is(err, desire.ErrVersionConflict))
 }
 

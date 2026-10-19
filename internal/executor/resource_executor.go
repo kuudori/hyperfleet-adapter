@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	desireDeletionPendingReason     = "desire deletion pending"
+	desireDeletionPendingReason     = "deletion pending"
 	applyDeletePendingReason        = "delete pending, retrying on next event"
 	resourceAlreadyDeletedReason    = "resource already deleted or never existed"
 	resourceDeletionConfirmedReason = "resource deletion confirmed by transport"
@@ -703,7 +703,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 			result.Error = err
 			re.recordResourceError(execCtx, resource, err)
 			re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
-			return result, NewExecutorError(PhaseResources, resource.Name, "desire cleanup failed", err)
+			return result, NewExecutorError(PhaseResources, resource.Name, "remote transport cleanup failed", err)
 		}
 
 		slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
@@ -771,7 +771,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 				re.recordResourceError(execCtx, resource, err)
 				re.metrics.RecordDeletion(resourceType, metrics.DeletionStatusError)
 				re.metrics.ObserveDeletionDuration(resourceType, time.Since(startTime))
-				return result, NewExecutorError(PhaseResources, resource.Name, "desire cleanup failed", err)
+				return result, NewExecutorError(PhaseResources, resource.Name, "remote transport cleanup failed", err)
 			}
 
 			// Deletion pending: leave the last known discovered state in context
@@ -847,7 +847,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 
 	// Delete desires are keyed by name, so a selector cannot identify the target.
 	if resource.Discovery == nil || resource.Discovery.ByName == "" {
-		return fail("unsupported desire deletion discovery",
+		return fail("unsupported remote deletion discovery",
 			errors.New(configloader.ErrMsgDesireSelectorDeleteUnsupported))
 	}
 	dt, err := re.renderDiscoveryTarget(resource.Discovery, execCtx.templateVariables())
@@ -871,7 +871,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 			}
 			if cleanupErr != nil {
 				execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
-				return fail("desire cleanup failed", cleanupErr)
+				return fail("remote transport cleanup failed", cleanupErr)
 			}
 			slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
 			markDeleted()
@@ -902,7 +902,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 	slog.InfoContext(ctx, "resource delete: confirmed by transport", "resource", resource.Name)
 	if cleanupErr := lifecycle.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, target); cleanupErr != nil {
 		execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
-		return fail("desire cleanup failed", cleanupErr)
+		return fail("remote transport cleanup failed", cleanupErr)
 	}
 	markDeleted()
 	return succeed(resourceDeletionConfirmedReason), nil

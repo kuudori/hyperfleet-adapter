@@ -2516,7 +2516,7 @@ func TestResourceExecutor_LifecycleDelete_CleanupError_StatusFailed(t *testing.T
 
 	results, err := re.ExecuteAll(context.Background(), []configloader.Resource{resource}, execCtx)
 
-	require.ErrorContains(t, err, "desire cleanup failed")
+	require.ErrorContains(t, err, "remote transport cleanup failed")
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusFailed, results[0].Status)
 	assert.True(t, mock.CleanupCalled)
@@ -2862,7 +2862,7 @@ func TestResourceExecutor_DesireTransport_TransientNotFound(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
-	assert.Equal(t, "desire deletion pending", results[0].OperationReason)
+	assert.Equal(t, "deletion pending", results[0].OperationReason)
 	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
 
 	_, err = store.GetApplyDesire(ctx, testDesireID.Apply())
@@ -3178,7 +3178,7 @@ func TestResourceExecutor_DesireTransport_Step2_DeletionPending_DeleteNotConfirm
 	require.NoError(t, err, "pending deletion must not fail reconciliation")
 	require.Len(t, results, 1)
 	assert.Equal(t, StatusSuccess, results[0].Status)
-	assert.Equal(t, "desire deletion pending", results[0].OperationReason)
+	assert.Equal(t, "deletion pending", results[0].OperationReason)
 	assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
 	assert.Nil(t, execCtx.Adapter.ExecutionError)
 	resources := execCtx.GetCELVariables()[configloader.FieldResources].(map[string]interface{})

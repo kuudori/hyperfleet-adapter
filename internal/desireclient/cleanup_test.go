@@ -143,7 +143,7 @@ func TestCleanupAfterDeletion_ApplyDesireExists_NoDeleteDesire_ReturnsError(t *t
 
 	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "apply desire still exists")
+	assert.Contains(t, err.Error(), "apply request still exists")
 	assert.True(t, errors.Is(err, ErrDeletionPending), "must wrap ErrDeletionPending")
 
 	_, err = store.GetApplyDesire(ctx, applyID)
@@ -189,7 +189,7 @@ func TestCleanupAfterDeletion_GetDeleteDesireError(t *testing.T) {
 
 	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to get delete desire")
+	assert.Contains(t, err.Error(), "failed to get the delete request")
 }
 
 func TestCleanupAfterDeletion_DeleteDeleteDesireError(t *testing.T) {
@@ -204,7 +204,7 @@ func TestCleanupAfterDeletion_DeleteDeleteDesireError(t *testing.T) {
 
 	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to delete delete desire")
+	assert.Contains(t, err.Error(), "failed to remove the delete request")
 }
 
 func TestCleanupAfterDeletion_DeleteReadDesireError(t *testing.T) {
@@ -226,7 +226,7 @@ func TestCleanupAfterDeletion_DeleteReadDesireError(t *testing.T) {
 
 	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to delete read desire")
+	assert.Contains(t, err.Error(), "failed to delete the mirror")
 }
 
 func TestCleanupAfterDeletion_GetApplyDesireError_NoDeleteDesire_ReturnsStoreError(t *testing.T) {
@@ -236,7 +236,7 @@ func TestCleanupAfterDeletion_GetApplyDesireError_NoDeleteDesire_ReturnsStoreErr
 
 	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to get apply desire")
+	assert.Contains(t, err.Error(), "failed to get the apply request")
 	assert.False(t, errors.Is(err, ErrDeletionPending), "genuine store error must not be wrapped as ErrDeletionPending")
 }
 

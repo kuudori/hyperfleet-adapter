@@ -36,7 +36,8 @@ func (c *Client) DiscoverResources(
 
 	reads, err := c.store.ListReadDesires(ctx, tc.ManagementCluster)
 	if err != nil {
-		return nil, fmt.Errorf("desireclient: failed to list read desires for partition %q: %w", tc.ManagementCluster, err)
+		return nil, fmt.Errorf(
+			"remote transport: failed to list mirrors for partition %q: %w", tc.ManagementCluster, storeErr(err))
 	}
 
 	list := &unstructured.UnstructuredList{}

@@ -71,7 +71,7 @@ func TestDeleteResource_WithoutApply_PairsRead(t *testing.T) {
 		Resource: testResource, Namespace: testNamespace, Name: testName,
 	}
 	readDesire, err := store.GetReadDesire(ctx, readID)
-	require.NoError(t, err, "paired read desire must be auto-created even without a prior apply")
+	require.NoError(t, err, "paired mirror must be auto-created even without a prior apply")
 	assert.Equal(t, "v1", readDesire.TargetVersion)
 	assert.Equal(t, testOwner, readDesire.Owner)
 }
@@ -83,14 +83,14 @@ func TestDeleteResource_ReadFailure_ReturnsError(t *testing.T) {
 
 	err := c.DeleteResource(ctx, testGVK(), testNamespace, testName, nil, testTransportContext())
 	require.Error(t, err, "a read-desire pairing failure must surface as an error, not be swallowed")
-	assert.Contains(t, err.Error(), "paired read desire")
+	assert.Contains(t, err.Error(), "paired mirror")
 }
 
 // TestDeleteResource_ReadFailure_LeavesApplyIntact verifies
 // the failure-injection contract for the read-before-delete ordering: an
 // existing apply desire must survive a read-desire pairing failure untouched,
 // and no delete desire must have been created, since the apply->delete
-// transition (CreateDeleteDesire) never runs if the paired read desire can't
+// transition (CreateDeleteDesire) never runs if the paired mirror can't
 // be ensured first.
 func TestDeleteResource_ReadFailure_LeavesApplyIntact(t *testing.T) {
 	ctx := context.Background()
@@ -153,7 +153,7 @@ func TestDeleteResource_DeleteFailure_LeavesApplyAndReadIntact(t *testing.T) {
 
 	err = c.DeleteResource(ctx, testGVK(), testNamespace, testName, nil, testTransportContext())
 	require.Error(t, err, "a delete-desire creation failure must surface as an error")
-	assert.Contains(t, err.Error(), "failed to create delete desire")
+	assert.Contains(t, err.Error(), "failed to create the delete request")
 
 	_, err = store.GetApplyDesire(ctx, applyID)
 	assert.NoError(t, err,

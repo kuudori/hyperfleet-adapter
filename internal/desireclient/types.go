@@ -35,27 +35,27 @@ type TransportContext struct {
 // transient, non-terminal outcome distinct from confirmed absence (reported
 // via apierrors.NewNotFound). Callers should treat it as "not converged yet"
 // rather than a failure. Use errors.Is to check for it.
-var ErrNotSyncedYet = errors.New("desireclient: resource not synced yet")
+var ErrNotSyncedYet = errors.New("remote transport: resource not synced yet")
 
 // ErrDeletionPending indicates that the desire transport has not yet
 // confirmed resource deletion — either the apply desire still exists
 // (applier may not have processed it) or the delete desire exists but
 // the applier has not confirmed deletion. This is an expected transient
 // state during the deletion lifecycle, not a hard failure.
-var ErrDeletionPending = errors.New("desireclient: deletion pending")
+var ErrDeletionPending = errors.New("remote transport: deletion pending")
 
 // resolveTransportContext type-asserts the generic TransportContext and
 // validates both fields are set.
 func resolveTransportContext(target transportclient.TransportContext) (*TransportContext, error) {
 	tc, ok := target.(*TransportContext)
 	if !ok || tc == nil {
-		return nil, fmt.Errorf("desireclient: TransportContext with ManagementCluster and Resource is required")
+		return nil, fmt.Errorf("remote transport: TransportContext with ManagementCluster and Resource is required")
 	}
 	if tc.ManagementCluster == "" {
-		return nil, fmt.Errorf("desireclient: TransportContext.ManagementCluster is required")
+		return nil, fmt.Errorf("remote transport: TransportContext.ManagementCluster is required")
 	}
 	if tc.Resource == "" {
-		return nil, fmt.Errorf("desireclient: TransportContext.Resource is required")
+		return nil, fmt.Errorf("remote transport: TransportContext.Resource is required")
 	}
 	return tc, nil
 }
@@ -76,7 +76,7 @@ func buildIdentity(
 		Name:              name,
 	}
 	if err := id.Validate(); err != nil {
-		return desire.Identity{}, fmt.Errorf("desireclient: invalid identity: %w", err)
+		return desire.Identity{}, fmt.Errorf("remote transport: invalid identity: %w", err)
 	}
 	return id, nil
 }
@@ -97,7 +97,8 @@ func (c *Client) hasActiveApplyDesire(
 	case errors.Is(err, desire.ErrNotFound):
 		return false, nil
 	default:
-		return false, fmt.Errorf("desireclient: failed to get apply desire for %s/%s: %w", namespace, name, err)
+		return false, fmt.Errorf(
+			"remote transport: failed to get the apply request for %s/%s: %w", namespace, name, storeErr(err))
 	}
 }
 

@@ -31,7 +31,7 @@ func (c *Client) ProbeDeletion(ctx context.Context, gvk schema.GroupVersionKind,
 		return transportclient.DeletionNone, nil
 	case err != nil:
 		return transportclient.DeletionNone, fmt.Errorf(
-			"desireclient: probe delete desire for %s/%s: %w", namespace, name, err)
+			"remote transport: probe the delete request for %s/%s: %w", namespace, name, storeErr(err))
 	case desire.IsDeleted(dd.Status):
 		return transportclient.DeletionConfirmed, nil
 	default:

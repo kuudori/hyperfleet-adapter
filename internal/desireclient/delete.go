@@ -46,14 +46,15 @@ func (c *Client) DeleteResource(
 	// delete desire that will be processed soon.
 	if err = c.ensureReadDesire(ctx, readID, gvk.Version, false); err != nil {
 		return fmt.Errorf(
-			"desireclient: failed to create paired read desire for %s/%s: %w", gvk.Kind, name, err)
+			"remote transport: failed to create the paired mirror for %s/%s: %w", gvk.Kind, name, err)
 	}
 
 	if _, err = c.store.CreateDeleteDesire(ctx, desire.DeleteDesire{
 		Identity: deleteID,
 		Owner:    c.owner,
 	}); err != nil && !errors.Is(err, desire.ErrAlreadyExists) {
-		return fmt.Errorf("desireclient: failed to create delete desire for %s/%s: %w", namespace, name, err)
+		return fmt.Errorf(
+			"remote transport: failed to create the delete request for %s/%s: %w", namespace, name, storeErr(err))
 	}
 
 	return nil

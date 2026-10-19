@@ -37,11 +37,11 @@ func (c *Client) CleanupAfterDeletion(
 		return c.cleanupReadWithoutDelete(ctx, tc, gvk, namespace, name)
 	}
 	if err != nil {
-		return fmt.Errorf("desireclient: cleanup: failed to get delete desire for %s/%s: %w",
-			namespace, name, err)
+		return fmt.Errorf("remote transport: cleanup: failed to get the delete request for %s/%s: %w",
+			namespace, name, storeErr(err))
 	}
 	if !desire.IsDeleted(dd.Status) {
-		return fmt.Errorf("desireclient: cleanup: deletion not yet confirmed for %s/%s: %w",
+		return fmt.Errorf("remote transport: cleanup: deletion not yet confirmed for %s/%s: %w",
 			namespace, name, ErrDeletionPending)
 	}
 
@@ -51,23 +51,23 @@ func (c *Client) CleanupAfterDeletion(
 	}
 	rd, err := c.store.GetReadDesire(ctx, readID)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return fmt.Errorf("desireclient: cleanup: failed to get read desire for %s/%s: %w",
-			namespace, name, err)
+		return fmt.Errorf("remote transport: cleanup: failed to get the mirror for %s/%s: %w",
+			namespace, name, storeErr(err))
 	}
 	if err == nil {
 		// Remove the read mirror first. If deleting the confirmed delete desire
 		// then fails, its status remains available for the next reconciliation.
 		if delErr := c.store.DeleteReadDesire(ctx, readID, c.owner, rd.Version); delErr != nil {
-			return fmt.Errorf("desireclient: cleanup: failed to delete read desire for %s/%s: %w",
-				namespace, name, delErr)
+			return fmt.Errorf("remote transport: cleanup: failed to delete the mirror for %s/%s: %w",
+				namespace, name, storeErr(delErr))
 		}
 		slog.DebugContext(ctx, "desireclient: cleanup: removed read desire",
 			"namespace", namespace, "name", name)
 	}
 
 	if delErr := c.store.DeleteDeleteDesire(ctx, deleteID, c.owner, dd.Version); delErr != nil {
-		return fmt.Errorf("desireclient: cleanup: failed to delete delete desire for %s/%s: %w",
-			namespace, name, delErr)
+		return fmt.Errorf("remote transport: cleanup: failed to remove the delete request for %s/%s: %w",
+			namespace, name, storeErr(delErr))
 	}
 	slog.DebugContext(ctx, "desireclient: cleanup: removed confirmed delete desire",
 		"namespace", namespace, "name", name)
@@ -91,7 +91,7 @@ func (c *Client) cleanupReadWithoutDelete(
 	}
 	if active {
 		return fmt.Errorf(
-			"desireclient: cleanup: apply desire still exists for %s/%s, resource may not have been created yet: %w",
+			"remote transport: cleanup: apply request still exists for %s/%s, resource may not have been created yet: %w",
 			namespace, name, ErrDeletionPending)
 	}
 
@@ -104,27 +104,27 @@ func (c *Client) cleanupReadWithoutDelete(
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("desireclient: cleanup: failed to get read desire for %s/%s: %w",
-			namespace, name, err)
+		return fmt.Errorf("remote transport: cleanup: failed to get the mirror for %s/%s: %w",
+			namespace, name, storeErr(err))
 	}
 
 	_, mirrorErr := c.decodeReadDesire(gvk, namespace, name, rd)
 	switch {
 	case apierrors.IsNotFound(mirrorErr):
 	case errors.Is(mirrorErr, ErrNotSyncedYet):
-		return fmt.Errorf("desireclient: cleanup: absence is not yet confirmed for %s/%s: %w",
+		return fmt.Errorf("remote transport: cleanup: absence is not yet confirmed for %s/%s: %w",
 			namespace, name, ErrDeletionPending)
 	case mirrorErr != nil:
-		return fmt.Errorf("desireclient: cleanup: failed to inspect read desire for %s/%s: %w",
+		return fmt.Errorf("remote transport: cleanup: failed to inspect the mirror for %s/%s: %w",
 			namespace, name, mirrorErr)
 	default:
-		return fmt.Errorf("desireclient: cleanup: resource is still present for %s/%s: %w",
+		return fmt.Errorf("remote transport: cleanup: resource is still present for %s/%s: %w",
 			namespace, name, ErrDeletionPending)
 	}
 
 	if delErr := c.store.DeleteReadDesire(ctx, readID, c.owner, rd.Version); delErr != nil {
-		return fmt.Errorf("desireclient: cleanup: failed to delete read desire for %s/%s: %w",
-			namespace, name, delErr)
+		return fmt.Errorf("remote transport: cleanup: failed to delete the mirror for %s/%s: %w",
+			namespace, name, storeErr(delErr))
 	}
 	slog.DebugContext(ctx, "desireclient: cleanup: removed read desire",
 		"namespace", namespace, "name", name)

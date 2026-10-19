@@ -26,7 +26,7 @@ func (c *Client) ApplyResource(
 	target transportclient.TransportContext,
 ) (*transportclient.ApplyResult, error) {
 	if len(manifestBytes) == 0 {
-		return nil, fmt.Errorf("desireclient: manifest bytes cannot be empty")
+		return nil, fmt.Errorf("remote transport: manifest bytes cannot be empty")
 	}
 
 	tc, err := resolveTransportContext(target)
@@ -36,10 +36,10 @@ func (c *Client) ApplyResource(
 
 	obj, err := parseToUnstructured(manifestBytes)
 	if err != nil {
-		return nil, fmt.Errorf("desireclient: failed to parse manifest: %w", err)
+		return nil, fmt.Errorf("remote transport: failed to parse manifest: %w", err)
 	}
 	if err = manifest.ValidateGenerationFromUnstructured(obj); err != nil {
-		return nil, fmt.Errorf("desireclient: invalid manifest generation: %w", err)
+		return nil, fmt.Errorf("remote transport: invalid manifest generation: %w", err)
 	}
 
 	// The store's ApplySpec.KubeContent must be valid JSON, but manifestBytes
@@ -47,7 +47,7 @@ func (c *Client) ApplyResource(
 	// parsed object rather than storing the original bytes verbatim.
 	kubeContent, err := json.Marshal(obj.Object)
 	if err != nil {
-		return nil, fmt.Errorf("desireclient: failed to marshal manifest to JSON: %w", err)
+		return nil, fmt.Errorf("remote transport: failed to marshal manifest to JSON: %w", err)
 	}
 
 	gvk := obj.GroupVersionKind()
@@ -65,7 +65,8 @@ func (c *Client) ApplyResource(
 
 	existing, err := c.store.GetApplyDesire(ctx, applyID)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return nil, fmt.Errorf("desireclient: failed to get apply desire for %s/%s: %w", applyID.Namespace, applyID.Name, err)
+		return nil, fmt.Errorf(
+			"remote transport: failed to get the apply request for %s/%s: %w", applyID.Namespace, applyID.Name, storeErr(err))
 	}
 	exists := err == nil
 
@@ -73,30 +74,31 @@ func (c *Client) ApplyResource(
 	var existingGen int64
 	if exists {
 		if err = desire.CheckOwner(ctx, applyID, existing.Owner, c.owner); err != nil {
-			return nil, fmt.Errorf("desireclient: apply desire owner: %w", err)
+			return nil, fmt.Errorf("remote transport: apply request owner: %w", storeErr(err))
 		}
 		existingGen = generationFromKubeContent(existing.Spec.KubeContent)
 	}
 
 	read, err := c.store.GetReadDesire(ctx, readID)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return nil, fmt.Errorf("desireclient: failed to get paired read desire for %s/%s: %w",
-			readID.Namespace, readID.Name, err)
+		return nil, fmt.Errorf("remote transport: failed to get the paired mirror for %s/%s: %w",
+			readID.Namespace, readID.Name, storeErr(err))
 	}
 	var paired *desire.ReadDesire
 	if err == nil {
 		if err = desire.CheckOwner(ctx, readID, read.Owner, c.owner); err != nil {
-			return nil, fmt.Errorf("desireclient: read desire owner: %w", err)
+			return nil, fmt.Errorf("remote transport: mirror owner: %w", storeErr(err))
 		}
 		paired = &read
 	}
 	if exists && newGen < existingGen {
 		stored, parseErr := parseToUnstructured(existing.Spec.KubeContent)
 		if parseErr != nil {
-			return nil, fmt.Errorf("desireclient: failed to parse stored apply desire for %s/%s: %w", namespace, name, parseErr)
+			return nil, fmt.Errorf(
+				"remote transport: failed to parse the stored apply request for %s/%s: %w", namespace, name, parseErr)
 		}
 		if err = c.ensureReadDesireWithExisting(ctx, readID, stored.GroupVersionKind().Version, false, paired); err != nil {
-			return nil, fmt.Errorf("desireclient: failed to create paired read desire for %s/%s: %w", gvk.Kind, name, err)
+			return nil, fmt.Errorf("remote transport: failed to create the paired mirror for %s/%s: %w", gvk.Kind, name, err)
 		}
 		return staleGenerationResult(ctx, applyID, newGen, existingGen, 0), nil
 	}
@@ -106,14 +108,15 @@ func (c *Client) ApplyResource(
 		case errors.Is(readErr, ErrNotSyncedYet), apierrors.IsNotFound(readErr):
 			// No content can establish a generation floor yet.
 		case readErr != nil:
-			return nil, fmt.Errorf("desireclient: failed to decode paired read desire for %s/%s: %w", namespace, name, readErr)
+			return nil, fmt.Errorf(
+				"remote transport: failed to decode the paired mirror for %s/%s: %w", namespace, name, readErr)
 		default:
 			mirrorGen := manifest.GetGenerationFromUnstructured(mirrored)
 			if _, annotated := mirrored.GetAnnotations()[constants.AnnotationGeneration]; annotated {
 				mirrorGVK := mirrored.GroupVersionKind()
 				if mirrorGVK.Group != gvk.Group || mirrorGVK.Kind != gvk.Kind ||
 					mirrored.GetNamespace() != namespace || mirrored.GetName() != name {
-					return nil, fmt.Errorf("desireclient: annotated read mirror target does not match %s/%s", namespace, name)
+					return nil, fmt.Errorf("remote transport: annotated read mirror target does not match %s/%s", namespace, name)
 				}
 				if newGen < mirrorGen {
 					return staleGenerationResult(ctx, applyID, newGen, existingGen, mirrorGen), nil
@@ -134,7 +137,7 @@ func (c *Client) ApplyResource(
 	recreate := decision.Operation != manifest.OperationSkip
 	if err = c.ensureReadDesireWithExisting(ctx, readID, gvk.Version, recreate, paired); err != nil {
 		return nil, fmt.Errorf(
-			"desireclient: failed to create paired read desire for %s/%s: %w", gvk.Kind, name, err)
+			"remote transport: failed to create the paired mirror for %s/%s: %w", gvk.Kind, name, err)
 	}
 
 	switch decision.Operation {
@@ -145,7 +148,8 @@ func (c *Client) ApplyResource(
 			Spec:     desire.ApplySpec{KubeContent: kubeContent},
 		}); err != nil {
 			c.logApplyError(ctx, applyID, err)
-			return nil, fmt.Errorf("desireclient: failed to create apply desire for %s/%s: %w", namespace, name, err)
+			return nil, fmt.Errorf(
+				"remote transport: failed to create the apply request for %s/%s: %w", namespace, name, storeErr(err))
 		}
 	case manifest.OperationUpdate:
 		if _, err = c.store.UpdateApplyDesireSpec(
@@ -153,12 +157,13 @@ func (c *Client) ApplyResource(
 		); err != nil {
 			c.logApplyError(ctx, applyID, err)
 			return nil, fmt.Errorf(
-				"desireclient: failed to update apply desire for %s/%s: %w", applyID.Namespace, applyID.Name, err)
+				"remote transport: failed to update the apply request for %s/%s: %w",
+				applyID.Namespace, applyID.Name, storeErr(err))
 		}
 	case manifest.OperationSkip:
 		// Nothing to do.
 	default:
-		return nil, fmt.Errorf("desireclient: unexpected apply decision operation %q", decision.Operation)
+		return nil, fmt.Errorf("remote transport: unexpected apply decision operation %q", decision.Operation)
 	}
 
 	slog.DebugContext(ctx, "ApplyResource completed",
@@ -198,7 +203,7 @@ func (c *Client) logApplyError(ctx context.Context, id desire.Identity, err erro
 func (c *Client) ensureReadDesire(ctx context.Context, id desire.Identity, targetVersion string, recreate bool) error {
 	read, err := c.store.GetReadDesire(ctx, id)
 	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return fmt.Errorf("desireclient: failed to get read desire for %s/%s: %w", id.Namespace, id.Name, err)
+		return fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 	}
 	if err == nil {
 		return c.ensureReadDesireWithExisting(ctx, id, targetVersion, recreate, &read)
@@ -214,13 +219,14 @@ func (c *Client) ensureReadDesireWithExisting(
 	for attempt := 0; ; attempt++ {
 		if existing != nil {
 			if err := desire.CheckOwner(ctx, id, existing.Owner, c.owner); err != nil {
-				return err
+				return storeErr(err)
 			}
 			if !recreate || existing.TargetVersion == targetVersion {
 				return nil
 			}
 			if err := c.store.DeleteReadDesire(ctx, id, c.owner, existing.Version); err != nil {
-				return fmt.Errorf("desireclient: failed to delete existing read desire for %s/%s: %w", id.Namespace, id.Name, err)
+				return fmt.Errorf(
+					"remote transport: failed to delete the existing mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 			}
 		}
 
@@ -233,12 +239,14 @@ func (c *Client) ensureReadDesireWithExisting(
 			return nil
 		}
 		if !errors.Is(err, desire.ErrAlreadyExists) || attempt > 0 {
-			return fmt.Errorf("desireclient: failed to create read desire for %s/%s: %w", id.Namespace, id.Name, err)
+			return fmt.Errorf(
+				"remote transport: failed to create the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 		}
 
 		des, err := c.store.GetReadDesire(ctx, id)
 		if err != nil {
-			return fmt.Errorf("desireclient: failed to get existing read desire for %s/%s: %w", id.Namespace, id.Name, err)
+			return fmt.Errorf(
+				"remote transport: failed to get the existing mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
 		}
 		existing = &des
 	}

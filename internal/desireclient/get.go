@@ -44,7 +44,8 @@ func (c *Client) GetResource(
 	case errors.Is(err, desire.ErrNotFound):
 		// No mirror to decode; in-flight work below decides whether it is absent.
 	case err != nil:
-		return nil, fmt.Errorf("desireclient: failed to get read desire for %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf(
+			"remote transport: failed to get the mirror for %s/%s: %w", namespace, name, storeErr(err))
 	default:
 		object, readErr := c.decodeReadDesire(gvk, namespace, name, rd)
 		if !apierrors.IsNotFound(readErr) {
@@ -111,7 +112,7 @@ func decodeKubeContent(
 ) (*unstructured.Unstructured, error) {
 	obj := &unstructured.Unstructured{}
 	if err := json.Unmarshal(kubeContent, &obj.Object); err != nil {
-		return nil, fmt.Errorf("desireclient: failed to decode mirrored content for %s/%s: %w", namespace, name, err)
+		return nil, fmt.Errorf("remote transport: failed to decode mirrored content for %s/%s: %w", namespace, name, err)
 	}
 	// return the possibly stale mirror, even in the case of a KubeAPIError or PreCheckFailed
 	return obj, nil
