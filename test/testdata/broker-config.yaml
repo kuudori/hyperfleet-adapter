@@ -1,7 +1,7 @@
 broker:
   # Broker type: "rabbitmq" or "googlepubsub"
   type: googlepubsub
-  
+
   # Google Pub/Sub Configuration
   googlepubsub:
     # ==== Connection Settings (required) ====
@@ -29,7 +29,7 @@ broker:
 
     # ==== Dead Letter Settings ====
     # Dead letter topic for messages that fail repeatedly
-    # If create_topic_if_missing is true, a dead letter topic named "{subscription_id}-dlq" 
+    # If create_topic_if_missing is true, a dead letter topic named "{subscription_id}-dlq"
     # will be created automatically
     # dead_letter_topic: "my-dead-letter-topic"  # Optional: customize dead letter topic name
     dead_letter_max_attempts: 5  # 5-100, default: 5

@@ -45,4 +45,3 @@ done
 
 echo "One or both processes died. Check logs."
 exit 1
-

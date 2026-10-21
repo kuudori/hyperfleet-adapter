@@ -47,4 +47,3 @@ echo ""
 echo "✅ Integration test image built successfully!"
 echo "   Image: localhost/hyperfleet-integration-test:latest"
 echo ""
-

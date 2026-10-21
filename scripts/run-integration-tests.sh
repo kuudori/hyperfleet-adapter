@@ -56,17 +56,17 @@ export INTEGRATION_ENVTEST_IMAGE
 if [ "$CONTAINER_RUNTIME" = "podman" ]; then
     echo "📡 Detecting proxy configuration from Podman machine..."
     echo "   Setting TESTCONTAINERS_RYUK_DISABLED=true (Podman compatibility)"
-    
+
     PROXY_HTTP=$(get_podman_proxy "HTTP_PROXY")
     PROXY_HTTPS=$(get_podman_proxy "HTTPS_PROXY")
-    
+
     if [ -n "$PROXY_HTTP" ] || [ -n "$PROXY_HTTPS" ]; then
         echo "   Using HTTP_PROXY=$PROXY_HTTP"
         echo "   Using HTTPS_PROXY=$PROXY_HTTPS"
         export HTTP_PROXY="$PROXY_HTTP"
         export HTTPS_PROXY="$PROXY_HTTPS"
     fi
-    
+
     export TESTCONTAINERS_RYUK_DISABLED=true
     export TESTCONTAINERS_LOG_LEVEL=INFO
 fi
@@ -79,4 +79,3 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ Integration tests passed!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-

@@ -26,10 +26,10 @@ if [ "$CONTAINER_RUNTIME" = "podman" ]; then
     else
         echo "⚠️  WARNING: Podman socket not found, tests may fail"
     fi
-    
+
     echo ""
     echo "🔍 Checking Podman configuration for K3s compatibility..."
-    
+
     ROOTFUL=$(is_podman_rootful)
     if [ "$ROOTFUL" = "false" ]; then
         display_k3s_rootless_warning
@@ -52,10 +52,10 @@ export INTEGRATION_STRATEGY=k3s
 if [ "$CONTAINER_RUNTIME" = "podman" ]; then
     echo "📡 Detecting proxy configuration from Podman machine..."
     echo "   Setting TESTCONTAINERS_RYUK_DISABLED=true (Podman compatibility)"
-    
+
     PROXY_HTTP=$(get_podman_proxy "HTTP_PROXY")
     PROXY_HTTPS=$(get_podman_proxy "HTTPS_PROXY")
-    
+
     echo ""
     if [ -n "$PROXY_HTTP" ] || [ -n "$PROXY_HTTPS" ]; then
         echo "   Using HTTP_PROXY=$PROXY_HTTP"
@@ -63,7 +63,7 @@ if [ "$CONTAINER_RUNTIME" = "podman" ]; then
         export HTTP_PROXY="$PROXY_HTTP"
         export HTTPS_PROXY="$PROXY_HTTPS"
     fi
-    
+
     export TESTCONTAINERS_RYUK_DISABLED=true
     export TESTCONTAINERS_LOG_LEVEL=INFO
 else
@@ -78,4 +78,3 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ K3s integration tests passed!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-

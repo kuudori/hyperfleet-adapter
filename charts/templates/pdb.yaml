@@ -25,4 +25,3 @@ spec:
     matchLabels:
       {{- include "hyperfleet-adapter.selectorLabels" . | nindent 6 }}
 {{- end }}
-

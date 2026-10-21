@@ -26,4 +26,3 @@ spec:
               value: "{{ .clusterId }}"
             - name: GENERATION_ID
               value: "{{ .generationId }}"
-

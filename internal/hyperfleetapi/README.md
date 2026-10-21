@@ -194,7 +194,7 @@ All strategies include ±10% jitter to prevent thundering herd problems.
 
 The client treats **all 5xx responses** plus the following client errors as retryable:
 - `408` Request Timeout
-- `429` Too Many Requests  
+- `429` Too Many Requests
 
 Common retryable server errors include:
 - `500` Internal Server Error
@@ -217,4 +217,3 @@ resp.Body            // Response body as []byte
 resp.Duration        // Total request duration including retries
 resp.Attempts        // Number of attempts made
 ```
-

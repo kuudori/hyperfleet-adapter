@@ -13,4 +13,3 @@ conditions:
     status: "{{ .configuredStatus | default \"Unknown\" }}"
     reason: "{{ .configuredReason | default \"Pending\" }}"
     message: "{{ .configuredMessage | default \"Configuration is being applied\" }}"
-

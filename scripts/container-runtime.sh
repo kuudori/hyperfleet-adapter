@@ -41,12 +41,12 @@ is_podman_rootful() {
 display_container_info() {
     local runtime=$1
     local podman_sock=$2
-    
+
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Container Runtime Information"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo "Runtime detected: $runtime"
-    
+
     if [ "$runtime" = "podman" ]; then
         echo "Podman socket: $podman_sock"
         if [ -n "$podman_sock" ]; then
@@ -119,4 +119,3 @@ display_k3s_rootless_warning() {
     echo "⚠️  Stopping here to prevent K3s failures. This is not a build error!"
     exit 1
 }
-

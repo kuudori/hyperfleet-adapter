@@ -126,7 +126,7 @@ func TestIntegration_MyFeature(t *testing.T) {
     // Use the unified interface
     client := env.GetClient()
     ctx := env.GetContext()
-    
+
     // Create a namespace
     ns := &unstructured.Unstructured{
         Object: map[string]interface{}{
@@ -137,11 +137,11 @@ func TestIntegration_MyFeature(t *testing.T) {
             },
         },
     }
-    
+
     created, err := client.CreateResource(ctx, ns)
     require.NoError(t, err)
     require.NotNil(t, created)
-    
+
     // Your test logic...
 }
 ```

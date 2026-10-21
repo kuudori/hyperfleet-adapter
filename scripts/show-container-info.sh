@@ -14,4 +14,3 @@ if [ "$CONTAINER_RUNTIME" = "podman" ]; then
 fi
 
 display_container_info "$CONTAINER_RUNTIME" "$PODMAN_SOCK"
-

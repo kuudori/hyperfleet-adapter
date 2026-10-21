@@ -23,7 +23,7 @@ data:
   # deployment config under spec.clients.broker.
   # This is the standard configuration format for hyperfleet-broker library
   # Mount this file at /etc/broker/broker.yaml (or set BROKER_CONFIG_FILE)
-  # 
+  #
   # Note: You can override any setting using environment variables:
   #   BROKER_TYPE=googlepubsub
   #   BROKER_GOOGLEPUBSUB_PROJECT_ID=my-project
@@ -35,7 +35,7 @@ data:
     broker:
       # Broker type: "rabbitmq" or "googlepubsub"
       type: googlepubsub
-      
+
       # Google Pub/Sub Configuration
       googlepubsub:
         # ==== Connection Settings (required) ====
@@ -63,7 +63,7 @@ data:
 
         # ==== Dead Letter Settings ====
         # Dead letter topic for messages that fail repeatedly
-        # If create_topic_if_missing is true, a dead letter topic named "{subscription_id}-dlq" 
+        # If create_topic_if_missing is true, a dead letter topic named "{subscription_id}-dlq"
         # will be created automatically
         # dead_letter_topic: "my-dead-letter-topic"  # Optional: customize dead letter topic name
         dead_letter_max_attempts: 5  # 5-100, default: 5

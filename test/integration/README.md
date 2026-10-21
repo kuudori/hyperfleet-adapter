@@ -250,7 +250,7 @@ Tests use a unified interface (`TestEnv`) with automatic strategy selection:
 // test/integration/k8sclient/helper_selector.go
 func SetupTestEnv(t *testing.T) TestEnv {
     strategy := os.Getenv("INTEGRATION_STRATEGY")
-    
+
     switch strategy {
     case "k3s":
         // Use K3s testcontainers
@@ -277,7 +277,7 @@ func TestMyFeature(t *testing.T) {
     // Use the unified interface
     client := env.GetClient()
     ctx := env.GetContext()
-    
+
     // Your test logic...
     ns := &unstructured.Unstructured{...}
     created, err := client.CreateResource(ctx, ns)
@@ -403,7 +403,7 @@ presubmits:
         env:
         - name: INTEGRATION_ENVTEST_IMAGE
           value: quay.io/your-org/integration-test:v1
-  
+
   # Optional: K3s strategy if privileged containers are available
   - name: pull-hyperfleet-adapter-integration-k3s
     decorate: true
@@ -610,4 +610,3 @@ Most CI/CD platforms cache pulled images between runs. Ensure caching is enabled
 - When you need full Kubernetes features
 
 ✅ **Test both strategies** to ensure compatibility across environments
-
