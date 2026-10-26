@@ -43,7 +43,6 @@ Every flag except `--dry-run-*` has an env var equivalent. When you add a deploy
 
 ## Code conventions
 
-@docs/conventions/logging.md
 @docs/conventions/cel.md
 
 ### Error handling
@@ -65,7 +64,7 @@ These return `*ServiceError`, not `error`. Use `.AsError()` to convert.
 - `internal/transportclient/`: the apply and discovery interface shared by every backend. `internal/transportregistry/` builds the named transport clients from deployment config.
 - Backends: `internal/k8sclient/` (local) and `internal/desireclient/` (the `remote` transport).
 - `internal/dryrun/`: the mock API client, recording transport and trace output behind `--dry-run-*`.
-- `internal/logctx/`: adapter-specific log context keys and the stack-trace filter (see the logging conventions above).
+- `internal/logctx/`: adapter-specific log context keys and the stack-trace filter.
 
 ## Docs that change with the code
 
@@ -98,6 +97,7 @@ Tracing is configured only through env vars. A local `adapter serve` tries to ex
 ## Links
 
 - [Architecture docs](https://github.com/openshift-hyperfleet/architecture)
+- Logging standard: [HyperFleet logging specification](https://github.com/openshift-hyperfleet/architecture/blob/main/hyperfleet/standards/logging-specification.md)
 - [HyperFleet API spec](https://github.com/openshift-hyperfleet/hyperfleet-api-spec)
 - [Broker library](https://github.com/openshift-hyperfleet/hyperfleet-broker)
 - [hyperfleet-applier](https://github.com/openshift-hyperfleet/hyperfleet-applier): applies on the target cluster what `remote` transports write to the store
