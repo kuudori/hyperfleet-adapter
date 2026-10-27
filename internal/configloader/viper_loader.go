@@ -196,15 +196,13 @@ func loadAdapterConfigWithViper(
 	return filePath, &config, nil
 }
 
-// loadTaskConfig loads the task configuration from a YAML file without Viper overrides.
-// Task config is purely static YAML configuration.
-func loadTaskConfig(filePath string) (*AdapterTaskConfig, error) {
+func readTaskConfigFile(filePath string) (string, []byte, error) {
 	if filePath == "" {
 		filePath = os.Getenv(EnvTaskConfigPath)
 	}
 
 	if filePath == "" {
-		return nil, fmt.Errorf(
+		return "", nil, fmt.Errorf(
 			"task config file path is required (use --task-config flag or %s env var)",
 			EnvTaskConfigPath,
 		)
@@ -212,8 +210,13 @@ func loadTaskConfig(filePath string) (*AdapterTaskConfig, error) {
 
 	data, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
-		return nil, fmt.Errorf("failed to read task config file %q: %w", filePath, err)
+		return "", nil, fmt.Errorf("failed to read task config file %q: %w", filePath, err)
 	}
+
+	return filePath, data, nil
+}
+
+func decodeTaskConfig(data []byte) (*AdapterTaskConfig, error) {
 	if err := checkTaskSchemaYAML(data); err != nil {
 		return nil, err
 	}

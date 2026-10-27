@@ -1,6 +1,7 @@
 package configloader
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"reflect"
@@ -78,7 +79,7 @@ func getStructValidator() *validator.Validate {
 		}
 
 		// Register custom struct-level validations
-		structValidator.RegisterStructValidation(validateParameterEnvRequired, Parameter{})
+		structValidator.RegisterStructValidationCtx(validateParameterEnvRequired, Parameter{})
 
 		// Use yaml tag names for field names in errors
 		structValidator.RegisterTagNameFunc(extractYamlTagName)
@@ -102,10 +103,16 @@ func validateOperator(fl validator.FieldLevel) bool {
 	return criteria.IsValidOperator(fl.Field().String())
 }
 
+type skipHostEnvKey struct{}
+
+func withSkipHostEnv(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipHostEnvKey{}, true)
+}
+
 // validateParameterEnvRequired is a struct-level validator for Parameter.
 // Checks that source is set and, for required env params, that the env var exists.
-func validateParameterEnvRequired(sl validator.StructLevel) {
-	// type is guaranteed by RegisterStructValidation
+func validateParameterEnvRequired(ctx context.Context, sl validator.StructLevel) {
+	// type is guaranteed by RegisterStructValidationCtx
 	//nolint:errcheck
 	param := sl.Current().Interface().(Parameter)
 
@@ -116,6 +123,9 @@ func validateParameterEnvRequired(sl validator.StructLevel) {
 
 	if !param.Required || !param.Source.IsString() ||
 		!strings.HasPrefix(param.Source.StringVal, "env.") {
+		return
+	}
+	if ctx.Value(skipHostEnvKey{}) != nil {
 		return
 	}
 
@@ -130,9 +140,13 @@ func validateParameterEnvRequired(sl validator.StructLevel) {
 
 // ValidateStruct validates a struct using go-playground/validator tags.
 // Returns a ValidationErrors with all validation failures.
-func ValidateStruct(s interface{}) *ValidationErrors {
+func ValidateStruct(s any) *ValidationErrors {
+	return validateStructCtx(context.Background(), s)
+}
+
+func validateStructCtx(ctx context.Context, s any) *ValidationErrors {
 	v := getStructValidator()
-	err := v.Struct(s)
+	err := v.StructCtx(ctx, s)
 	if err == nil {
 		return nil
 	}

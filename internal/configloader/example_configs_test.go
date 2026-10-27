@@ -1,6 +1,7 @@
 package configloader
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -47,4 +48,35 @@ func TestShippedV2ConfigsLoad(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestShippedTaskConfigLoadsWithoutDeploymentConfig(t *testing.T) {
+	dir := filepath.Join("..", "..", "charts", "examples", "kubernetes")
+	taskPath := filepath.Join(dir, "adapter-task-config.yaml")
+	data, err := os.ReadFile(taskPath)
+	require.NoError(t, err)
+
+	fromTask, err := LoadTaskConfig(t.Context(), data,
+		WithFS(os.DirFS(dir)), WithAdapterName("kubernetes-example"))
+	require.NoError(t, err)
+
+	fromLoad, err := LoadConfig(
+		WithAdapterConfigPath(filepath.Join(dir, "adapter-config.yaml")),
+		WithTaskConfigPath(taskPath),
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, "kubernetes-example", fromTask.Adapter.Name)
+	require.Equal(t, ClientsConfig{}, fromTask.Clients)
+	require.Equal(t, fromLoad.SchemaVersion, fromTask.SchemaVersion)
+	require.Equal(t, fromLoad.Params, fromTask.Params)
+	require.Equal(t, fromLoad.Preconditions, fromTask.Preconditions)
+	require.Equal(t, fromLoad.Resources, fromTask.Resources)
+	require.Equal(t, fromLoad.Post, fromTask.Post)
+
+	job, err := os.ReadFile(filepath.Join(dir, "job.yaml"))
+	require.NoError(t, err)
+	resource := fromTask.GetResourceByName("helloWorldJob")
+	require.NotNil(t, resource)
+	require.Equal(t, string(job), resource.Manifest)
 }
