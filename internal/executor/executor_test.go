@@ -105,9 +105,21 @@ func build404TestExecutor(t *testing.T, config *configloader.Config, mockClient 
 
 // TestNewExecutor tests the NewExecutor function
 func TestNewExecutor(t *testing.T) {
+	registry := testTransportRegistry(k8sclient.NewMockK8sClient())
+	apiCall := &configloader.APICall{Method: "GET", URL: "/clusters/x"}
+	apiCallParam := configloader.Parameter{Name: "clusterStatus", Source: configloader.APICallSource(apiCall)}
+	apiCallPrecondition := configloader.Precondition{
+		ActionBase: configloader.ActionBase{Name: "clusterCheck", APICall: apiCall},
+	}
+	apiCallPost := &configloader.PostConfig{PostActions: []configloader.PostAction{
+		{ActionBase: configloader.ActionBase{Name: "logDone", Log: &configloader.LogAction{Message: "done"}}},
+		{ActionBase: configloader.ActionBase{Name: "reportStatus", APICall: apiCall}},
+	}}
+
 	tests := []struct {
 		config      *ExecutorConfig
 		name        string
+		errContains []string
 		expectError bool
 	}{
 		{
@@ -123,11 +135,93 @@ func TestNewExecutor(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "missing API client",
+			name: "missing API client without api_call",
 			config: &ExecutorConfig{
-				Config: &configloader.Config{},
+				Config:            &configloader.Config{},
+				TransportRegistry: registry,
+			},
+			expectError: false,
+		},
+		{
+			name: "missing API client with api_call param",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					{Name: "clusterId", Source: configloader.StringSource("event.id")},
+					apiCallParam,
+				}},
+				TransportRegistry: registry,
 			},
 			expectError: true,
+			errContains: []string{"params[1].source.api_call (clusterStatus)"},
+		},
+		{
+			name: "missing API client with api_call precondition",
+			config: &ExecutorConfig{
+				Config:            &configloader.Config{Preconditions: []configloader.Precondition{apiCallPrecondition}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"preconditions[0].api_call (clusterCheck)"},
+		},
+		{
+			name: "missing API client with api_call post action",
+			config: &ExecutorConfig{
+				Config:            &configloader.Config{Post: apiCallPost},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"post.post_actions[1].api_call (reportStatus)"},
+		},
+		{
+			name: "missing API client lists every api_call in pipeline order",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{
+					Params:        []configloader.Parameter{apiCallParam},
+					Preconditions: []configloader.Precondition{apiCallPrecondition},
+					Post:          apiCallPost,
+				},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"task config makes API calls but no API client was supplied: " +
+				"params[0].source.api_call (clusterStatus), " +
+				"preconditions[0].api_call (clusterCheck), " +
+				"post.post_actions[1].api_call (reportStatus)"},
+		},
+		{
+			name: "missing API client with optional api_call param and gated post action",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{
+					Params: []configloader.Parameter{{
+						Name:    "clusterStatus",
+						Source:  configloader.APICallSource(apiCall),
+						Default: map[string]interface{}{},
+					}},
+					Post: &configloader.PostConfig{PostActions: []configloader.PostAction{{
+						ActionBase: configloader.ActionBase{Name: "reportStatus", APICall: apiCall},
+						When:       &configloader.PostActionWhen{Expression: "false"},
+					}}},
+				},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{
+				"params[0].source.api_call (clusterStatus)",
+				"post.post_actions[0].api_call (reportStatus)",
+			},
+		},
+		{
+			name: "API client with api_call",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{
+					Params:        []configloader.Parameter{apiCallParam},
+					Preconditions: []configloader.Precondition{apiCallPrecondition},
+					Post:          apiCallPost,
+				},
+				APIClient:         newMockAPIClient(),
+				TransportRegistry: registry,
+			},
+			expectError: false,
 		},
 		{
 			name: "missing transport client",
@@ -152,7 +246,10 @@ func TestNewExecutor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := NewExecutor(tt.config)
 			if tt.expectError {
-				assert.Error(t, err)
+				require.Error(t, err)
+				for _, want := range tt.errContains {
+					assert.Contains(t, err.Error(), want)
+				}
 			} else {
 				assert.NoError(t, err)
 			}
@@ -176,6 +273,43 @@ func TestExecutorBuilder(t *testing.T) {
 
 	require.NoError(t, err)
 	require.NotNil(t, exec)
+}
+
+func TestExecutorBuilder_WithoutAPIClient(t *testing.T) {
+	k8sClient := k8sclient.NewMockK8sClient()
+	config := &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+		Params: []configloader.Parameter{
+			{Name: "clusterId", Source: configloader.StringSource("event.id")},
+		},
+		Resources: []configloader.Resource{{
+			Name: "clusterConfig",
+			Manifest: map[string]interface{}{
+				"apiVersion": "v1",
+				"kind":       "ConfigMap",
+				"metadata":   map[string]interface{}{"name": "cm-{{ .clusterId }}", "namespace": "default"},
+			},
+		}},
+		Post: &configloader.PostConfig{
+			Payloads: []configloader.Payload{{
+				Name:  "statusPayload",
+				Build: map[string]interface{}{"cluster": "{{ .clusterId }}"},
+			}},
+		},
+	}
+
+	exec, err := NewBuilder().
+		WithConfig(config).
+		WithTransportClient(k8sClient).
+		Build()
+	require.NoError(t, err)
+
+	result := exec.Execute(t.Context(), map[string]interface{}{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "cluster-1", result.Params["clusterId"])
+	require.Len(t, result.ResourceResults, 1)
+	assert.Contains(t, k8sClient.Resources, "default/cm-cluster-1")
 }
 
 func TestExecutionContext(t *testing.T) {
@@ -780,6 +914,32 @@ func TestParamExtractor_APICallSource(t *testing.T) {
 		assert.Equal(t, map[string]interface{}{"name": "fallback"}, execCtx.Params["clusterData"])
 	})
 
+	t.Run("required api_call without API client returns error", func(t *testing.T) {
+		config := &configloader.Config{
+			Params: []configloader.Parameter{
+				{Name: "clusterData", Source: configloader.APICallSource(&configloader.APICall{
+					Method: "GET", URL: "/clusters/x",
+				}), Required: true},
+			},
+		}
+		_, err := runParamExtraction(t, config, nil, eventData)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "no API client")
+	})
+
+	t.Run("optional api_call without API client falls back to default", func(t *testing.T) {
+		config := &configloader.Config{
+			Params: []configloader.Parameter{
+				{Name: "clusterData", Source: configloader.APICallSource(&configloader.APICall{
+					Method: "GET", URL: "/clusters/x",
+				}), Default: map[string]interface{}{"name": "fallback"}},
+			},
+		}
+		execCtx, err := runParamExtraction(t, config, nil, eventData)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]interface{}{"name": "fallback"}, execCtx.Params["clusterData"])
+	})
+
 	t.Run("api_call 200 with non-JSON body returns error", func(t *testing.T) {
 		mockClient := newMockAPIClient()
 		mockClient.GetResponse = &hyperfleetapi.Response{
@@ -1099,6 +1259,22 @@ func TestSequentialExecution_Preconditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPreconditionExecutor_WithoutAPIClient(t *testing.T) {
+	preconditions := []configloader.Precondition{{ActionBase: configloader.ActionBase{
+		Name:    "clusterCheck",
+		APICall: &configloader.APICall{Method: "GET", URL: "/clusters/x"},
+	}}}
+	execCtx := NewExecutionContext(t.Context(), map[string]interface{}{}, nil)
+
+	outcome := newPreconditionExecutor(&ExecutorConfig{}).ExecuteAll(t.Context(), preconditions, execCtx)
+
+	require.Error(t, outcome.Error)
+	assert.Contains(t, outcome.Error.Error(), "no API client")
+	assert.False(t, outcome.AllMatched)
+	require.Len(t, outcome.Results, 1)
+	assert.Equal(t, StatusFailed, outcome.Results[0].Status)
 }
 
 // TestPrecondition_CustomCELFunctions tests that custom CEL functions

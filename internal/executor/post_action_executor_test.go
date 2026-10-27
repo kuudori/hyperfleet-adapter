@@ -423,12 +423,23 @@ func TestExecuteAPICall(t *testing.T) {
 		expectedURL  string
 		expectedBody string // optional: for POST/PUT/PATCH, assert last request body (rendered payload)
 		expectError  bool
+		nilClient    bool
 	}{
 		{
 			name:        "nil api call",
 			apiCall:     nil,
 			params:      map[string]interface{}{},
 			expectError: true,
+		},
+		{
+			name: "nil api client",
+			apiCall: &configloader.APICall{
+				Method: "GET",
+				URL:    "http://api.example.com/clusters",
+			},
+			params:      map[string]interface{}{},
+			expectError: true,
+			nilClient:   true,
 		},
 		{
 			name: "simple GET request",
@@ -624,6 +635,11 @@ func TestExecuteAPICall(t *testing.T) {
 				mockClient.DoError = tt.mockError
 			}
 
+			var apiClient hyperfleetapi.Client = mockClient
+			if tt.nilClient {
+				apiClient = nil
+			}
+
 			execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
 			execCtx.Params = tt.params
 
@@ -631,7 +647,7 @@ func TestExecuteAPICall(t *testing.T) {
 				context.Background(),
 				tt.apiCall,
 				execCtx,
-				mockClient,
+				apiClient,
 			)
 
 			if tt.expectError {
@@ -655,6 +671,23 @@ func TestExecuteAPICall(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPostActionExecutor_WithoutAPIClient(t *testing.T) {
+	postConfig := &configloader.PostConfig{PostActions: []configloader.PostAction{{
+		ActionBase: configloader.ActionBase{
+			Name:    "reportStatus",
+			APICall: &configloader.APICall{Method: "PUT", URL: "/clusters/x/statuses"},
+		},
+	}}}
+	execCtx := NewExecutionContext(t.Context(), map[string]interface{}{}, nil)
+
+	results, err := newPostActionExecutor(&ExecutorConfig{}).ExecuteAll(t.Context(), postConfig, execCtx)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no API client")
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFailed, results[0].Status)
 }
 
 func TestPostActionWhenCondition(t *testing.T) {

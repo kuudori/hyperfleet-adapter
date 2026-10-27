@@ -104,6 +104,9 @@ func ExecuteAPICall(
 	if apiCall == nil {
 		return nil, "", fmt.Errorf("apiCall is nil")
 	}
+	if apiClient == nil {
+		return nil, "", fmt.Errorf("no API client was supplied for api_call %s %s", apiCall.Method, apiCall.URL)
+	}
 
 	vars := execCtx.templateVariables()
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"strings"
 
 	"github.com/cloudevents/sdk-go/v2/event"
@@ -47,17 +46,42 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 		return fmt.Errorf("config is required")
 	}
 
-	requiredFields := []string{
-		"APIClient",
-		"TransportRegistry"}
+	if config.TransportRegistry == nil {
+		return fmt.Errorf("field TransportRegistry is required")
+	}
 
-	for _, field := range requiredFields {
-		if reflect.ValueOf(config).Elem().FieldByName(field).IsNil() {
-			return fmt.Errorf("field %s is required", field)
+	if config.APIClient == nil {
+		if steps := apiCallSteps(config.Config); len(steps) > 0 {
+			return fmt.Errorf("task config makes API calls but no API client was supplied: %s", strings.Join(steps, ", "))
 		}
 	}
 
 	return nil
+}
+
+func apiCallSteps(cfg *configloader.Config) []string {
+	var steps []string
+	for i, param := range cfg.Params {
+		if param.Source.IsAPICall() {
+			steps = append(steps, fmt.Sprintf("%s[%d].%s.%s (%s)",
+				configloader.FieldParams, i, configloader.FieldSource, configloader.FieldAPICall, param.Name))
+		}
+	}
+	for i, precond := range cfg.Preconditions {
+		if precond.APICall != nil {
+			steps = append(steps, fmt.Sprintf("%s[%d].%s (%s)",
+				configloader.FieldPreconditions, i, configloader.FieldAPICall, precond.Name))
+		}
+	}
+	if cfg.Post != nil {
+		for i, action := range cfg.Post.PostActions {
+			if action.APICall != nil {
+				steps = append(steps, fmt.Sprintf("%s.%s[%d].%s (%s)",
+					configloader.FieldPost, configloader.FieldPostActions, i, configloader.FieldAPICall, action.Name))
+			}
+		}
+	}
+	return steps
 }
 
 // Execute processes event data according to the adapter configuration
