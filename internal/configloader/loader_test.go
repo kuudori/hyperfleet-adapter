@@ -3,10 +3,12 @@ package configloader
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -265,7 +267,7 @@ params:
 			err := yaml.Unmarshal([]byte(tt.yaml), &config)
 			require.NoError(t, err)
 
-			validator := NewTaskConfigValidator(&config, "")
+			validator := newTaskConfigValidator(&config, fsTaskFiles(nil), false)
 			err = validator.ValidateStructure()
 
 			if tt.wantError {
@@ -349,7 +351,7 @@ preconditions:
 			err := yaml.Unmarshal([]byte(tt.yaml), &config)
 			require.NoError(t, err)
 
-			validator := NewTaskConfigValidator(&config, "")
+			validator := newTaskConfigValidator(&config, fsTaskFiles(nil), false)
 			err = validator.ValidateStructure()
 
 			if tt.wantError {
@@ -418,7 +420,7 @@ resources:
 			err := yaml.Unmarshal([]byte(tt.yaml), &config)
 			require.NoError(t, err)
 
-			validator := NewTaskConfigValidator(&config, "")
+			validator := newTaskConfigValidator(&config, fsTaskFiles(nil), false)
 			err = validator.ValidateStructure()
 
 			if tt.wantError {
@@ -756,7 +758,7 @@ func TestValidateFileReferencesInTaskConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			validator := NewTaskConfigValidator(tt.config, tt.baseDir)
+			validator := newTaskConfigValidator(tt.config, dirTaskFiles(tt.baseDir), false)
 			err := validator.ValidateFileReferences()
 			if tt.wantErr {
 				require.Error(t, err)
@@ -1274,20 +1276,21 @@ metadata:
 		filePath := filepath.Join(tmpDir, "template.yaml")
 		require.NoError(t, os.WriteFile(filePath, []byte(content), 0644))
 
-		result, err := loadRawFile(tmpDir, "template.yaml")
+		result, err := loadRawFile(dirTaskFiles(tmpDir), "template.yaml")
 		require.NoError(t, err)
 		assert.Equal(t, content, result)
 	})
 
 	t.Run("file not found", func(t *testing.T) {
-		_, err := loadRawFile(tmpDir, "nonexistent.yaml")
+		_, err := loadRawFile(dirTaskFiles(tmpDir), "nonexistent.yaml")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to read file")
 	})
 
 	t.Run("path traversal blocked", func(t *testing.T) {
-		_, err := loadRawFile(tmpDir, "../../../etc/passwd")
+		_, err := loadRawFile(dirTaskFiles(tmpDir), "../../../etc/passwd")
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "escapes base directory")
 	})
 }
 
@@ -1488,4 +1491,312 @@ params:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "only one of")
 	})
+}
+
+const taskOnlyYAML = `
+schema_version: "2.0"
+params:
+  - name: "clusterId"
+    source: "event.id"
+    type: "string"
+    required: true
+resources:
+  - name: "deployment"
+    manifest:
+      ref: "templates/deployment.yaml"
+    discovery:
+      namespace: "*"
+      by_selectors:
+        label_selector:
+          app: "test"
+post:
+  payloads:
+    - name: "statusPayload"
+      build_ref: "templates/status-payload.yaml"
+`
+
+const taskOnlyManifest = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "{{ .clusterId }}"
+spec:
+  replicas: 1
+`
+
+const taskOnlyPayload = `status: "{{ .clusterId }}"
+message: "Operation completed"
+`
+
+func taskOnlyFS() fstest.MapFS {
+	return fstest.MapFS{
+		"templates/deployment.yaml":     {Data: []byte(taskOnlyManifest)},
+		"templates/status-payload.yaml": {Data: []byte(taskOnlyPayload)},
+	}
+}
+
+func writeMapFS(t *testing.T, dir string, fsys fstest.MapFS) {
+	t.Helper()
+	for name, file := range fsys {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0755))
+		require.NoError(t, os.WriteFile(full, file.Data, 0644))
+	}
+}
+
+func taskOnlyRefYAML(ref string) string {
+	return `
+schema_version: "2.0"
+resources:
+  - name: "deployment"
+    manifest:
+      ref: "` + ref + `"
+    discovery:
+      namespace: "*"
+      by_name: "test"
+`
+}
+
+func TestLoadTaskConfig(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("loads file references from the supplied FS", func(t *testing.T) {
+		config, err := LoadTaskConfig(ctx, []byte(taskOnlyYAML),
+			WithFS(taskOnlyFS()), WithAdapterName("library-adapter"))
+		require.NoError(t, err)
+		require.NotNil(t, config)
+
+		assert.Equal(t, "2.0", config.SchemaVersion)
+		assert.Equal(t, "library-adapter", config.Adapter.Name)
+		assert.Equal(t, ClientsConfig{}, config.Clients)
+		assert.Nil(t, config.Transports)
+		assert.Nil(t, config.Stores)
+
+		require.Len(t, config.Resources, 1)
+		assert.Equal(t, taskOnlyManifest, config.Resources[0].Manifest)
+
+		require.NotNil(t, config.Post)
+		require.Len(t, config.Post.Payloads, 1)
+		payload := config.Post.Payloads[0]
+		assert.Equal(t, "templates/status-payload.yaml", payload.BuildRef)
+		assert.Equal(t, "{{ .clusterId }}", payload.BuildRefContent["status"])
+		assert.Equal(t, "Operation completed", payload.BuildRefContent["message"])
+	})
+
+	t.Run("adapter name is empty without the option", func(t *testing.T) {
+		config, err := LoadTaskConfig(ctx, []byte(taskOnlyYAML), WithFS(taskOnlyFS()))
+		require.NoError(t, err)
+		assert.Equal(t, "", config.Adapter.Name)
+	})
+
+	t.Run("file reference errors name the field", func(t *testing.T) {
+		fsys := fstest.MapFS{
+			"manifests/job.yaml": {Data: []byte(taskOnlyManifest)},
+		}
+		tests := []struct {
+			name   string
+			ref    string
+			fsys   fs.FS
+			errMsg string
+		}{
+			{
+				name:   "no file system",
+				ref:    "manifests/job.yaml",
+				errMsg: `file reference "manifests/job.yaml" needs a file system; none was supplied`,
+			},
+			{
+				name:   "missing file",
+				ref:    "manifests/missing.yaml",
+				fsys:   fsys,
+				errMsg: `referenced file "manifests/missing.yaml" does not exist`,
+			},
+			{
+				name:   "directory",
+				ref:    "manifests",
+				fsys:   fsys,
+				errMsg: `referenced path "manifests" is a directory, not a file`,
+			},
+			{
+				name:   "escape",
+				ref:    "../x.yaml",
+				fsys:   fsys,
+				errMsg: `path "../x.yaml" escapes base directory`,
+			},
+			{
+				name:   "absolute",
+				ref:    "/x.yaml",
+				fsys:   fsys,
+				errMsg: `path "/x.yaml" must be relative to the task config file system`,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				var opts []TaskLoadOption
+				if tt.fsys != nil {
+					opts = append(opts, WithFS(tt.fsys))
+				}
+				config, err := LoadTaskConfig(ctx, []byte(taskOnlyRefYAML(tt.ref)), opts...)
+				require.Error(t, err)
+				assert.Nil(t, config)
+				assert.Contains(t, err.Error(), "task config file reference validation failed")
+				assert.Contains(t, err.Error(), "resources[0].manifest.ref: "+tt.errMsg)
+			})
+		}
+	})
+}
+
+func TestLoadTaskConfigMatchesLoadConfig(t *testing.T) {
+	load := func(t *testing.T, taskYAML string) (fromTask, fromLoad *Config, taskErr, loadErr error) {
+		t.Helper()
+		tmpDir := t.TempDir()
+		writeMapFS(t, tmpDir, taskOnlyFS())
+		adapterPath, taskPath := createTestConfigFiles(t, tmpDir, testAdapterConfigYAML, taskYAML)
+
+		fromTask, taskErr = LoadTaskConfig(t.Context(), []byte(taskYAML), WithFS(taskOnlyFS()))
+		fromLoad, loadErr = LoadConfig(WithAdapterConfigPath(adapterPath), WithTaskConfigPath(taskPath))
+		return fromTask, fromLoad, taskErr, loadErr
+	}
+
+	t.Run("valid task config gives equal task fields", func(t *testing.T) {
+		fromTask, fromLoad, taskErr, loadErr := load(t, taskOnlyYAML)
+		require.NoError(t, taskErr)
+		require.NoError(t, loadErr)
+		assert.Equal(t, fromLoad.SchemaVersion, fromTask.SchemaVersion)
+		assert.Equal(t, fromLoad.Params, fromTask.Params)
+		assert.Equal(t, fromLoad.Preconditions, fromTask.Preconditions)
+		assert.Equal(t, fromLoad.Resources, fromTask.Resources)
+		assert.Equal(t, fromLoad.Post, fromTask.Post)
+	})
+
+	resourceYAML := `
+resources:
+  - name: "namespace"
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "test"
+    discovery:
+      by_name: "test"
+`
+	tests := []struct {
+		name     string
+		taskYAML string
+		errMsg   string
+	}{
+		{
+			name:     "unknown field (strict decode)",
+			taskYAML: "schema_version: \"2.0\"\nunknown_field: true\n" + resourceYAML,
+			errMsg:   "failed to load task config: failed to parse task config YAML",
+		},
+		{
+			name:     "param without source (structural)",
+			taskYAML: "schema_version: \"2.0\"\nparams:\n  - name: \"region\"\n" + resourceYAML,
+			errMsg:   "task config validation failed: params[0].source is required",
+		},
+		{
+			name:     "missing schema_version",
+			taskYAML: resourceYAML,
+			errMsg:   "failed to load task config: schema_version is required",
+		},
+		{
+			name: "resource without a name (structural)",
+			taskYAML: `
+schema_version: "2.0"
+resources:
+  - manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "test"
+    discovery:
+      by_name: "test"
+`,
+			errMsg: "task config validation failed: resources[0].name is required",
+		},
+		{
+			name: "unknown transport",
+			taskYAML: `
+schema_version: "2.0"
+resources:
+  - name: "namespace"
+    transport: remote-primary
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "test"
+    discovery:
+      by_name: "test"
+`,
+			errMsg: `resource transport validation failed: resources[0].transport references unknown transport "remote-primary"`,
+		},
+		{
+			name: "invalid CEL expression (semantic)",
+			taskYAML: `
+schema_version: "2.0"
+params:
+  - name: "broken"
+    source:
+      expression: "event.id +"
+` + resourceYAML,
+			errMsg: "params[0].source.expression: CEL parse error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fromTask, fromLoad, taskErr, loadErr := load(t, tt.taskYAML)
+			assert.Nil(t, fromTask)
+			assert.Nil(t, fromLoad)
+			require.Error(t, taskErr)
+			require.Error(t, loadErr)
+			assert.Contains(t, loadErr.Error(), tt.errMsg)
+			assert.Equal(t, loadErr.Error(), taskErr.Error())
+		})
+	}
+}
+
+func TestLoadTaskConfigSkipsHostEnv(t *testing.T) {
+	const envName = "HYPERFLEET_TEST_LOAD_TASK_CONFIG_UNSET"
+	t.Setenv(envName, "")
+	require.NoError(t, os.Unsetenv(envName))
+
+	taskYAML := `
+schema_version: "2.0"
+params:
+  - name: "region"
+    source: "env.` + envName + `"
+    required: true
+resources:
+  - name: "namespace"
+    manifest:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "test"
+    discovery:
+      by_name: "test"
+`
+
+	config, err := LoadTaskConfig(t.Context(), []byte(taskYAML))
+	require.NoError(t, err)
+	require.Len(t, config.Params, 1)
+	assert.Equal(t, "env."+envName, config.Params[0].Source.StringVal)
+
+	tmpDir := t.TempDir()
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, testAdapterConfigYAML, taskYAML)
+	_, err = LoadConfig(WithAdapterConfigPath(adapterPath), WithTaskConfigPath(taskPath))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required environment variable "+envName+" is not set")
+}
+
+func TestLoadConfigTaskConfigPathFromEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeMapFS(t, tmpDir, taskOnlyFS())
+	adapterPath, taskPath := createTestConfigFiles(t, tmpDir, testAdapterConfigYAML, taskOnlyYAML)
+	t.Setenv(EnvTaskConfigPath, taskPath)
+
+	config, err := LoadConfig(WithAdapterConfigPath(adapterPath))
+	require.NoError(t, err)
+	require.Len(t, config.Resources, 1)
+	assert.Equal(t, taskOnlyManifest, config.Resources[0].Manifest)
 }

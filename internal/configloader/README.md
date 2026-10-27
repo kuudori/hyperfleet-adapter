@@ -1,6 +1,6 @@
 # Config Loader
 
-The `config_loader` package loads and validates HyperFleet Adapter configuration files (YAML format).
+The `configloader` package loads and validates HyperFleet Adapter configuration files (YAML format).
 
 ## Features
 
@@ -26,11 +26,20 @@ The `config_loader` package loads and validates HyperFleet Adapter configuration
 ```go
 import "github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 
-// Load from file (or set ADAPTER_CONFIG_PATH env var)
-config, err := config_loader.Load("path/to/config.yaml")
+// Load the deployment and task configs from files
+// (or set HYPERFLEET_ADAPTER_CONFIG and HYPERFLEET_TASK_CONFIG)
+config, err := configloader.LoadConfig(
+    configloader.WithAdapterConfigPath("adapter-config.yaml"),
+    configloader.WithTaskConfigPath("adapter-task-config.yaml"),
+    configloader.WithAdapterVersion("1.0.0"), // optional version check
+)
 
-// With adapter version validation
-config, err := config_loader.Load("config.yaml", config_loader.WithAdapterVersion("1.0.0"))
+// Load a task config from bytes, without a deployment config.
+// manifest.ref and build_ref resolve against the fs.FS.
+config, err := configloader.LoadTaskConfig(ctx, data,
+    configloader.WithFS(os.DirFS(dir)),
+    configloader.WithAdapterName("my-adapter"),
+)
 ```
 
 ### Accessing Configuration

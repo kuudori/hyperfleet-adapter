@@ -17,7 +17,7 @@ func baseTaskConfig() *AdapterTaskConfig {
 
 // newTaskValidator is a helper that creates a TaskConfigValidator with semantic validation
 func newTaskValidator(cfg *AdapterTaskConfig) *TaskConfigValidator {
-	return NewTaskConfigValidator(cfg, "")
+	return newTaskConfigValidator(cfg, fsTaskFiles(nil), false)
 }
 
 func TestValidateActionBaseName(t *testing.T) {

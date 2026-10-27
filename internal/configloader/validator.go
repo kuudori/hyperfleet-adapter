@@ -2,9 +2,10 @@ package configloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -226,16 +227,19 @@ type TaskConfigValidator struct {
 	errors      *ValidationErrors
 	celEnv      *cel.Env
 	definedVars map[string]bool
-	baseDir     string
+	files       *taskFiles
 	warnings    []string
+	skipHostEnv bool
 }
 
-// NewTaskConfigValidator creates a validator for AdapterTaskConfig
-func NewTaskConfigValidator(config *AdapterTaskConfig, baseDir string) *TaskConfigValidator {
+// newTaskConfigValidator creates a validator for AdapterTaskConfig.
+// files resolves file references; skipHostEnv skips the check that required env params exist.
+func newTaskConfigValidator(config *AdapterTaskConfig, files *taskFiles, skipHostEnv bool) *TaskConfigValidator {
 	return &TaskConfigValidator{
-		config:  config,
-		baseDir: baseDir,
-		errors:  &ValidationErrors{},
+		config:      config,
+		files:       files,
+		skipHostEnv: skipHostEnv,
+		errors:      &ValidationErrors{},
 	}
 }
 
@@ -251,7 +255,11 @@ func (v *TaskConfigValidator) ValidateStructure() error {
 	}
 
 	// Struct tag validation
-	if errs := ValidateStruct(v.config); errs != nil && errs.HasErrors() {
+	ctx := context.Background()
+	if v.skipHostEnv {
+		ctx = withSkipHostEnv(ctx)
+	}
+	if errs := validateStructCtx(ctx, v.config); errs != nil && errs.HasErrors() {
 		return fmt.Errorf("%s", errs.First())
 	}
 
@@ -260,10 +268,6 @@ func (v *TaskConfigValidator) ValidateStructure() error {
 
 // ValidateFileReferences validates that all file references in the task config exist
 func (v *TaskConfigValidator) ValidateFileReferences() error {
-	if v.baseDir == "" {
-		return nil
-	}
-
 	var errors []string
 
 	// Validate build_ref in post.payloads
@@ -300,15 +304,15 @@ func (v *TaskConfigValidator) validateFileExists(refPath, configPath string) err
 		return fmt.Errorf("%s: file reference is empty", configPath)
 	}
 
-	fullPath, err := resolvePath(v.baseDir, refPath)
+	name, shown, err := v.files.resolve(refPath)
 	if err != nil {
 		return fmt.Errorf("%s: %w", configPath, err)
 	}
 
-	info, err := os.Stat(filepath.Clean(fullPath))
+	info, err := fs.Stat(v.files.fsys, name)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("%s: referenced file %q does not exist (resolved to %q)", configPath, refPath, fullPath)
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s: referenced file %q does not exist (resolved to %q)", configPath, refPath, shown)
 		}
 		return fmt.Errorf("%s: error checking file %q: %w", configPath, refPath, err)
 	}

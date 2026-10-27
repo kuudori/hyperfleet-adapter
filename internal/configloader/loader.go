@@ -3,8 +3,10 @@ package configloader
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
@@ -82,6 +84,25 @@ func WithContext(ctx context.Context) LoadOption {
 	}
 }
 
+type TaskLoadOption func(*taskLoadOptions)
+
+type taskLoadOptions struct {
+	fsys        fs.FS
+	adapterName string
+}
+
+func WithAdapterName(name string) TaskLoadOption {
+	return func(o *taskLoadOptions) {
+		o.adapterName = name
+	}
+}
+
+func WithFS(fsys fs.FS) TaskLoadOption {
+	return func(o *taskLoadOptions) {
+		o.fsys = fsys
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------------
@@ -125,27 +146,48 @@ func LoadConfig(opts ...LoadOption) (*Config, error) {
 	}
 
 	// 2. Load AdapterTaskConfig from YAML (no env binding)
-	taskCfg, err := loadTaskConfig(o.taskConfigPath)
+	taskConfigPath, taskData, err := readTaskConfigFile(o.taskConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load task config: %w", err)
 	}
 
 	// Get base directory from task config path
-	taskConfigPath := o.taskConfigPath
-	if taskConfigPath == "" {
-		taskConfigPath = os.Getenv(EnvTaskConfigPath)
+	taskBaseDir, err := getBaseDir(taskConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get base directory for task config: %w", err)
 	}
-	taskBaseDir := ""
-	if taskConfigPath != "" {
-		var errBaseDir error
-		taskBaseDir, errBaseDir = getBaseDir(taskConfigPath)
-		if errBaseDir != nil {
-			return nil, fmt.Errorf("failed to get base directory for task config: %w", errBaseDir)
-		}
+
+	return buildConfig(o.ctx, taskData, adapterCfg, dirTaskFiles(taskBaseDir), o.skipSemanticValidation, false)
+}
+
+// LoadTaskConfig loads and validates a task config from data, without a
+// deployment config. ctx must be non-nil. File references resolve against the
+// WithFS file system, and any reference fails when none is supplied. It does not
+// check that required env params exist in the process environment.
+func LoadTaskConfig(ctx context.Context, data []byte, opts ...TaskLoadOption) (*Config, error) {
+	o := &taskLoadOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	adapterCfg := &AdapterConfig{Adapter: AdapterInfo{Name: o.adapterName}}
+	return buildConfig(ctx, data, adapterCfg, fsTaskFiles(o.fsys), false, true)
+}
+
+func buildConfig(
+	ctx context.Context,
+	data []byte,
+	adapterCfg *AdapterConfig,
+	files *taskFiles,
+	skipSemantic, skipHostEnv bool,
+) (*Config, error) {
+	taskCfg, err := decodeTaskConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load task config: %w", err)
 	}
 
 	// Validate AdapterTaskConfig structure
-	taskValidator := NewTaskConfigValidator(taskCfg, taskBaseDir)
+	taskValidator := newTaskConfigValidator(taskCfg, files, skipHostEnv)
 	if err := taskValidator.ValidateStructure(); err != nil {
 		return nil, fmt.Errorf("task config validation failed: %w", err)
 	}
@@ -155,11 +197,11 @@ func LoadConfig(opts ...LoadOption) (*Config, error) {
 		return nil, fmt.Errorf("task config file reference validation failed: %w", err)
 	}
 
-	if err := loadTaskConfigFileReferences(taskCfg, taskBaseDir); err != nil {
+	if err := loadTaskConfigFileReferences(taskCfg, files); err != nil {
 		return nil, fmt.Errorf("failed to load task config file references: %w", err)
 	}
 
-	// 3. Merge into unified Config and validate cross-file routing
+	// Merge into unified Config and validate cross-file routing
 	config := Merge(adapterCfg, taskCfg)
 	if config == nil {
 		return nil, fmt.Errorf("failed to merge configurations")
@@ -169,12 +211,12 @@ func LoadConfig(opts ...LoadOption) (*Config, error) {
 	}
 
 	// Semantic validation for task config (optional)
-	if !o.skipSemanticValidation {
+	if !skipSemantic {
 		if err := taskValidator.ValidateSemantic(); err != nil {
 			return nil, fmt.Errorf("task config semantic validation failed: %w", err)
 		}
 		for _, w := range taskValidator.Warnings() {
-			slog.WarnContext(o.ctx, w)
+			slog.WarnContext(ctx, w)
 		}
 	}
 
@@ -185,12 +227,55 @@ func LoadConfig(opts ...LoadOption) (*Config, error) {
 // Internal Functions
 // -----------------------------------------------------------------------------
 
-// loadTaskConfigFileReferences loads content from file references into the task config
-func loadTaskConfigFileReferences(config *AdapterTaskConfig, baseDir string) error {
-	if baseDir == "" {
-		return nil
-	}
+type taskFiles struct {
+	fsys    fs.FS
+	resolve func(ref string) (name, shown string, err error)
+}
 
+func dirTaskFiles(baseDir string) *taskFiles {
+	baseAbs, err := filepath.Abs(baseDir)
+	if err != nil {
+		baseAbs = baseDir
+	}
+	baseAbs = filepath.Clean(baseAbs)
+	return &taskFiles{
+		fsys: os.DirFS(baseAbs),
+		resolve: func(ref string) (string, string, error) {
+			fullPath, err := utils.ResolveSecurePath(baseAbs, ref)
+			if err != nil {
+				return "", "", err
+			}
+			rel, err := filepath.Rel(baseAbs, fullPath)
+			if err != nil {
+				return "", "", fmt.Errorf("path %q escapes base directory", ref)
+			}
+			return filepath.ToSlash(rel), fullPath, nil
+		},
+	}
+}
+
+// fsTaskFiles resolves refs against fsys. A nil fsys rejects every ref.
+func fsTaskFiles(fsys fs.FS) *taskFiles {
+	return &taskFiles{
+		fsys: fsys,
+		resolve: func(ref string) (string, string, error) {
+			if fsys == nil {
+				return "", "", fmt.Errorf("file reference %q needs a file system; none was supplied", ref)
+			}
+			if path.IsAbs(ref) {
+				return "", "", fmt.Errorf("path %q must be relative to the task config file system", ref)
+			}
+			name := path.Clean(ref)
+			if !fs.ValidPath(name) {
+				return "", "", fmt.Errorf("path %q escapes base directory", ref)
+			}
+			return name, name, nil
+		},
+	}
+}
+
+// loadTaskConfigFileReferences loads content from file references into the task config
+func loadTaskConfigFileReferences(config *AdapterTaskConfig, files *taskFiles) error {
 	// Load manifest.ref in resources as raw strings to support Go template syntax.
 	// Files are stored as raw strings so that structural Go templates ({{ if }}, {{ range }}, etc.)
 	// are preserved and rendered at execution time before YAML parsing.
@@ -201,7 +286,7 @@ func loadTaskConfigFileReferences(config *AdapterTaskConfig, baseDir string) err
 			continue
 		}
 
-		content, err := loadRawFile(baseDir, ref)
+		content, err := loadRawFile(files, ref)
 		if err != nil {
 			return fmt.Errorf("%s[%d].%s.%s: %w", FieldResources, i, FieldManifest, FieldRef, err)
 		}
@@ -215,7 +300,7 @@ func loadTaskConfigFileReferences(config *AdapterTaskConfig, baseDir string) err
 		for i := range config.Post.Payloads {
 			payload := &config.Post.Payloads[i]
 			if payload.BuildRef != "" {
-				content, err := loadYAMLFile(baseDir, payload.BuildRef)
+				content, err := loadYAMLFile(files, payload.BuildRef)
 				if err != nil {
 					return fmt.Errorf("%s.%s[%d].%s: %w", FieldPost, FieldPayloads, i, FieldBuildRef, err)
 				}
@@ -229,43 +314,36 @@ func loadTaskConfigFileReferences(config *AdapterTaskConfig, baseDir string) err
 
 // loadRawFile reads a file and returns its content as a raw string.
 // Used for manifest ref files to preserve Go template syntax for later rendering.
-func loadRawFile(baseDir, refPath string) (string, error) {
-	fullPath, err := resolvePath(baseDir, refPath)
+func loadRawFile(files *taskFiles, refPath string) (string, error) {
+	name, shown, err := files.resolve(refPath)
 	if err != nil {
 		return "", err
 	}
 
-	data, err := os.ReadFile(filepath.Clean(fullPath))
+	data, err := fs.ReadFile(files.fsys, name)
 	if err != nil {
-		return "", fmt.Errorf("failed to read file %q: %w", fullPath, err)
+		return "", fmt.Errorf("failed to read file %q: %w", shown, err)
 	}
 
 	return string(data), nil
 }
 
 // loadYAMLFile loads and parses a YAML file
-func loadYAMLFile(baseDir, refPath string) (map[string]interface{}, error) {
-	fullPath, err := resolvePath(baseDir, refPath)
+func loadYAMLFile(files *taskFiles, refPath string) (map[string]any, error) {
+	name, shown, err := files.resolve(refPath)
 	if err != nil {
 		return nil, err
 	}
 
-	data, err := os.ReadFile(filepath.Clean(fullPath))
+	data, err := fs.ReadFile(files.fsys, name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file %q: %w", fullPath, err)
+		return nil, fmt.Errorf("failed to read file %q: %w", shown, err)
 	}
 
-	var content map[string]interface{}
+	var content map[string]any
 	if err := yaml.Unmarshal(data, &content); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML file %q: %w", fullPath, err)
+		return nil, fmt.Errorf("failed to parse YAML file %q: %w", shown, err)
 	}
 
 	return content, nil
-}
-
-// resolvePath resolves a relative path against the base directory and validates
-// that the resolved path does not escape the base directory.
-// This delegates to utils.ResolveSecurePath.
-func resolvePath(baseDir, refPath string) (string, error) {
-	return utils.ResolveSecurePath(baseDir, refPath)
 }
