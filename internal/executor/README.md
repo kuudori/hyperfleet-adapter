@@ -228,7 +228,7 @@ Preconditions have **two different data scopes** for capture and conditions:
 | `capturedField` | Explicitly captured fields (added to params) |
 | `adapter.*` | Adapter name and version, plus execution metadata |
 | `config.*` | Merged deployment and task config. The runtime redacts sensitive values. |
-| `env.*` | Variables from `WithEnv`; none by default. The adapter passes the process environment. |
+| `env.*` | Variables from `WithEnv`; none by default. The adapter passes the process environment. `NewExecutor` checks only required `env.` params; `env.*` in CEL and templates fails at run time. |
 | `event.*` | Full triggering event payload |
 | `resources.*` | Created resources (empty during preconditions) |
 

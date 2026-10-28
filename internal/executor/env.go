@@ -23,11 +23,11 @@ func ProcessEnv() EnvFunc {
 	}
 }
 
-// EnvFromMap returns an EnvFunc that returns a copy of vars taken when EnvFromMap is called.
+// EnvFromMap returns an EnvFunc that returns a copy of vars as they were when EnvFromMap is called.
 func EnvFromMap(vars map[string]string) EnvFunc {
 	snapshot := maps.Clone(vars)
 	return func() map[string]string {
-		return snapshot
+		return maps.Clone(snapshot)
 	}
 }
 

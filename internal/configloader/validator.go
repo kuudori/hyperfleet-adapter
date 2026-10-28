@@ -427,7 +427,8 @@ func (v *TaskConfigValidator) validateParamFileSources() {
 		}
 		if !strings.HasPrefix(param.Source.File.Path, "/") {
 			v.warnings = append(v.warnings, fmt.Sprintf(
-				"%s.path: file source path %q is not absolute; in container deployments, use absolute paths for mounted volumes",
+				"%s.path: file source path %q is not absolute; it is read from the root of the executor's file system, "+
+					"which is / in the adapter binary; use an absolute path",
 				base, param.Source.File.Path))
 		}
 	}

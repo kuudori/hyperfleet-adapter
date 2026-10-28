@@ -2863,6 +2863,13 @@ func TestEnvFromMap(t *testing.T) {
 		assert.Equal(t, int64(1), result.Params["envSize"])
 	})
 
+	t.Run("each call returns its own copy", func(t *testing.T) {
+		env := EnvFromMap(map[string]string{"REGION": "eu-west-1"})
+		env()["REGION"] = "us-east-1"
+
+		assert.Equal(t, map[string]string{"REGION": "eu-west-1"}, env())
+	})
+
 	t.Run("nil map gives an empty environment", func(t *testing.T) {
 		exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvFromMap(nil)), params...)
 
@@ -2940,7 +2947,7 @@ func TestExecute_FileOutsideFSIsUnreadable(t *testing.T) {
 		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
 
 		require.Equal(t, StatusFailed, result.Status)
-		require.ErrorContains(t, result.Errors[PhaseParamExtraction], "no such file or directory")
+		require.ErrorIs(t, result.Errors[PhaseParamExtraction], fs.ErrNotExist)
 		for name, value := range result.Params {
 			assert.NotContains(t, fmt.Sprint(value), "outside-secret", "param %q holds the outside file", name)
 		}
