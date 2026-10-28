@@ -6,6 +6,7 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	"github.com/stretchr/testify/assert"
@@ -184,7 +185,7 @@ func TestDiscoverResources_SelectorWithUnsyncedReadInScopeIsNotSyncedYet(t *test
 
 	_, err := c.DiscoverResources(ctx, testGVK(),
 		&manifest.DiscoveryConfig{Namespace: testNamespace, LabelSelector: "app=missing"}, testTransportContext())
-	require.ErrorIs(t, err, ErrNotSyncedYet, "an unsynced mirror in scope might still match")
+	require.ErrorIs(t, err, transportclient.ErrNotSyncedYet, "an unsynced mirror in scope might still match")
 
 	list, err := c.DiscoverResources(ctx, testGVK(),
 		&manifest.DiscoveryConfig{Namespace: "other", LabelSelector: "app=missing"}, testTransportContext())

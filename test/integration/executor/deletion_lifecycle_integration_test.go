@@ -40,7 +40,7 @@ func TestDeleteConfirmationIgnoresStaleReadAndCleansBoth(t *testing.T) {
 				WithConfig(config).
 				WithAPIClient(apiClient).
 				WithTransportRegistry(transportclient.Registry{
-					desireDiscoveryTransport: desireclient.NewClient(store, "hyperfleet-adapter"),
+					desireDiscoveryTransport: desireEntry(config, desireclient.NewClient(store, "hyperfleet-adapter")),
 				}).
 				Build()
 			require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestAlreadyCleanedResourceAllowsDependentDeleteAndFinalizationCEL(t *testin
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportRegistry(transportclient.Registry{
-			desireDiscoveryTransport: desireclient.NewClient(applierStore, "hyperfleet-adapter"),
+			desireDiscoveryTransport: desireEntry(config, desireclient.NewClient(applierStore, "hyperfleet-adapter")),
 		}).
 		Build()
 	require.NoError(t, err)
@@ -310,7 +310,7 @@ func newDeletionChainExecutor(
 		WithConfig(config).
 		WithAPIClient(apiClient).
 		WithTransportRegistry(transportclient.Registry{
-			desireDiscoveryTransport: desireclient.NewClient(store, "hyperfleet-adapter"),
+			desireDiscoveryTransport: desireEntry(config, desireclient.NewClient(store, "hyperfleet-adapter")),
 		}).
 		Build()
 	require.NoError(t, err)

@@ -15,6 +15,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportregistry"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
@@ -40,13 +41,21 @@ const (
 func TestResourceExecutor_ResolveTransport(t *testing.T) {
 	remote := k8sclient.NewMockK8sClient()
 	local := k8sclient.NewMockK8sClient()
-	definition := testRemoteDefinition()
-	definition.TargetCluster = "{{ .clusterName }}"
+	route := &struct{ name string }{name: "remote-route"}
+	var gotGVK schema.GroupVersionKind
+	var gotVars map[string]any
+	var targetErr error
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			"remote-primary": definition,
-		}},
-		TransportRegistry: transportclient.Registry{"remote-primary": remote, configloader.TransportClientKubernetes: local},
+		TransportRegistry: transportclient.Registry{
+			"remote-primary": {
+				Client: remote,
+				Target: func(gvk schema.GroupVersionKind, vars map[string]any) (transportclient.TransportContext, error) {
+					gotGVK, gotVars = gvk, vars
+					return route, targetErr
+				},
+			},
+			configloader.TransportClientKubernetes: {Client: local},
+		},
 	})
 	execCtx := NewExecutionContext(t.Context(), nil, nil)
 	execCtx.Params["clusterName"] = "cluster-1"
@@ -55,7 +64,9 @@ func TestResourceExecutor_ResolveTransport(t *testing.T) {
 	client, target, err := re.resolveTransport(resource, execCtx)
 	require.NoError(t, err)
 	assert.Same(t, remote, client)
-	assert.Equal(t, &desireclient.TransportContext{ManagementCluster: "cluster-1", Resource: "configmaps"}, target)
+	assert.Same(t, route, target)
+	assert.Equal(t, schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, gotGVK)
+	assert.Equal(t, "cluster-1", gotVars["clusterName"])
 
 	resource.Transport = nil
 	client, target, err = re.resolveTransport(resource, execCtx)
@@ -64,17 +75,9 @@ func TestResourceExecutor_ResolveTransport(t *testing.T) {
 	assert.Nil(t, target)
 
 	resource.Transport = configloader.NamedTransport("remote-primary")
-	definition.TargetCluster = "{{ .missing }}"
-	re.config.Transports["remote-primary"] = definition
+	targetErr = errors.New("route failed")
 	_, _, err = re.resolveTransport(resource, execCtx)
-	require.ErrorContains(t, err, "target_cluster")
-	definition.TargetCluster = "{{ .clusterName }}"
-	re.config.Transports["remote-primary"] = definition
-	for _, invalid := range []string{"", "Bad_Cluster"} {
-		execCtx.Params["clusterName"] = invalid
-		_, _, err = re.resolveTransport(resource, execCtx)
-		require.ErrorContains(t, err, "must be a Kubernetes DNS-1123 label")
-	}
+	require.ErrorIs(t, err, targetErr)
 }
 
 func TestResourceExecutor_ExecuteAll_UnknownTransport(t *testing.T) {
@@ -98,12 +101,9 @@ func TestResourceExecutor_ExecuteAll_UnknownTransport(t *testing.T) {
 
 func newNamedRemoteResourceExecutor(remote, fallback transportclient.TransportClient) *ResourceExecutor {
 	return newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			"remote-primary": testRemoteDefinition(),
-		}},
 		TransportRegistry: transportclient.Registry{
-			"remote-primary":                       remote,
-			configloader.TransportClientKubernetes: fallback,
+			"remote-primary":                       testRemoteEntry("remote-primary", remote),
+			configloader.TransportClientKubernetes: {Client: fallback},
 		},
 	})
 }
@@ -271,10 +271,7 @@ func (c *routeRecordingClient) DeleteResource(ctx context.Context, gvk schema.Gr
 func TestResourceExecutor_OneRemoteRouteMapsTwoKindsAcrossLifecycle(t *testing.T) {
 	client := &routeRecordingClient{MockK8sClient: k8sclient.NewMockK8sClient()}
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			"remote-primary": testRemoteDefinition(),
-		}},
-		TransportRegistry: transportclient.Registry{"remote-primary": client},
+		TransportRegistry: transportclient.Registry{"remote-primary": testRemoteEntry("remote-primary", client)},
 	})
 	configMap := namedRemoteResource(&configloader.DiscoveryConfig{Namespace: "default", ByName: "test-config"})
 	configMap.Lifecycle = &configloader.ResourceLifecycle{Create: &configloader.LifecycleCreate{
@@ -315,12 +312,10 @@ func TestResourceExecutor_DesireTransport_DeletedPrerequisiteBeforeDependent(t *
 		"metadata": map[string]interface{}{"name": "test-cm", "namespace": "default"},
 	}}
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			desireTransportName: testRemoteDefinition(),
-		}},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireclient.NewClient(store, desireOwner),
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName: testRemoteEntry(
+				desireTransportName, desireclient.NewClient(store, desireOwner)),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
@@ -392,13 +387,10 @@ func TestResourceExecutor_DesireCleanupFailureBlocksDependentDelete(t *testing.T
 				"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
 			}}
 			re := newResourceExecutor(&ExecutorConfig{
-				Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-					desireTransportName: testRemoteDefinition(),
-				}},
 				TransportRegistry: transportclient.Registry{
-					desireTransportName: desireclient.NewClient(
-						&failingReadCleanupStore{SpecStore: store}, desireOwner),
-					configloader.TransportClientKubernetes: dependentClient,
+					desireTransportName: testRemoteEntry(desireTransportName, desireclient.NewClient(
+						&failingReadCleanupStore{SpecStore: store}, desireOwner)),
+					configloader.TransportClientKubernetes: {Client: dependentClient},
 				},
 			})
 			prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
@@ -437,12 +429,10 @@ func TestResourceExecutor_DesireTransport_StaleReadDelaysEarlierDependentOneEven
 		"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
 	}}
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			desireTransportName: testRemoteDefinition(),
-		}},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireclient.NewClient(store, desireOwner),
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName: testRemoteEntry(
+				desireTransportName, desireclient.NewClient(store, desireOwner)),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
@@ -484,12 +474,10 @@ func TestResourceExecutor_DesireTransport_CleanedPrerequisiteAfterDependent(t *t
 		"metadata": map[string]any{"name": "test-cm", "namespace": "default"},
 	}}
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			desireTransportName: testRemoteDefinition(),
-		}},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireclient.NewClient(store, desireOwner),
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName: testRemoteEntry(
+				desireTransportName, desireclient.NewClient(store, desireOwner)),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 	prerequisite := newDesireResourceWithLifecycle("deleted_time != null", "Background")
@@ -585,12 +573,9 @@ func TestResourceExecutor_UnsyncedPrerequisiteDoesNotSatisfyCreateGate(t *testin
 	desireClient := desireclient.NewClient(store, desireOwner)
 	dependentClient := k8sclient.NewMockK8sClient()
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{Transports: map[string]configloader.TransportDefinition{
-			desireTransportName: testRemoteDefinition(),
-		}},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireClient,
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName:                    testRemoteEntry(desireTransportName, desireClient),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 
@@ -2656,6 +2641,10 @@ func testRemoteDefinition() configloader.TransportDefinition {
 	}
 }
 
+func testRemoteEntry(name string, client transportclient.TransportClient) transportclient.Entry {
+	return transportclient.Entry{Client: client, Target: transportregistry.Target(name, testRemoteDefinition())}
+}
+
 var testDesireID = desiretest.TestIdentity{
 	ManagementCluster: "cluster-1",
 	Resource:          "configmaps",
@@ -2679,13 +2668,8 @@ func configMapContent(data, generation string) []byte {
 func newDesireExecutor(store desire.SpecStore) *ResourceExecutor {
 	c := desireclient.NewClient(store, desireOwner)
 	return newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{
-			Transports: map[string]configloader.TransportDefinition{
-				desireTransportName: testRemoteDefinition(),
-			},
-		},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName: c,
+			desireTransportName: testRemoteEntry(desireTransportName, c),
 		},
 	})
 }
@@ -3371,7 +3355,7 @@ func TestResourceExecutor_DesireTransport_RecordsResourceStates(t *testing.T) {
 
 		discovered, err := re.discoverResource(ctx, resource, execCtx, client, target)
 
-		require.ErrorIs(t, err, desireclient.ErrNotSyncedYet)
+		require.ErrorIs(t, err, transportclient.ErrNotSyncedYet)
 		assert.Nil(t, discovered)
 		assert.Equal(t, ResourceStateUnsynced, execCtx.ResourceStates[resource.Name])
 	})
@@ -3410,14 +3394,9 @@ func TestResourceExecutor_DesireTransport_UnsyncedDependencyBlocksDelete(t *test
 	}}
 
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{
-			Transports: map[string]configloader.TransportDefinition{
-				desireTransportName: testRemoteDefinition(),
-			},
-		},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireClient,
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName:                    testRemoteEntry(desireTransportName, desireClient),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 
@@ -3459,14 +3438,9 @@ func TestResourceExecutor_DesireTransport_PendingCleanupBlocksDeleteDependency(t
 	}}
 
 	re := newResourceExecutor(&ExecutorConfig{
-		Config: &configloader.Config{
-			Transports: map[string]configloader.TransportDefinition{
-				desireTransportName: testRemoteDefinition(),
-			},
-		},
 		TransportRegistry: transportclient.Registry{
-			desireTransportName:                    desireClient,
-			configloader.TransportClientKubernetes: dependentClient,
+			desireTransportName:                    testRemoteEntry(desireTransportName, desireClient),
+			configloader.TransportClientKubernetes: {Client: dependentClient},
 		},
 	})
 

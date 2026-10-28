@@ -20,7 +20,7 @@ import (
 //
 // Selector results come from read mirrors only. An unsynced mirror in scope has
 // nothing to match yet, so an empty selector result is reported as
-// ErrNotSyncedYet while one remains. Apply and delete desires are not
+// transportclient.ErrNotSyncedYet while one remains. Apply and delete desires are not
 // consulted: the partition is shared, so scanning them would couple this
 // selector to every other target of the same kind.
 func (c *Client) DiscoverResources(
@@ -52,7 +52,7 @@ func (c *Client) DiscoverResources(
 
 		obj, err := c.decodeReadDesire(gvk, rd.Identity.Namespace, rd.Identity.Name, rd)
 		switch {
-		case errors.Is(err, ErrNotSyncedYet):
+		case errors.Is(err, transportclient.ErrNotSyncedYet):
 			// Not yet synced — nothing to match discovery criteria against,
 			// so an empty result cannot confirm absence while one remains in scope.
 			hasUnsyncedRead = true
@@ -77,7 +77,7 @@ func (c *Client) DiscoverResources(
 	}
 
 	if len(list.Items) == 0 && hasUnsyncedRead && discovery.GetLabelSelector() != "" {
-		return nil, ErrNotSyncedYet
+		return nil, transportclient.ErrNotSyncedYet
 	}
 	return list, nil
 }

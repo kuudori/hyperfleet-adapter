@@ -397,7 +397,7 @@ func (b *ExecutorBuilder) WithTransportRegistry(registry transportclient.Registr
 // WithTransportClient configures a Kubernetes client for callers that use one transport.
 func (b *ExecutorBuilder) WithTransportClient(client transportclient.TransportClient) *ExecutorBuilder {
 	return b.WithTransportRegistry(transportclient.Registry{
-		configloader.TransportClientKubernetes: client,
+		configloader.TransportClientKubernetes: {Client: client},
 	})
 }
 

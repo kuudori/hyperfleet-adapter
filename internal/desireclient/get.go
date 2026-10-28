@@ -19,7 +19,7 @@ import (
 // object mirrored by the read desire. Absence is conclusive only when no apply
 // or unconfirmed delete is in flight for the target: a NotFound mirror, or no
 // read desire at all, is then reported as apierrors.NewNotFound, and otherwise
-// as ErrNotSyncedYet. A target with no desire records is therefore not found,
+// as transportclient.ErrNotSyncedYet. A target with no desire records is therefore not found,
 // whether it was never created or its desires were already cleaned up. A
 // confirmed delete never hides a mirrored object here; the executor confirms
 // deletion through transportclient.DeletionLifecycle.
@@ -59,7 +59,7 @@ func (c *Client) GetResource(
 		return nil, err
 	}
 	if deletionState == transportclient.DeletionPending {
-		return nil, ErrNotSyncedYet
+		return nil, transportclient.ErrNotSyncedYet
 	}
 
 	active, err := c.hasActiveApplyDesire(ctx, tc, gvk, namespace, name)
@@ -67,7 +67,7 @@ func (c *Client) GetResource(
 		return nil, err
 	}
 	if active {
-		return nil, ErrNotSyncedYet
+		return nil, transportclient.ErrNotSyncedYet
 	}
 	return nil, apierrors.NewNotFound(schema.GroupResource{Group: gvk.Group, Resource: tc.Resource}, name)
 }
@@ -90,7 +90,7 @@ func (c *Client) decodeReadDesire(
 	switch {
 	case cond == nil:
 		// read desire exists but the applier hasn't observed it yet.
-		return nil, ErrNotSyncedYet
+		return nil, transportclient.ErrNotSyncedYet
 
 	case cond.Status == metav1.ConditionFalse && cond.Reason == desire.ReasonNotFound:
 		// confirmed absent
@@ -98,7 +98,7 @@ func (c *Client) decodeReadDesire(
 
 	case len(rd.Status.KubeContent) == 0:
 		// empty content, but absence is not confirmed
-		return nil, ErrNotSyncedYet
+		return nil, transportclient.ErrNotSyncedYet
 
 	default:
 		// return the stale mirror even if the last condition was a transient failure (KubeAPIError/PreCheckFailed)

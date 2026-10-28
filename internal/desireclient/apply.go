@@ -105,7 +105,7 @@ func (c *Client) ApplyResource(
 	if paired != nil {
 		mirrored, readErr := c.decodeReadDesire(gvk, namespace, name, read)
 		switch {
-		case errors.Is(readErr, ErrNotSyncedYet), apierrors.IsNotFound(readErr):
+		case errors.Is(readErr, transportclient.ErrNotSyncedYet), apierrors.IsNotFound(readErr):
 			// No content can establish a generation floor yet.
 		case readErr != nil:
 			return nil, fmt.Errorf(
@@ -148,8 +148,13 @@ func (c *Client) ApplyResource(
 			Spec:     desire.ApplySpec{KubeContent: kubeContent},
 		}); err != nil {
 			c.logApplyError(ctx, applyID, err)
+			if errors.Is(err, desire.ErrDeletePending) {
+				err = transportclient.ErrDeletionPending
+			} else {
+				err = storeErr(err)
+			}
 			return nil, fmt.Errorf(
-				"remote transport: failed to create the apply request for %s/%s: %w", namespace, name, storeErr(err))
+				"remote transport: failed to create the apply request for %s/%s: %w", namespace, name, err)
 		}
 	case manifest.OperationUpdate:
 		if _, err = c.store.UpdateApplyDesireSpec(

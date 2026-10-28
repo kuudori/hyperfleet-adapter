@@ -31,6 +31,7 @@ type ApplyResult struct {
 }
 
 // TransportContext carries per-request routing information for the transport backend.
+// The Target of the transport's registry entry builds it.
 // Each transport client defines its own concrete context type and type-asserts:
 //   - k8sclient: ignores it (nil)
 //   - desireclient: expects *desireclient.TransportContext with ManagementCluster and Resource

@@ -42,7 +42,7 @@ func (c *Client) CleanupAfterDeletion(
 	}
 	if !desire.IsDeleted(dd.Status) {
 		return fmt.Errorf("remote transport: cleanup: deletion not yet confirmed for %s/%s: %w",
-			namespace, name, ErrDeletionPending)
+			namespace, name, transportclient.ErrDeletionPending)
 	}
 
 	readID, err := buildIdentity(tc, desire.TypeRead, gvk, namespace, name)
@@ -78,7 +78,7 @@ func (c *Client) CleanupAfterDeletion(
 // asked for this deletion, so it only removes a read desire that mirrors
 // NotFound; an active apply or a mirror that still shows (or has not yet
 // observed) the object leaves everything in place and reports
-// ErrDeletionPending.
+// transportclient.ErrDeletionPending.
 func (c *Client) cleanupReadWithoutDelete(
 	ctx context.Context,
 	tc *TransportContext,
@@ -92,7 +92,7 @@ func (c *Client) cleanupReadWithoutDelete(
 	if active {
 		return fmt.Errorf(
 			"remote transport: cleanup: apply request still exists for %s/%s, resource may not have been created yet: %w",
-			namespace, name, ErrDeletionPending)
+			namespace, name, transportclient.ErrDeletionPending)
 	}
 
 	readID, err := buildIdentity(tc, desire.TypeRead, gvk, namespace, name)
@@ -111,15 +111,15 @@ func (c *Client) cleanupReadWithoutDelete(
 	_, mirrorErr := c.decodeReadDesire(gvk, namespace, name, rd)
 	switch {
 	case apierrors.IsNotFound(mirrorErr):
-	case errors.Is(mirrorErr, ErrNotSyncedYet):
+	case errors.Is(mirrorErr, transportclient.ErrNotSyncedYet):
 		return fmt.Errorf("remote transport: cleanup: absence is not yet confirmed for %s/%s: %w",
-			namespace, name, ErrDeletionPending)
+			namespace, name, transportclient.ErrDeletionPending)
 	case mirrorErr != nil:
 		return fmt.Errorf("remote transport: cleanup: failed to inspect the mirror for %s/%s: %w",
 			namespace, name, mirrorErr)
 	default:
 		return fmt.Errorf("remote transport: cleanup: resource is still present for %s/%s: %w",
-			namespace, name, ErrDeletionPending)
+			namespace, name, transportclient.ErrDeletionPending)
 	}
 
 	if delErr := c.store.DeleteReadDesire(ctx, readID, c.owner, rd.Version); delErr != nil {
