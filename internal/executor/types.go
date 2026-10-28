@@ -76,7 +76,7 @@ type EventData struct {
 type ExecutorConfig struct {
 	// Config is the unified configuration (merged from deployment and task configs)
 	Config *configloader.Config
-	// APIClient is the HyperFleet API client
+	// APIClient is the HyperFleet API client. It is required only when the task config has an api_call.
 	APIClient hyperfleetapi.Client
 	// TransportRegistry resolves the configured transport client for each resource.
 	TransportRegistry transportclient.Registry
