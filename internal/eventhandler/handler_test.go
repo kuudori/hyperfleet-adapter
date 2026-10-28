@@ -105,6 +105,7 @@ func TestCreateHandler_MetricsRecording_Failed(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.EnvFromMap(nil)).
 		WithAPIClient(hyperfleetapi.NewMockClient()).
 		WithTransportClient(k8sclient.NewMockK8sClient()).
 		Build()

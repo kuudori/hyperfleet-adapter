@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,6 +112,11 @@ func TestNewExecutor(t *testing.T) {
 	apiCallPost := &configloader.PostConfig{PostActions: []configloader.PostAction{
 		{ActionBase: configloader.ActionBase{Name: "logDone", Log: &configloader.LogAction{Message: "done"}}},
 		{ActionBase: configloader.ActionBase{Name: "reportStatus", APICall: apiCall}},
+	}}
+	fileConfig := &configloader.Config{Params: []configloader.Parameter{
+		{Name: "clusterId", Source: configloader.StringSource("event.id")},
+		{Name: "region", Source: configloader.StringSource("env.REGION")},
+		requiredFileParam("k8sToken", "/var/run/secrets/k8sToken"),
 	}}
 
 	tests := []struct {
@@ -216,6 +223,88 @@ func TestNewExecutor(t *testing.T) {
 				},
 				APIClient:         newMockAPIClient(),
 				TransportRegistry: registry,
+			},
+			expectError: false,
+		},
+		{
+			name: "missing file system with file param",
+			config: &ExecutorConfig{
+				Config:            fileConfig,
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{
+				"task config reads files but no file system was supplied: params[2].source.file (k8sToken)",
+			},
+		},
+		{
+			name: "missing file system with optional defaulted file param",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{{
+					Name:    "caBundle",
+					Source:  configloader.FileSource(&configloader.FileSourceConfig{Path: "/etc/ca/bundle.pem"}),
+					Default: "",
+				}}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"params[0].source.file (caBundle)"},
+		},
+		{
+			name: "missing file system lists every file param in order",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					requiredFileParam("k8sToken", "/var/run/secrets/k8sToken"),
+					{Name: "clusterId", Source: configloader.StringSource("event.id")},
+					requiredFileParam("pullSecret", "/var/run/secrets/pullSecret"),
+				}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"task config reads files but no file system was supplied: " +
+				"params[0].source.file (k8sToken), params[2].source.file (pullSecret)"},
+		},
+		{
+			name: "file system with file param",
+			config: &ExecutorConfig{
+				Config:            fileConfig,
+				TransportRegistry: registry,
+				Files:             fstest.MapFS{},
+			},
+			expectError: false,
+		},
+		{
+			name: "missing environment with required env params",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					{Name: "apiBaseUrl", Source: configloader.StringSource("env.HYPERFLEET_API_BASE_URL"), Required: true},
+					{Name: "region", Source: configloader.StringSource("env.REGION"), Default: "us-east-1"},
+					{Name: "apiVersion", Source: configloader.StringSource("env.HYPERFLEET_API_VERSION"), Required: true},
+				}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"task config requires environment variables but no environment was supplied: " +
+				"params[0].source (apiBaseUrl), params[2].source (apiVersion)"},
+		},
+		{
+			name: "missing environment with optional env param",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					{Name: "region", Source: configloader.StringSource("env.REGION")},
+				}},
+				TransportRegistry: registry,
+			},
+			expectError: false,
+		},
+		{
+			name: "environment with required env param",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					{Name: "apiBaseUrl", Source: configloader.StringSource("env.HYPERFLEET_API_BASE_URL"), Required: true},
+				}},
+				TransportRegistry: registry,
+				Env:               EnvFromMap(nil),
 			},
 			expectError: false,
 		},
@@ -498,6 +587,7 @@ func TestExecute_ParamExtraction(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	if err != nil {
 		t.Fatalf("unexpected error creating executor: %v", err)
@@ -728,11 +818,12 @@ func TestParamExtractor(t *testing.T) {
 
 			// Create a new context for each test. The config supplies adapter.name.
 			execCtx := NewExecutionContext(t.Context(), eventData, config)
+			execCtx.envVariable = envSnapshot(ProcessEnv())
 
 			// Extract params using pure function
 			configMap, err := configToMap(config)
 			require.NoError(t, err)
-			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil)
+			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil, nil)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -757,20 +848,21 @@ func runParamExtraction(
 ) (*ExecutionContext, error) {
 	t.Helper()
 	execCtx := NewExecutionContext(context.Background(), eventData, nil)
-	return execCtx, extractParams(execCtx, config, mockClient)
+	return execCtx, extractParams(execCtx, config, mockClient, os.DirFS("/"))
 }
 
 // An env param and env.* read the same snapshot, even if the process
-// environment changes after NewExecutionContext returns.
+// environment changes after envSnapshot takes it.
 func TestParamExtractor_EnvSourceMatchesEnvVariable(t *testing.T) {
 	t.Setenv("SNAPSHOT_VAR", "before")
 	execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
+	execCtx.envVariable = envSnapshot(ProcessEnv())
 	t.Setenv("SNAPSHOT_VAR", "after")
 
 	config := &configloader.Config{
 		Params: []configloader.Parameter{{Name: "fromEnv", Source: configloader.StringSource("env.SNAPSHOT_VAR")}},
 	}
-	require.NoError(t, extractParams(execCtx, config, nil))
+	require.NoError(t, extractParams(execCtx, config, nil, nil))
 
 	env, ok := execCtx.templateVariables()["env"].(map[string]any)
 	require.True(t, ok, "env must be a map")
@@ -1035,9 +1127,8 @@ func TestParamExtractor_FileSource(t *testing.T) {
 			},
 		}
 		_, err := runParamExtraction(t, config, mockClient, eventData)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "/nonexistent/path/token")
-		assert.Contains(t, err.Error(), "token")
+		require.ErrorIs(t, err, fs.ErrNotExist)
+		assert.Contains(t, err.Error(), `param "token": opening "/nonexistent/path/token": open /nonexistent/path/token: `)
 	})
 
 	t.Run("required empty file returns error", func(t *testing.T) {
@@ -1142,6 +1233,20 @@ func TestParamExtractor_FileSource(t *testing.T) {
 		_, err := runParamExtraction(t, config, mockClient, eventData)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "empty")
+	})
+
+	t.Run("nil file system returns error", func(t *testing.T) {
+		config := &configloader.Config{
+			Params: []configloader.Parameter{
+				{Name: "token", Source: configloader.FileSource(&configloader.FileSourceConfig{
+					Path: "/etc/creds/token",
+				}), Required: true},
+			},
+		}
+		execCtx := NewExecutionContext(context.Background(), eventData, nil)
+		err := extractParams(execCtx, config, mockClient, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `param "token": no file system was supplied for file source "/etc/creds/token"`)
 	})
 }
 
@@ -2194,6 +2299,7 @@ func TestGetCELVariables_AllNamespaces(t *testing.T) {
 	}
 	config := &configloader.Config{Adapter: configloader.AdapterInfo{Name: "cel-adapter", Version: "2.0.0"}}
 	execCtx := NewExecutionContext(t.Context(), eventData, config)
+	execCtx.envVariable = envSnapshot(ProcessEnv())
 	execCtx.Params["myParam"] = "param-value"
 	configMap, err := configToMap(config.Redacted())
 	require.NoError(t, err)
@@ -2248,6 +2354,7 @@ func TestCELExpression_EnvVariable(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2318,6 +2425,7 @@ func TestCELExpression_EnvInPostActionWhen(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2389,6 +2497,7 @@ func TestCELExpression_EnvInParamExpression(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2446,6 +2555,7 @@ func TestGoTemplate_EnvInManifest(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(mockClient)).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2678,4 +2788,161 @@ func TestExecute_BuiltinVariablesNotInParams(t *testing.T) {
 		assert.False(t, found, "built-in %q must not be stored in params", name)
 	}
 	assert.Equal(t, "test-adapter", putRequestBody(t, mockClient)["configAdapterName"])
+}
+
+func buildParamExecutor(t *testing.T, builder *ExecutorBuilder, params ...configloader.Parameter) *Executor {
+	t.Helper()
+	exec, err := builder.
+		WithConfig(&configloader.Config{
+			Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+			Params:  params,
+		}).
+		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		Build()
+	require.NoError(t, err)
+	return exec
+}
+
+func requiredFileParam(name, path string) configloader.Parameter {
+	return configloader.Parameter{
+		Name:     name,
+		Source:   configloader.FileSource(&configloader.FileSourceConfig{Path: path}),
+		Required: true,
+	}
+}
+
+func TestExecute_EnvDefaultsToEmpty(t *testing.T) {
+	t.Setenv("HOST_ONLY", "x")
+
+	exec := buildParamExecutor(t, NewBuilder(),
+		configloader.Parameter{Name: "hostOnly", Source: configloader.StringSource("env.HOST_ONLY")},
+		configloader.Parameter{Name: "hostOnlySet", Source: configloader.ExpressionSource("env.?HOST_ONLY.hasValue()")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.NotContains(t, result.Params, "hostOnly")
+	assert.Equal(t, false, result.Params["hostOnlySet"])
+}
+
+func TestExecute_EnvAllowlist(t *testing.T) {
+	t.Setenv("ALLOWED_VAR", "allowed")
+	t.Setenv("DENIED_VAR", "denied")
+
+	exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvAllowlist("ALLOWED_VAR")),
+		configloader.Parameter{Name: "allowed", Source: configloader.StringSource("env.ALLOWED_VAR"), Required: true},
+		configloader.Parameter{Name: "allowedCEL", Source: configloader.ExpressionSource("env.ALLOWED_VAR")},
+		configloader.Parameter{Name: "denied", Source: configloader.StringSource("env.DENIED_VAR")},
+		configloader.Parameter{Name: "deniedSet", Source: configloader.ExpressionSource("env.?DENIED_VAR.hasValue()")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "allowed", result.Params["allowed"])
+	assert.Equal(t, "allowed", result.Params["allowedCEL"])
+	assert.NotContains(t, result.Params, "denied")
+	assert.Equal(t, false, result.Params["deniedSet"])
+}
+
+func TestEnvFromMap(t *testing.T) {
+	params := []configloader.Parameter{
+		{Name: "region", Source: configloader.StringSource("env.REGION")},
+		{Name: "envSize", Source: configloader.ExpressionSource("size(env)")},
+	}
+
+	t.Run("caller changes after EnvFromMap do not reach the run", func(t *testing.T) {
+		vars := map[string]string{"REGION": "eu-west-1"}
+		exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvFromMap(vars)), params...)
+		vars["REGION"] = "us-east-1"
+		vars["EXTRA"] = "extra"
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+		assert.Equal(t, "eu-west-1", result.Params["region"])
+		assert.Equal(t, int64(1), result.Params["envSize"])
+	})
+
+	t.Run("nil map gives an empty environment", func(t *testing.T) {
+		exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvFromMap(nil)), params...)
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+		assert.NotContains(t, result.Params, "region")
+		assert.Equal(t, int64(0), result.Params["envSize"])
+	})
+}
+
+func TestExecute_TakesOneEnvSnapshotPerRun(t *testing.T) {
+	calls := 0
+	env := func() map[string]string {
+		calls++
+		return map[string]string{"SNAPSHOT_VAR": fmt.Sprintf("call-%d", calls)}
+	}
+
+	exec := buildParamExecutor(t, NewBuilder().WithEnv(env),
+		configloader.Parameter{Name: "fromParam", Source: configloader.StringSource("env.SNAPSHOT_VAR")},
+		configloader.Parameter{Name: "fromCEL", Source: configloader.ExpressionSource("env.SNAPSHOT_VAR")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "call-1", result.Params["fromParam"])
+	assert.Equal(t, "call-1", result.Params["fromCEL"])
+	assert.Equal(t, 1, calls)
+}
+
+func TestExecute_FileSourceReadsThroughFS(t *testing.T) {
+	fsys := fstest.MapFS{"etc/creds/token": &fstest.MapFile{Data: []byte("first-token\n")}}
+	exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys),
+		requiredFileParam("token", "/etc/creds/token"),
+	)
+
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "first-token", result.Params["token"])
+
+	fsys["etc/creds/token"] = &fstest.MapFile{Data: []byte("rotated-token\n")}
+	result = exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "rotated-token", result.Params["token"])
+}
+
+func TestExecute_FileOutsideFSIsUnreadable(t *testing.T) {
+	t.Run("host path missing from the FS", func(t *testing.T) {
+		fsys := fstest.MapFS{"etc/creds/token": &fstest.MapFile{Data: []byte("token")}}
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys), requiredFileParam("token", "/etc/passwd"))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorContains(t, result.Errors[PhaseParamExtraction], `opening "/etc/passwd"`)
+		assert.NotContains(t, result.Params, "token")
+	})
+
+	t.Run("path that leaves the FS root", func(t *testing.T) {
+		fsys := fstest.MapFS{"token": &fstest.MapFile{Data: []byte("token")}}
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys), requiredFileParam("token", "../token"))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorContains(t, result.Errors[PhaseParamExtraction], `path "../token" is outside the file system`)
+		assert.NotContains(t, result.Params, "token")
+	})
+
+	t.Run("absolute host path outside a directory FS", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "token")
+		require.NoError(t, os.WriteFile(outside, []byte("outside-secret"), 0o600))
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(os.DirFS(t.TempDir())), requiredFileParam("token", outside))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorContains(t, result.Errors[PhaseParamExtraction], "no such file or directory")
+		for name, value := range result.Params {
+			assert.NotContains(t, fmt.Sprint(value), "outside-secret", "param %q holds the outside file", name)
+		}
+	})
 }

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -381,17 +380,6 @@ func executionErrorToMap(execErr *ExecutionError) interface{} {
 		"step":    execErr.Step,
 		"message": execErr.Message,
 	}
-}
-
-// buildEnvMap returns all OS environment variables as a map[string]interface{} for CEL evaluation.
-func buildEnvMap() map[string]interface{} {
-	envMap := make(map[string]interface{})
-	for _, kv := range os.Environ() {
-		if i := strings.Index(kv, "="); i > 0 {
-			envMap[kv[:i]] = kv[i+1:]
-		}
-	}
-	return envMap
 }
 
 // adapterMetadataToMap converts AdapterMetadata struct to a map for CEL evaluation

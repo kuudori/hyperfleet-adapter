@@ -347,6 +347,8 @@ func buildExecutor(
 		WithAPIClient(apiClient).
 		WithTransportRegistry(registry).
 		WithMetricsRecorder(metricsRecorder).
+		WithEnv(executor.ProcessEnv()).
+		WithFiles(os.DirFS("/")).
 		Build()
 }
 

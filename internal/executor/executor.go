@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"strings"
 
@@ -54,7 +55,42 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 		}
 	}
 
+	if config.Files == nil {
+		if steps := fileSteps(config.Config); len(steps) > 0 {
+			return fmt.Errorf("task config reads files but no file system was supplied: %s", strings.Join(steps, ", "))
+		}
+	}
+
+	if config.Env == nil {
+		if steps := requiredEnvSteps(config.Config); len(steps) > 0 {
+			return fmt.Errorf("task config requires environment variables but no environment was supplied: %s",
+				strings.Join(steps, ", "))
+		}
+	}
+
 	return nil
+}
+
+func fileSteps(cfg *configloader.Config) []string {
+	var steps []string
+	for i, param := range cfg.Params {
+		if param.Source.IsFile() {
+			steps = append(steps, fmt.Sprintf("%s[%d].%s.file (%s)",
+				configloader.FieldParams, i, configloader.FieldSource, param.Name))
+		}
+	}
+	return steps
+}
+
+func requiredEnvSteps(cfg *configloader.Config) []string {
+	var steps []string
+	for i, param := range cfg.Params {
+		if param.Required && param.Source.IsString() && strings.HasPrefix(param.Source.StringVal, "env.") {
+			steps = append(steps, fmt.Sprintf("%s[%d].%s (%s)",
+				configloader.FieldParams, i, configloader.FieldSource, param.Name))
+		}
+	}
+	return steps
 }
 
 func apiCallSteps(cfg *configloader.Config) []string {
@@ -114,6 +150,7 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	}
 
 	execCtx := NewExecutionContext(ctx, rawData, e.config.Config)
+	execCtx.envVariable = envSnapshot(e.config.Env)
 
 	// Initialize execution result
 	result := &ExecutionResult{
@@ -277,11 +314,13 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 
 // executeParamExtraction extracts parameters from the event and environment
 func (e *Executor) executeParamExtraction(execCtx *ExecutionContext) error {
-	return extractParams(execCtx, e.config.Config, e.config.APIClient)
+	return extractParams(execCtx, e.config.Config, e.config.APIClient, e.config.Files)
 }
 
 // extractParams sets the config variable and extracts the configured params.
-func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiClient hyperfleetapi.Client) error {
+func extractParams(
+	execCtx *ExecutionContext, config *configloader.Config, apiClient hyperfleetapi.Client, fsys fs.FS,
+) error {
 	configMap, err := configToMap(config)
 	if err != nil {
 		return NewExecutorError(PhaseParamExtraction, "config", "failed to marshal config", err)
@@ -297,7 +336,7 @@ func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiCl
 
 	// config.* param sources resolve against the real (unredacted) config so that
 	// sensitive fields like store URLs can still be explicitly extracted when needed.
-	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient)
+	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient, fsys)
 }
 
 // startTracedExecution creates an OTel span and adds trace context to logs.
@@ -403,6 +442,18 @@ func (b *ExecutorBuilder) WithTransportClient(client transportclient.TransportCl
 // WithMetricsRecorder sets the optional Prometheus metrics recorder
 func (b *ExecutorBuilder) WithMetricsRecorder(recorder *metrics.Recorder) *ExecutorBuilder {
 	b.config.MetricsRecorder = recorder
+	return b
+}
+
+// WithEnv sets the environment variables a run reads as env.* and through env. params.
+func (b *ExecutorBuilder) WithEnv(env EnvFunc) *ExecutorBuilder {
+	b.config.Env = env
+	return b
+}
+
+// WithFiles sets the file system that file params read on every run.
+func (b *ExecutorBuilder) WithFiles(fsys fs.FS) *ExecutorBuilder {
+	b.config.Files = fsys
 	return b
 }
 

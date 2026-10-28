@@ -123,7 +123,7 @@ Extracts parameters from various sources:
 
 - **Environment Variables**: `source: "env.VARIABLE_NAME"`
 - **Event Data**: `source: "event.field.path"`
-- **File**: `source: { file: { path: "/path/to/file" } }` (read at reconciliation time)
+- **File**: `source: { file: { path: "/path/to/file" } }` (read through `WithFiles` on every run)
 - **Secrets**: `source: "secret.namespace.name.key"` (requires K8s client)
 - **ConfigMaps**: `source: "configmap.namespace.name.key"` (requires K8s client)
 
@@ -228,7 +228,7 @@ Preconditions have **two different data scopes** for capture and conditions:
 | `capturedField` | Explicitly captured fields (added to params) |
 | `adapter.*` | Adapter name and version, plus execution metadata |
 | `config.*` | Merged deployment and task config. The runtime redacts sensitive values. |
-| `env.*` | OS environment variables |
+| `env.*` | Variables from `WithEnv`; none by default. The adapter passes the process environment. |
 | `event.*` | Full triggering event payload |
 | `resources.*` | Created resources (empty during preconditions) |
 

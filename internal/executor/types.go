@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"maps"
 	"time"
 
@@ -82,6 +83,10 @@ type ExecutorConfig struct {
 	TransportRegistry transportclient.Registry
 	// MetricsRecorder is the optional Prometheus metrics recorder
 	MetricsRecorder *metrics.Recorder
+	// Env supplies the environment variables a run reads. Nil means no variables.
+	Env EnvFunc
+	// Files is the file system that file params read. Nil means no file access.
+	Files fs.FS
 }
 
 // Executor processes CloudEvents according to the adapter configuration
@@ -206,7 +211,7 @@ type ExecutionContext struct {
 	// config. extractParams sets it once.
 	configVariable map[string]any
 	// envVariable is the environment snapshot that templates, CEL and env params
-	// read. NewExecutionContext takes the snapshot.
+	// read. Execute takes the snapshot from ExecutorConfig.Env.
 	envVariable map[string]any
 	// Resources holds discovered resources keyed by resource name.
 	// Values are expected to be *unstructured.Unstructured.
@@ -292,7 +297,7 @@ func NewExecutionContext(
 		Config:         config,
 		EventData:      eventData,
 		Params:         make(map[string]interface{}),
-		envVariable:    buildEnvMap(),
+		envVariable:    map[string]any{},
 		Resources:      make(map[string]interface{}),
 		ResourceStates: make(map[string]ResourceState),
 		Evaluations:    make([]EvaluationRecord, 0),

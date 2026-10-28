@@ -29,7 +29,7 @@ func TestExtractConfigParams_OptionalParamFailureIsLogged(t *testing.T) {
 	configMap, err := configToMap(config)
 	require.NoError(t, err)
 
-	err = extractConfigParams(context.Background(), config, execCtx, configMap, nil)
+	err = extractConfigParams(context.Background(), config, execCtx, configMap, nil, nil)
 
 	require.NoError(t, err, "a failing optional param must not fail extraction")
 	assert.NotContains(t, execCtx.Params, "dropped")

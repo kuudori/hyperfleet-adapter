@@ -191,6 +191,7 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -324,6 +325,7 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -426,6 +428,7 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -519,6 +522,7 @@ func setup404IntegrationTest(t *testing.T) (*testutil.MockAPIServer, *executor.E
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -611,6 +615,7 @@ func TestExecutor_CELExpressionEvaluation(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -656,6 +661,7 @@ func TestExecutor_MultipleMessages(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -708,6 +714,7 @@ func TestExecutor_Handler_Integration(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -759,6 +766,7 @@ func TestExecutor_Handler_PreconditionNotMet_ReturnsNil(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -791,6 +799,7 @@ func TestExecutor_ContextCancellation(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -826,6 +835,7 @@ func TestExecutor_MissingRequiredParam(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -891,6 +901,7 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -942,6 +953,7 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1089,6 +1101,7 @@ func TestExecutor_LogAction(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1157,6 +1170,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1341,6 +1355,7 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1485,6 +1500,7 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1642,6 +1658,7 @@ func TestExecutor_PayloadWhenCondition(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -1796,6 +1813,7 @@ func TestExecutor_CELNamespaces_EnvAndEvent(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -1978,6 +1996,7 @@ func TestExecutor_CELNamespaces_ResourcesAdapterCaptures(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()

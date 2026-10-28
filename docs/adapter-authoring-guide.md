@@ -409,7 +409,7 @@ A `source` mapping runs something:
 
 ```yaml
 params:
-  # file: read a file on every pass, for example a token that rotates
+  # file: read a file on every pass, for example a token that rotates. A relative path is read from /.
   - name: "k8sToken"
     source:
       file:

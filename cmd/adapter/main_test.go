@@ -162,6 +162,29 @@ func TestBuildExecutor_DryRunNamedRemoteTransport(t *testing.T) {
 	require.Equal(t, "configmaps", recorder.Records[0].TargetResource)
 }
 
+func TestBuildExecutor_ReadsProcessEnvAndHostFiles(t *testing.T) {
+	t.Setenv("BUILD_EXECUTOR_REGION", "eu-west-9")
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("host-token\n"), 0o600))
+	config := &configloader.Config{
+		SchemaVersion: "2.0",
+		Adapter:       configloader.AdapterInfo{Name: "test-adapter"},
+		Params: []configloader.Parameter{
+			{Name: "region", Source: configloader.StringSource("env.BUILD_EXECUTOR_REGION"), Required: true},
+			{
+				Name:     "token",
+				Source:   configloader.FileSource(&configloader.FileSourceConfig{Path: tokenPath}),
+				Required: true,
+			},
+		},
+	}
+
+	_, _, result := runRecordedEvents(t, config, map[string]interface{}{"id": "cluster-1", "kind": "Cluster"})
+
+	assert.Equal(t, "eu-west-9", result.Params["region"])
+	assert.Equal(t, "host-token", result.Params["token"])
+}
+
 // configMapManifest renders a ConfigMap with the generation annotation remote
 // routes require.
 func configMapManifest(namespace, name string, labels, data map[string]interface{}) map[string]interface{} {
