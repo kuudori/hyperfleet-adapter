@@ -14,6 +14,7 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/dryrun"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/eventhandler"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
@@ -515,7 +516,7 @@ func runServe(flags *pflag.FlagSet) error {
 	}
 
 	// Create the event handler and subscribe to broker
-	handler := executor.AlwaysAck(executor.WithMetrics(exec.CreateHandler(), metricsRecorder))
+	handler := eventhandler.AlwaysAck(eventhandler.WithMetrics(eventhandler.CreateHandler(exec), metricsRecorder))
 
 	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)

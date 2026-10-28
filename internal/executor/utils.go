@@ -33,8 +33,8 @@ func ToConditionDefs(conditions []configloader.Condition) []criteria.ConditionDe
 	return defs
 }
 
-// apiAuthFailureStatusCode returns the status code for wrapped API authorization errors.
-func apiAuthFailureStatusCode(err error) (int, bool) {
+// APIAuthFailureStatusCode returns the status code for wrapped API authorization errors.
+func APIAuthFailureStatusCode(err error) (int, bool) {
 	apiErr, ok := apierrors.IsAPIError(err)
 	if !ok {
 		return 0, false
@@ -54,7 +54,7 @@ func isAPIAuthFailureHTTPStatus(statusCode int) bool {
 // logAPIAuthFailure records a structured log for an API authentication or
 // authorization failure. Callers add context specific to their execution phase.
 func logAPIAuthFailure(ctx context.Context, err error, attrs ...any) {
-	statusCode, ok := apiAuthFailureStatusCode(err)
+	statusCode, ok := APIAuthFailureStatusCode(err)
 	if !ok {
 		return
 	}

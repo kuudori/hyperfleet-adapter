@@ -27,7 +27,7 @@ func extractConfigParams(
 	for _, param := range config.Params {
 		value, err := extractParam(ctx, param, execCtx, configMap, apiClient)
 		if err != nil {
-			statusCode, isAuthFailure := apiAuthFailureStatusCode(err)
+			statusCode, isAuthFailure := APIAuthFailureStatusCode(err)
 			if isAuthFailure {
 				logAPIAuthFailure(ctx, err, "phase", PhaseParamExtraction, "param", param.Name)
 			}

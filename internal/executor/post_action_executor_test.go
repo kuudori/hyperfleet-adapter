@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
@@ -392,8 +391,6 @@ func TestPostActionExecutor_ExecuteAll(t *testing.T) {
 				APIClient: mockClient,
 			})
 
-			evt := event.New()
-			evt.SetID("test-event")
 			execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
 
 			results, err := pae.ExecuteAll(
