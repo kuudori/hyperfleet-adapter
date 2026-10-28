@@ -7,14 +7,12 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
-	pkgotel "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/telemetry"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -317,29 +315,6 @@ func (e *Executor) startTracedExecution(ctx context.Context) (context.Context, t
 	ctx = logctx.WithOTelTraceContext(ctx)
 
 	return ctx, span
-}
-
-// CreateHandler creates a HandlerFunc that executes the adapter task for a given CloudEvent
-func (e *Executor) CreateHandler() HandlerFunc {
-	return func(ctx context.Context, evt *event.Event) (*ExecutionResult, error) {
-		// Add event ID to context for logging correlation
-		ctx = hfl.Set(ctx, logctx.EventIDKey, evt.ID())
-
-		// Extract W3C trace context from CloudEvent extensions (if present)
-		// This enables distributed tracing when upstream services (e.g., Sentinel)
-		// include traceparent/tracestate in the CloudEvent
-		ctx = pkgotel.ExtractTraceContextFromCloudEvent(ctx, evt)
-
-		slog.InfoContext(ctx, "event received",
-			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
-
-		result := e.Execute(ctx, evt.Data())
-
-		slog.InfoContext(ctx, "event processed",
-			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
-
-		return result, nil
-	}
 }
 
 // ParseEventData parses event data from various input types into structured EventData and raw map.
