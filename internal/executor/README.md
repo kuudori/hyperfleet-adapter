@@ -65,7 +65,6 @@ The executor implements a four-phase execution pipeline:
 
 ```go
 import (
-    "github.com/openshift-hyperfleet/hyperfleet-adapter/internal/eventhandler"
     "github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 )
 
@@ -80,10 +79,7 @@ if err != nil {
     return err
 }
 
-// Create handler for broker subscription
-handler := eventhandler.CreateHandler(exec)
-
-// Or execute directly
+// Execute directly
 result := exec.Execute(ctx, eventData)
 if result.Status == executor.StatusFailed {
     log.Errorf("Execution failed: %v", result.Errors)
