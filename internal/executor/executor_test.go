@@ -274,41 +274,6 @@ func TestNewExecutor(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "missing environment with required env params",
-			config: &ExecutorConfig{
-				Config: &configloader.Config{Params: []configloader.Parameter{
-					{Name: "apiBaseUrl", Source: configloader.StringSource("env.HYPERFLEET_API_BASE_URL"), Required: true},
-					{Name: "region", Source: configloader.StringSource("env.REGION"), Default: "us-east-1"},
-					{Name: "apiVersion", Source: configloader.StringSource("env.HYPERFLEET_API_VERSION"), Required: true},
-				}},
-				TransportRegistry: registry,
-			},
-			expectError: true,
-			errContains: []string{"task config requires environment variables but no environment was supplied: " +
-				"params[0].source (apiBaseUrl), params[2].source (apiVersion)"},
-		},
-		{
-			name: "missing environment with optional env param",
-			config: &ExecutorConfig{
-				Config: &configloader.Config{Params: []configloader.Parameter{
-					{Name: "region", Source: configloader.StringSource("env.REGION")},
-				}},
-				TransportRegistry: registry,
-			},
-			expectError: false,
-		},
-		{
-			name: "environment with required env param",
-			config: &ExecutorConfig{
-				Config: &configloader.Config{Params: []configloader.Parameter{
-					{Name: "apiBaseUrl", Source: configloader.StringSource("env.HYPERFLEET_API_BASE_URL"), Required: true},
-				}},
-				TransportRegistry: registry,
-				Env:               EnvFromMap(nil),
-			},
-			expectError: false,
-		},
-		{
 			name: "missing transport client",
 			config: &ExecutorConfig{
 				Config:    &configloader.Config{},

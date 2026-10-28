@@ -61,13 +61,6 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 		}
 	}
 
-	if config.Env == nil {
-		if steps := requiredEnvSteps(config.Config); len(steps) > 0 {
-			return fmt.Errorf("task config requires environment variables but no environment was supplied: %s",
-				strings.Join(steps, ", "))
-		}
-	}
-
 	return nil
 }
 
@@ -76,17 +69,6 @@ func fileSteps(cfg *configloader.Config) []string {
 	for i, param := range cfg.Params {
 		if param.Source.IsFile() {
 			steps = append(steps, fmt.Sprintf("%s[%d].%s.file (%s)",
-				configloader.FieldParams, i, configloader.FieldSource, param.Name))
-		}
-	}
-	return steps
-}
-
-func requiredEnvSteps(cfg *configloader.Config) []string {
-	var steps []string
-	for i, param := range cfg.Params {
-		if param.Required && param.Source.IsString() && strings.HasPrefix(param.Source.StringVal, "env.") {
-			steps = append(steps, fmt.Sprintf("%s[%d].%s (%s)",
 				configloader.FieldParams, i, configloader.FieldSource, param.Name))
 		}
 	}
