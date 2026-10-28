@@ -6,21 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/criteria"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
-	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -33,7 +29,6 @@ const (
 // ResourceExecutor creates and updates Kubernetes resources
 type ResourceExecutor struct {
 	registry transportclient.Registry
-	config   *configloader.Config
 	metrics  *metrics.Recorder
 }
 
@@ -42,7 +37,6 @@ type ResourceExecutor struct {
 func newResourceExecutor(config *ExecutorConfig) *ResourceExecutor {
 	return &ResourceExecutor{
 		registry: config.TransportRegistry,
-		config:   config.Config,
 		metrics:  config.MetricsRecorder,
 	}
 }
@@ -230,7 +224,7 @@ func (re *ResourceExecutor) executeResource(
 
 	// Step 6: Call transport client ApplyResource with rendered bytes
 	applyResult, err := transportClient.ApplyResource(ctx, renderedBytes, applyOpts, transportTarget)
-	if errors.Is(err, desire.ErrDeletePending) {
+	if errors.Is(err, transportclient.ErrDeletionPending) {
 		// The store refused a new ApplyDesire while a DeleteDesire is still
 		// unconfirmed. Desireclient already logged the retry warning. Failing
 		// the event would count an error and the next event is the retry.
@@ -258,7 +252,7 @@ func (re *ResourceExecutor) executeResource(
 	// Step 7: Post-apply discovery — find the applied resource and store in execCtx for CEL evaluation
 	if resource.Discovery != nil {
 		discovered, discoverErr := re.discoverResource(ctx, resource, execCtx, transportClient, transportTarget)
-		if errors.Is(discoverErr, desireclient.ErrNotSyncedYet) {
+		if errors.Is(discoverErr, transportclient.ErrNotSyncedYet) {
 			slog.DebugContext(ctx, "resource not synced yet, skipping post-apply discovery",
 				"resource", resource.Name)
 			return result, nil
@@ -320,9 +314,7 @@ func (re *ResourceExecutor) recordDiscoveryState(
 	switch {
 	case discovered != nil:
 		execCtx.ResourceStates[resource.Name] = ResourceStatePresent
-	case errors.Is(discoverErr, desireclient.ErrNotSyncedYet):
-		// ErrNotSyncedYet is produced only by the desire transport, so this
-		// check alone identifies it without asserting the transport's type.
+	case errors.Is(discoverErr, transportclient.ErrNotSyncedYet):
 		execCtx.ResourceStates[resource.Name] = ResourceStateUnsynced
 	case apierrors.IsNotFound(discoverErr):
 		// An empty selector result confirms absence from read mirrors only;
@@ -512,7 +504,7 @@ func (re *ResourceExecutor) preDiscoverAll(
 		discovered, err := re.discoverResource(
 			transportclient.WithResourceName(ctx, resource.Name), resource, execCtx, transportClient, transportTarget)
 		if err != nil {
-			if apierrors.IsNotFound(err) || errors.Is(err, desireclient.ErrNotSyncedYet) {
+			if apierrors.IsNotFound(err) || errors.Is(err, transportclient.ErrNotSyncedYet) {
 				// Absent or not synced yet: leave it out of context. discoverResource
 				// recorded which one in execCtx.ResourceStates.
 				continue
@@ -539,41 +531,24 @@ func (re *ResourceExecutor) resolveTransport(
 	if transportName == "" {
 		return nil, nil, fmt.Errorf("resource transport name is blank")
 	}
-	var definition configloader.TransportDefinition
-	configured := false
-	if re.config != nil {
-		definition, configured = configloader.TransportDefinitionByName(re.config.Transports, transportName)
-	}
-	client, err := re.registry.Get(transportName)
+	entry, err := re.registry.Get(transportName)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get transport client %q: %w", transportName, err)
 	}
 
-	if !configured || definition.Type != configloader.TransportTypeRemote {
-		return client, nil, nil
-	}
-	targetCluster, err := utils.RenderTemplate(definition.TargetCluster, execCtx.templateVariables())
-	if err != nil {
-		return nil, nil, fmt.Errorf("render transport %q target_cluster: %w", transportName, err)
-	}
-	if errs := validation.IsDNS1123Label(targetCluster); len(errs) > 0 {
-		return nil, nil, fmt.Errorf("transport %q target_cluster %q must be a Kubernetes DNS-1123 label: %s",
-			transportName, targetCluster, strings.Join(errs, ", "))
+	if entry.Target == nil {
+		return entry.Client, nil, nil
 	}
 	gvk, err := resource.StaticGVK()
 	if err != nil {
 		return nil, nil, fmt.Errorf("transport %q manifest: %w", transportName, err)
 	}
-	plural, ok := definition.PluralForGVK(gvk)
-	if !ok {
-		return nil, nil, fmt.Errorf("transport %q has no resource_plurals mapping for %s/%s",
-			transportName, gvk.GroupVersion().String(), gvk.Kind)
+	target, err := entry.Target(gvk, execCtx.templateVariables())
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return client, &desireclient.TransportContext{
-		ManagementCluster: targetCluster,
-		Resource:          plural,
-	}, nil
+	return entry.Client, target, nil
 }
 
 // evaluateLifecycleWhen evaluates a lifecycle when-expression (create or delete) against the
@@ -668,7 +643,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 	discovered, discoverErr := re.discoverResource(ctx, resource, execCtx, transportClient, transportTarget)
 
 	isNotFound := discoverErr != nil &&
-		(apierrors.IsNotFound(discoverErr) || errors.Is(discoverErr, desireclient.ErrNotSyncedYet))
+		(apierrors.IsNotFound(discoverErr) || errors.Is(discoverErr, transportclient.ErrNotSyncedYet))
 	if discoverErr != nil && !isNotFound {
 		result.Status = StatusFailed
 		result.Error = discoverErr
@@ -688,7 +663,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 		// Cleanup when discoverErr is ErrNotSyncedYet is safe because ErrDeletionPending is returned when
 		// the delete desire is still pending.
 		if err := re.tryCleanupDesires(ctx, resource, execCtx, transportClient, transportTarget, gvk); err != nil {
-			if errors.Is(err, desireclient.ErrDeletionPending) {
+			if errors.Is(err, transportclient.ErrDeletionPending) {
 				slog.WarnContext(ctx, "resource desire cleanup: deletion pending",
 					"resource", resource.Name, "error", err)
 			} else {
@@ -763,7 +738,7 @@ func (re *ResourceExecutor) executeResourceDelete(
 		execCtx.Resources[resource.Name] = nil
 		slog.DebugContext(ctx, "post-delete discovery: resource not found)", "resource", resource.Name)
 		if err := re.tryCleanupDesires(ctx, resource, execCtx, transportClient, transportTarget, gvk); err != nil {
-			if !errors.Is(err, desireclient.ErrDeletionPending) {
+			if !errors.Is(err, transportclient.ErrDeletionPending) {
 				slog.ErrorContext(ctx, "resource desire cleanup failed after delete",
 					"resource", resource.Name, "error", err)
 				result.Status = StatusFailed
@@ -865,7 +840,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 		switch {
 		case apierrors.IsNotFound(discoverErr):
 			cleanupErr := lifecycle.CleanupAfterDeletion(ctx, gvk, dt.Namespace, dt.Name, target)
-			if errors.Is(cleanupErr, desireclient.ErrDeletionPending) {
+			if errors.Is(cleanupErr, transportclient.ErrDeletionPending) {
 				// Work appeared after discovery, so absence is no longer conclusive.
 				return pending(), nil
 			}
@@ -876,7 +851,7 @@ func (re *ResourceExecutor) executeDesireResourceDelete(
 			slog.InfoContext(ctx, "resource delete: already deleted or never existed", "resource", resource.Name)
 			markDeleted()
 			return succeed(resourceAlreadyDeletedReason), nil
-		case discoverErr != nil && !errors.Is(discoverErr, desireclient.ErrNotSyncedYet):
+		case discoverErr != nil && !errors.Is(discoverErr, transportclient.ErrNotSyncedYet):
 			return fail("failed to discover resource for deletion", discoverErr)
 		}
 		if discovered != nil {

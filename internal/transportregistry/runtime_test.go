@@ -15,6 +15,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestBuildCreatesRemoteClientsForEachConfiguredName(t *testing.T) {
@@ -48,16 +49,16 @@ transports:
 
 	primary, err := runtime.Registry.Get("remote-primary")
 	require.NoError(t, err)
-	assert.NotNil(t, primary)
+	assert.NotNil(t, primary.Target)
 
 	secondary, err := runtime.Registry.Get("remote-secondary")
 	require.NoError(t, err)
-	assert.NotNil(t, secondary)
+	assert.NotNil(t, secondary.Target)
 
 	_, err = runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.Error(t, err)
 
-	primaryResult, err := primary.ApplyResource(
+	primaryResult, err := primary.Client.ApplyResource(
 		t.Context(),
 		testConfigMapManifest,
 		nil,
@@ -66,7 +67,7 @@ transports:
 	require.NoError(t, err)
 	assert.Equal(t, manifest.OperationCreate, primaryResult.Operation)
 
-	secondaryResult, err := secondary.ApplyResource(
+	secondaryResult, err := secondary.Client.ApplyResource(
 		t.Context(),
 		testConfigMapManifest,
 		nil,
@@ -98,8 +99,10 @@ func TestBuildRecordingUsesLocalDefaultOnlyWhenReferenced(t *testing.T) {
 	require.NoError(t, err)
 	remote, err := runtime.Registry.Get("remote-primary")
 	require.NoError(t, err)
-	assert.Same(t, recorder, local)
-	assert.Same(t, recorder, remote)
+	assert.Same(t, recorder, local.Client)
+	assert.Same(t, recorder, remote.Client)
+	assert.Nil(t, local.Target)
+	assert.NotNil(t, remote.Target)
 
 	config.Resources = config.Resources[1:]
 	runtime, err = BuildRecording(config, recorder)
@@ -137,11 +140,11 @@ transports:
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
 
-	namedClient, err := runtime.Registry.Get("remote")
+	named, err := runtime.Registry.Get("remote")
 	require.NoError(t, err)
 	_, err = runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.Error(t, err)
-	assert.NotNil(t, namedClient)
+	assert.NotNil(t, named.Client)
 }
 
 func TestBuildOmitsKubernetesForMultipleUnreferencedNamedTransports(t *testing.T) {
@@ -232,9 +235,9 @@ transports:
 	require.NotNil(t, runtime)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
 
-	client, err := runtime.Registry.Get("remote-primary")
+	entry, err := runtime.Registry.Get("remote-primary")
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, entry.Client)
 }
 
 func TestBuildRejectsCanonicalTransportNameCollisions(t *testing.T) {
@@ -293,9 +296,9 @@ func TestBuildNormalizesConfiguredTransportNames(t *testing.T) {
 	require.NotNil(t, runtime)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
 
-	client, err := runtime.Registry.Get("remote-primary")
+	entry, err := runtime.Registry.Get("remote-primary")
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, entry.Client)
 
 	_, err = runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.Error(t, err)
@@ -369,9 +372,9 @@ transports:
 	require.NoError(t, err)
 	require.NotNil(t, runtime)
 
-	client, err := runtime.Registry.Get("remote")
+	entry, err := runtime.Registry.Get("remote")
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, entry.Client)
 	assert.NoError(t, runtime.Close())
 }
 
@@ -499,9 +502,9 @@ func TestBuildRegistersLocalKubernetesWithoutTransports(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, runtime.Close()) })
 
-	client, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
+	entry, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.NoError(t, err)
-	assert.NotNil(t, client)
+	assert.NotNil(t, entry.Client)
 }
 
 func TestRuntimeCloseAttemptsAllClosersAndIsIdempotent(t *testing.T) {
@@ -575,9 +578,9 @@ transports:
 	require.NotNil(t, runtime)
 
 	for _, name := range []string{"remote-primary", "remote-secondary"} {
-		client, err := runtime.Registry.Get(name)
+		entry, err := runtime.Registry.Get(name)
 		require.NoErrorf(t, err, "expected recording client for %q", name)
-		assert.Same(t, recorder, client)
+		assert.Same(t, recorder, entry.Client)
 	}
 }
 
@@ -588,15 +591,43 @@ func TestBuildRecordingWithoutTransports(t *testing.T) {
 		Resources: []configloader.Resource{{Name: "local", Manifest: testConfigMapManifestMap()}},
 	}, recorder)
 	require.NoError(t, err)
-	client, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
+	entry, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.NoError(t, err)
-	assert.Same(t, recorder, client)
+	assert.Same(t, recorder, entry.Client)
 	_, err = runtime.Registry.Get("maestro")
 	require.Error(t, err, "no maestro transport is registered")
 
 	runtime, err = BuildRecording(&configloader.Config{}, recorder)
 	require.NoError(t, err)
 	assert.Empty(t, runtime.Registry)
+}
+
+func TestTarget(t *testing.T) {
+	assert.Nil(t, Target("local", configloader.TransportDefinition{Type: configloader.TransportTypeKubernetes}))
+
+	definition := testRemoteDefinition("desired-memory")
+	definition.TargetCluster = "{{ .clusterName }}"
+	target := Target("Remote-Primary", definition)
+	require.NotNil(t, target)
+
+	configMap := schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}
+	vars := map[string]any{"clusterName": "cluster-1"}
+	route, err := target(configMap, vars)
+	require.NoError(t, err)
+	assert.Equal(t, &desireclient.TransportContext{ManagementCluster: "cluster-1", Resource: "configmaps"}, route)
+
+	missing := definition
+	missing.TargetCluster = "{{ .missing }}"
+	_, err = Target("Remote-Primary", missing)(configMap, vars)
+	require.ErrorContains(t, err, `render transport "remote-primary" target_cluster`)
+
+	for _, invalid := range []string{"", "Bad_Cluster"} {
+		_, err = target(configMap, map[string]any{"clusterName": invalid})
+		require.ErrorContains(t, err, "must be a Kubernetes DNS-1123 label")
+	}
+
+	_, err = target(schema.GroupVersionKind{Version: "v1", Kind: "Secret"}, vars)
+	require.ErrorContains(t, err, "has no resource_plurals mapping")
 }
 
 func loadRuntimeConfig(t *testing.T, adapterYAML string) *configloader.Config {
@@ -673,7 +704,9 @@ func TestBuildReusesDeclaredKubernetesTransportForOmittedResources(t *testing.T)
 	require.NoError(t, err)
 	implicit, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.NoError(t, err)
-	assert.Same(t, declared, implicit, "omitted resources must share the declared local client")
+	assert.Same(t, declared.Client, implicit.Client, "omitted resources must share the declared local client")
+	assert.Nil(t, declared.Target)
+	assert.Nil(t, implicit.Target)
 }
 
 func TestBuildSharesClientAcrossNamedKubernetesTransports(t *testing.T) {
@@ -702,8 +735,8 @@ func TestBuildSharesClientAcrossNamedKubernetesTransports(t *testing.T) {
 	require.NoError(t, err)
 	implicit, err := runtime.Registry.Get(configloader.TransportClientKubernetes)
 	require.NoError(t, err)
-	assert.Same(t, primary, secondary)
-	assert.Same(t, primary, implicit)
+	assert.Same(t, primary.Client, secondary.Client)
+	assert.Same(t, primary.Client, implicit.Client)
 }
 
 func testRemoteDefinition(store string) configloader.TransportDefinition {

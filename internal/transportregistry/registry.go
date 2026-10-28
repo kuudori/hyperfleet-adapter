@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
@@ -18,6 +19,8 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	redisstore "github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/redis"
 	"github.com/redis/go-redis/v9"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const redisPingTimeout = 5 * time.Second
@@ -60,7 +63,10 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 				kubernetesClient = client
 			}
 		}
-		runtime.Registry[configloader.NormalizeRegistryName(name)] = client
+		runtime.Registry[configloader.NormalizeRegistryName(name)] = transportclient.Entry{
+			Client: client,
+			Target: Target(name, definition),
+		}
 	}
 	if _, configured := runtime.Registry[configloader.TransportClientKubernetes]; !configured &&
 		needsImplicitKubernetes(config) {
@@ -71,7 +77,7 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 				return nil, fmt.Errorf("build transport %q: %w", configloader.TransportClientKubernetes, err)
 			}
 		}
-		runtime.Registry[configloader.TransportClientKubernetes] = kubernetesClient
+		runtime.Registry[configloader.TransportClientKubernetes] = transportclient.Entry{Client: kubernetesClient}
 	}
 
 	return runtime, nil
@@ -107,13 +113,45 @@ func BuildRecording(
 	}
 
 	runtime := &Runtime{Registry: make(transportclient.Registry)}
-	for name := range config.Transports {
-		runtime.Registry[configloader.NormalizeRegistryName(name)] = client
+	for name, definition := range config.Transports {
+		runtime.Registry[configloader.NormalizeRegistryName(name)] = transportclient.Entry{
+			Client: client,
+			Target: Target(name, definition),
+		}
 	}
 	if needsImplicitKubernetes(config) {
-		runtime.Registry[configloader.TransportClientKubernetes] = client
+		runtime.Registry[configloader.TransportClientKubernetes] = transportclient.Entry{Client: client}
 	}
 	return runtime, nil
+}
+
+// Target returns the function that builds the TransportContext for the
+// transport declared as name, or nil when the transport needs none.
+func Target(name string, definition configloader.TransportDefinition) transportclient.TargetFunc {
+	if definition.Type != configloader.TransportTypeRemote {
+		return nil
+	}
+	transportName := configloader.NormalizeRegistryName(name)
+	return func(gvk schema.GroupVersionKind, vars map[string]any) (transportclient.TransportContext, error) {
+		targetCluster, err := utils.RenderTemplate(definition.TargetCluster, vars)
+		if err != nil {
+			return nil, fmt.Errorf("render transport %q target_cluster: %w", transportName, err)
+		}
+		if errs := validation.IsDNS1123Label(targetCluster); len(errs) > 0 {
+			return nil, fmt.Errorf("transport %q target_cluster %q must be a Kubernetes DNS-1123 label: %s",
+				transportName, targetCluster, strings.Join(errs, ", "))
+		}
+		plural, ok := definition.PluralForGVK(gvk)
+		if !ok {
+			return nil, fmt.Errorf("transport %q has no resource_plurals mapping for %s/%s",
+				transportName, gvk.GroupVersion().String(), gvk.Kind)
+		}
+
+		return &desireclient.TransportContext{
+			ManagementCluster: targetCluster,
+			Resource:          plural,
+		}, nil
+	}
 }
 
 // needsImplicitKubernetes reports whether any resource omits its transport or

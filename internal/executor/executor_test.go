@@ -1406,7 +1406,7 @@ func TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(transportclient.Registry{
-			desireTransportName: desireclient.NewClient(store, desireOwner),
+			desireTransportName: testRemoteEntry(desireTransportName, desireclient.NewClient(store, desireOwner)),
 		}).
 		Build()
 	require.NoError(t, err)

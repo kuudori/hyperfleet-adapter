@@ -21,7 +21,7 @@ func TestGetResource_NoDesiresIsNotFound(t *testing.T) {
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.True(t, apierrors.IsNotFound(err),
 		"no desire records and nothing in flight: never created or already cleaned up, got %v", err)
-	assert.False(t, errors.Is(err, ErrNotSyncedYet), "nothing is waiting to sync")
+	assert.False(t, errors.Is(err, transportclient.ErrNotSyncedYet), "nothing is waiting to sync")
 }
 
 func TestGetResource_MissingReadWithConfirmedDeleteIsNotFound(t *testing.T) {
@@ -48,7 +48,8 @@ func TestGetResource_ReadDesireExistsNoResourceObservedIsNotSyncedYet(t *testing
 
 	_, err = c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrNotSyncedYet), "no Successful condition yet must read as not-synced-yet")
+	assert.True(t, errors.Is(err, transportclient.ErrNotSyncedYet),
+		"no Successful condition yet must read as not-synced-yet")
 }
 
 func TestGetResource_SyncedReturnsMirroredObject(t *testing.T) {
@@ -74,7 +75,7 @@ func TestGetResource_ConfirmedNotFound(t *testing.T) {
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
 	assert.True(t, apierrors.IsNotFound(err), "confirmed-gone must be a real NotFound, not ErrNotSyncedYet")
-	assert.False(t, errors.Is(err, ErrNotSyncedYet))
+	assert.False(t, errors.Is(err, transportclient.ErrNotSyncedYet))
 }
 
 func TestGetResource_NotFoundWithActiveApplyIsUnsynced(t *testing.T) {
@@ -89,7 +90,7 @@ func TestGetResource_NotFoundWithActiveApplyIsUnsynced(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.ErrorIs(t, err, ErrNotSyncedYet)
+	require.ErrorIs(t, err, transportclient.ErrNotSyncedYet)
 	assert.False(t, apierrors.IsNotFound(err))
 }
 
@@ -104,7 +105,7 @@ func TestGetResource_MissingReadWithActiveApplyIsUnsynced(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.ErrorIs(t, err, ErrNotSyncedYet)
+	require.ErrorIs(t, err, transportclient.ErrNotSyncedYet)
 	assert.False(t, apierrors.IsNotFound(err))
 }
 
@@ -116,7 +117,7 @@ func TestGetResource_MissingReadWithPendingDeleteIsUnsynced(t *testing.T) {
 		metav1.ConditionFalse, desire.ReasonWaitingForDeletion)
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.ErrorIs(t, err, ErrNotSyncedYet)
+	require.ErrorIs(t, err, transportclient.ErrNotSyncedYet)
 	assert.False(t, apierrors.IsNotFound(err))
 }
 
@@ -129,7 +130,7 @@ func TestGetResource_PendingDeleteDoesNotTrustReadNotFound(t *testing.T) {
 		metav1.ConditionFalse, desire.ReasonWaitingForDeletion)
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.ErrorIs(t, err, ErrNotSyncedYet)
+	require.ErrorIs(t, err, transportclient.ErrNotSyncedYet)
 	assert.False(t, apierrors.IsNotFound(err), "a pending delete is not confirmed by a stale read mirror")
 }
 
@@ -172,7 +173,7 @@ func TestGetResource_InvalidReadDesire(t *testing.T) {
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
 	// ConditionTrue/ReasonNotFound is a shape the applier never reports; with no content it reads as not-synced-yet.
-	assert.True(t, errors.Is(err, ErrNotSyncedYet),
+	assert.True(t, errors.Is(err, transportclient.ErrNotSyncedYet),
 		"empty content falls through to the empty-content rule: not-synced-yet")
 	assert.False(t, apierrors.IsNotFound(err))
 }
@@ -200,7 +201,7 @@ func TestGetResource_K8sAPIErrorWithNoMirrorYetIsNotSyncedYet(t *testing.T) {
 
 	_, err := c.GetResource(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, ErrNotSyncedYet),
+	assert.True(t, errors.Is(err, transportclient.ErrNotSyncedYet),
 		"a transient failure with no content ever mirrored decodes as empty, "+
 			"same as decodeKubeContent's own empty-content rule")
 }
@@ -302,7 +303,7 @@ func TestDecodeReadDesire(t *testing.T) {
 			switch {
 			case tt.wantNotSynced:
 				require.Error(t, err)
-				assert.True(t, errors.Is(err, ErrNotSyncedYet))
+				assert.True(t, errors.Is(err, transportclient.ErrNotSyncedYet))
 			case tt.wantNotFound:
 				require.Error(t, err)
 				assert.True(t, apierrors.IsNotFound(err))

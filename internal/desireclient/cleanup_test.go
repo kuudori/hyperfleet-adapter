@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,7 +66,7 @@ func TestCleanupAfterDeletion_PendingDelete_SkipsCleanup(t *testing.T) {
 	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err, "pending delete desire must return an error")
 	assert.Contains(t, err.Error(), "deletion not yet confirmed")
-	assert.True(t, errors.Is(err, ErrDeletionPending), "must wrap ErrDeletionPending")
+	assert.True(t, errors.Is(err, transportclient.ErrDeletionPending), "must wrap ErrDeletionPending")
 
 	_, err = store.GetDeleteDesire(ctx, deleteID)
 	assert.NoError(t, err, "delete desire must still exist")
@@ -103,7 +104,7 @@ func TestCleanupAfterDeletion_NoDeleteDesire_UnconfirmedReadRemainsPending(t *te
 	require.NoError(t, err)
 
 	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
-	require.ErrorIs(t, err, ErrDeletionPending)
+	require.ErrorIs(t, err, transportclient.ErrDeletionPending)
 	_, err = store.GetReadDesire(ctx, testID.Read())
 	require.NoError(t, err, "an unsynced read desire cannot be removed as confirmed absence")
 }
@@ -144,7 +145,7 @@ func TestCleanupAfterDeletion_ApplyDesireExists_NoDeleteDesire_ReturnsError(t *t
 	err = c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "apply request still exists")
-	assert.True(t, errors.Is(err, ErrDeletionPending), "must wrap ErrDeletionPending")
+	assert.True(t, errors.Is(err, transportclient.ErrDeletionPending), "must wrap ErrDeletionPending")
 
 	_, err = store.GetApplyDesire(ctx, applyID)
 	assert.NoError(t, err, "apply desire must still exist")
@@ -237,7 +238,8 @@ func TestCleanupAfterDeletion_GetApplyDesireError_NoDeleteDesire_ReturnsStoreErr
 	err := c.CleanupAfterDeletion(ctx, testGVK(), testNamespace, testName, testTransportContext())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to get the apply request")
-	assert.False(t, errors.Is(err, ErrDeletionPending), "genuine store error must not be wrapped as ErrDeletionPending")
+	assert.False(t, errors.Is(err, transportclient.ErrDeletionPending),
+		"genuine store error must not be wrapped as ErrDeletionPending")
 }
 
 // --- Test store wrappers ---

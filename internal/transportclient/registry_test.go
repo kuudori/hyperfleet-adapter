@@ -13,8 +13,8 @@ import (
 
 func TestRegistryKeepsEntriesDistinctByConfiguredName(t *testing.T) {
 	registry := Registry{
-		"remote-primary":   nil,
-		"remote-secondary": nil,
+		"remote-primary":   {},
+		"remote-secondary": {},
 	}
 
 	assert.Len(t, registry, 2)
@@ -24,7 +24,9 @@ func TestRegistryKeepsEntriesDistinctByConfiguredName(t *testing.T) {
 
 func TestRegistryGetRejectsUnknownAndNilEntries(t *testing.T) {
 	registry := Registry{
-		"configured-but-nil": nil,
+		"configured-but-nil": {Target: func(schema.GroupVersionKind, map[string]any) (TransportContext, error) {
+			return nil, nil
+		}},
 	}
 
 	tests := []struct {
@@ -43,22 +45,33 @@ func TestRegistryGetRejectsUnknownAndNilEntries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client, err := registry.Get(tt.key)
+			entry, err := registry.Get(tt.key)
 			require.Error(t, err)
-			assert.Nil(t, client)
+			assert.Nil(t, entry.Client)
+			assert.Nil(t, entry.Target)
 			assert.Contains(t, err.Error(), tt.key)
 		})
 	}
 }
 
-func TestRegistryGetReturnsRegisteredClient(t *testing.T) {
+func TestRegistryGetReturnsRegisteredEntry(t *testing.T) {
 	registered := &stubTransportClient{}
-	registry := Registry{"remote-primary": registered}
+	route := &struct{ name string }{name: "remote-route"}
+	registry := Registry{"remote-primary": {
+		Client: registered,
+		Target: func(schema.GroupVersionKind, map[string]any) (TransportContext, error) {
+			return route, nil
+		},
+	}}
 
-	client, err := registry.Get("remote-primary")
+	entry, err := registry.Get("remote-primary")
 
 	require.NoError(t, err)
-	assert.Same(t, registered, client)
+	assert.Same(t, registered, entry.Client)
+	require.NotNil(t, entry.Target)
+	target, err := entry.Target(schema.GroupVersionKind{}, nil)
+	require.NoError(t, err)
+	assert.Same(t, route, target)
 }
 
 type stubTransportClient struct{}

@@ -11,6 +11,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportregistry"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,10 @@ func TestRemoteTwoResourceExampleLifecycle(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(api).
 		WithTransportRegistry(transportclient.Registry{
-			"remote-primary": desireclient.NewClient(store, owner),
+			"remote-primary": {
+				Client: desireclient.NewClient(store, owner),
+				Target: transportregistry.Target("remote-primary", config.Transports["remote-primary"]),
+			},
 		}).
 		Build()
 	require.NoError(t, err)

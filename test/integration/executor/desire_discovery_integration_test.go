@@ -13,6 +13,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportregistry"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/constants"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
@@ -120,11 +121,12 @@ func TestDesireDiscoveryFullObjectAndCELState(t *testing.T) {
 			store := memory.New()
 			tt.seed(t, ctx, store)
 			apiClient := hyperfleetapi.NewMockClient()
+			config := desireDiscoveryConfig()
 			adapterExecutor, err := executor.NewBuilder().
-				WithConfig(desireDiscoveryConfig()).
+				WithConfig(config).
 				WithAPIClient(apiClient).
 				WithTransportRegistry(transportclient.Registry{
-					desireDiscoveryTransport: desireclient.NewClient(store, "hyperfleet-adapter"),
+					desireDiscoveryTransport: desireEntry(config, desireclient.NewClient(store, "hyperfleet-adapter")),
 				}).
 				Build()
 			require.NoError(t, err)
@@ -200,7 +202,10 @@ func TestDesireDiscoveryMatchesLocalCELShape(t *testing.T) {
 			adapterExecutor, err := executor.NewBuilder().
 				WithConfig(tt.config).
 				WithAPIClient(apiClient).
-				WithTransportRegistry(transportclient.Registry{tt.clientName: tt.client}).
+				WithTransportRegistry(transportclient.Registry{tt.clientName: {
+					Client: tt.client,
+					Target: transportregistry.Target(tt.clientName, tt.config.Transports[tt.clientName]),
+				}}).
 				Build()
 			require.NoError(t, err)
 
@@ -242,7 +247,7 @@ func TestDesireGenerationMirrorLagVisibleToCEL(t *testing.T) {
 	client := desireclient.NewClient(store, "hyperfleet-adapter")
 	adapterExecutor, err := executor.NewBuilder().WithConfig(config).
 		WithAPIClient(hyperfleetapi.NewMockClient()).
-		WithTransportRegistry(transportclient.Registry{desireDiscoveryTransport: client}).Build()
+		WithTransportRegistry(transportclient.Registry{desireDiscoveryTransport: desireEntry(config, client)}).Build()
 	require.NoError(t, err)
 
 	check := func(want string) {
@@ -275,6 +280,13 @@ func TestDesireGenerationMirrorLagVisibleToCEL(t *testing.T) {
 	})
 	require.NoError(t, err)
 	check("2")
+}
+
+func desireEntry(config *configloader.Config, client transportclient.TransportClient) transportclient.Entry {
+	return transportclient.Entry{
+		Client: client,
+		Target: transportregistry.Target(desireDiscoveryTransport, config.Transports[desireDiscoveryTransport]),
+	}
 }
 
 func desireDiscoveryConfig() *configloader.Config {

@@ -30,20 +30,6 @@ type TransportContext struct {
 	Resource string
 }
 
-// ErrNotSyncedYet indicates the read mirror cannot establish current state,
-// or active apply/delete work prevents absence from being conclusive. It is a
-// transient, non-terminal outcome distinct from confirmed absence (reported
-// via apierrors.NewNotFound). Callers should treat it as "not converged yet"
-// rather than a failure. Use errors.Is to check for it.
-var ErrNotSyncedYet = errors.New("remote transport: resource not synced yet")
-
-// ErrDeletionPending indicates that the desire transport has not yet
-// confirmed resource deletion — either the apply desire still exists
-// (applier may not have processed it) or the delete desire exists but
-// the applier has not confirmed deletion. This is an expected transient
-// state during the deletion lifecycle, not a hard failure.
-var ErrDeletionPending = errors.New("remote transport: deletion pending")
-
 // resolveTransportContext type-asserts the generic TransportContext and
 // validates both fields are set.
 func resolveTransportContext(target transportclient.TransportContext) (*TransportContext, error) {
