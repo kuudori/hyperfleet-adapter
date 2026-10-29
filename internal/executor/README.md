@@ -501,7 +501,7 @@ exec, _ := executor.NewBuilder().
     Build()
 
 // Subscribe with executor handler
-subscriber.Subscribe(ctx, topic, eventhandler.AlwaysAck(eventhandler.CreateHandler(exec)))
+subscriber.Subscribe(ctx, topic, eventhandler.AlwaysAck(eventhandler.WithMetrics(eventhandler.CreateHandler(exec), metricsRecorder)))
 ```
 
 </details>
