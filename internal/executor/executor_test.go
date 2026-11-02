@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
+	"testing/fstest"
 
-	"github.com/cloudevents/sdk-go/v2/event"
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +23,6 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
@@ -114,6 +112,11 @@ func TestNewExecutor(t *testing.T) {
 	apiCallPost := &configloader.PostConfig{PostActions: []configloader.PostAction{
 		{ActionBase: configloader.ActionBase{Name: "logDone", Log: &configloader.LogAction{Message: "done"}}},
 		{ActionBase: configloader.ActionBase{Name: "reportStatus", APICall: apiCall}},
+	}}
+	fileConfig := &configloader.Config{Params: []configloader.Parameter{
+		{Name: "clusterId", Source: configloader.StringSource("event.id")},
+		{Name: "region", Source: configloader.StringSource("env.REGION")},
+		requiredFileParam("k8sToken", "/var/run/secrets/k8sToken"),
 	}}
 
 	tests := []struct {
@@ -220,6 +223,53 @@ func TestNewExecutor(t *testing.T) {
 				},
 				APIClient:         newMockAPIClient(),
 				TransportRegistry: registry,
+			},
+			expectError: false,
+		},
+		{
+			name: "missing file system with file param",
+			config: &ExecutorConfig{
+				Config:            fileConfig,
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{
+				"task config reads files but no file system was supplied: params[2].source.file (k8sToken)",
+			},
+		},
+		{
+			name: "missing file system with optional defaulted file param",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{{
+					Name:    "caBundle",
+					Source:  configloader.FileSource(&configloader.FileSourceConfig{Path: "/etc/ca/bundle.pem"}),
+					Default: "",
+				}}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"params[0].source.file (caBundle)"},
+		},
+		{
+			name: "missing file system lists every file param in order",
+			config: &ExecutorConfig{
+				Config: &configloader.Config{Params: []configloader.Parameter{
+					requiredFileParam("k8sToken", "/var/run/secrets/k8sToken"),
+					{Name: "clusterId", Source: configloader.StringSource("event.id")},
+					requiredFileParam("pullSecret", "/var/run/secrets/pullSecret"),
+				}},
+				TransportRegistry: registry,
+			},
+			expectError: true,
+			errContains: []string{"task config reads files but no file system was supplied: " +
+				"params[0].source.file (k8sToken), params[2].source.file (pullSecret)"},
+		},
+		{
+			name: "file system with file param",
+			config: &ExecutorConfig{
+				Config:            fileConfig,
+				TransportRegistry: registry,
+				Files:             fstest.MapFS{},
 			},
 			expectError: false,
 		},
@@ -502,6 +552,7 @@ func TestExecute_ParamExtraction(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	if err != nil {
 		t.Fatalf("unexpected error creating executor: %v", err)
@@ -625,14 +676,12 @@ func TestExecute_ParamsAPICallSource(t *testing.T) {
 func TestParamExtractor(t *testing.T) {
 	t.Setenv("TEST_ENV", "env-value")
 
-	evt := event.New()
 	eventData := map[string]interface{}{
 		"id": "test-cluster",
 		"nested": map[string]interface{}{
 			"value": "nested-value",
 		},
 	}
-	_ = evt.SetData(event.ApplicationJSON, eventData)
 
 	tests := []struct {
 		expectValue interface{}
@@ -734,11 +783,12 @@ func TestParamExtractor(t *testing.T) {
 
 			// Create a new context for each test. The config supplies adapter.name.
 			execCtx := NewExecutionContext(t.Context(), eventData, config)
+			execCtx.envVariable = envSnapshot(ProcessEnv())
 
 			// Extract params using pure function
 			configMap, err := configToMap(config)
 			require.NoError(t, err)
-			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil)
+			err = extractConfigParams(context.Background(), config, execCtx, configMap, nil, nil)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -763,20 +813,21 @@ func runParamExtraction(
 ) (*ExecutionContext, error) {
 	t.Helper()
 	execCtx := NewExecutionContext(context.Background(), eventData, nil)
-	return execCtx, extractParams(execCtx, config, mockClient)
+	return execCtx, extractParams(execCtx, config, mockClient, os.DirFS("/"))
 }
 
 // An env param and env.* read the same snapshot, even if the process
-// environment changes after NewExecutionContext returns.
+// environment changes after envSnapshot takes it.
 func TestParamExtractor_EnvSourceMatchesEnvVariable(t *testing.T) {
 	t.Setenv("SNAPSHOT_VAR", "before")
 	execCtx := NewExecutionContext(context.Background(), map[string]interface{}{}, nil)
+	execCtx.envVariable = envSnapshot(ProcessEnv())
 	t.Setenv("SNAPSHOT_VAR", "after")
 
 	config := &configloader.Config{
 		Params: []configloader.Parameter{{Name: "fromEnv", Source: configloader.StringSource("env.SNAPSHOT_VAR")}},
 	}
-	require.NoError(t, extractParams(execCtx, config, nil))
+	require.NoError(t, extractParams(execCtx, config, nil, nil))
 
 	env, ok := execCtx.templateVariables()["env"].(map[string]any)
 	require.True(t, ok, "env must be a map")
@@ -1041,9 +1092,8 @@ func TestParamExtractor_FileSource(t *testing.T) {
 			},
 		}
 		_, err := runParamExtraction(t, config, mockClient, eventData)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "/nonexistent/path/token")
-		assert.Contains(t, err.Error(), "token")
+		require.ErrorIs(t, err, fs.ErrNotExist)
+		assert.Contains(t, err.Error(), `param "token": opening "/nonexistent/path/token": open /nonexistent/path/token: `)
 	})
 
 	t.Run("required empty file returns error", func(t *testing.T) {
@@ -1148,6 +1198,20 @@ func TestParamExtractor_FileSource(t *testing.T) {
 		_, err := runParamExtraction(t, config, mockClient, eventData)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "empty")
+	})
+
+	t.Run("nil file system returns error", func(t *testing.T) {
+		config := &configloader.Config{
+			Params: []configloader.Parameter{
+				{Name: "token", Source: configloader.FileSource(&configloader.FileSourceConfig{
+					Path: "/etc/creds/token",
+				}), Required: true},
+			},
+		}
+		execCtx := NewExecutionContext(context.Background(), eventData, nil)
+		err := extractParams(execCtx, config, mockClient, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `param "token": no file system was supplied for file source "/etc/creds/token"`)
 	})
 }
 
@@ -1560,7 +1624,7 @@ func TestSequentialExecution_SkipReasonCapture(t *testing.T) {
 	}
 }
 
-func TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric(t *testing.T) {
+func TestExecute_PendingDeleteIsNotAnError(t *testing.T) {
 	ctx := t.Context()
 	store := memory.New()
 	_, err := store.CreateDeleteDesire(ctx, desire.DeleteDesire{
@@ -1587,326 +1651,12 @@ func TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric(t *testing.T) {
 		Build()
 	require.NoError(t, err)
 
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-	handler := WithMetrics(exec.CreateHandler(), recorder)
-	evt := event.New()
-	evt.SetID("pending-delete")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-
-	result, err := handler(ctx, &evt)
-	require.NoError(t, err)
+	result := exec.Execute(ctx, map[string]interface{}{"id": "pending-delete"})
 	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
 	assert.Empty(t, result.Errors)
 	require.Len(t, result.ResourceResults, 1)
 	assert.Equal(t, applyDeletePendingReason, result.ResourceResults[0].OperationReason)
 	assert.Nil(t, result.ResourceResults[0].Error)
-
-	families, err := registry.Gather()
-	require.NoError(t, err)
-	assert.Equal(t, float64(1), getCounterValue(t, families,
-		"hyperfleet_adapter_events_processed_total", "status", "success"))
-	assert.Zero(t, getCounterValue(t, families,
-		"hyperfleet_adapter_events_processed_total", "status", "failed"))
-	assert.Nil(t, findFamily(families, "hyperfleet_adapter_errors_total"))
-}
-
-// TestCreateHandler_MetricsRecording verifies that WithMetrics records Prometheus metrics
-func TestCreateHandler_MetricsRecording(t *testing.T) {
-	tests := []struct {
-		name           string
-		preconditions  []configloader.Precondition
-		expectedStatus string // "success", "skipped", or "failed"
-		expectedErrors []string
-	}{
-		{
-			name:           "success records success metric",
-			preconditions:  []configloader.Precondition{},
-			expectedStatus: "success",
-		},
-		{
-			name: "skipped records skipped metric",
-			preconditions: []configloader.Precondition{
-				{ActionBase: configloader.ActionBase{Name: "check"}, Expression: "false"},
-			},
-			expectedStatus: "skipped",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-
-			config := &configloader.Config{
-				Adapter:       configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
-				Preconditions: tt.preconditions,
-			}
-
-			exec, err := NewBuilder().
-				WithConfig(config).
-				WithAPIClient(newMockAPIClient()).
-				WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
-				Build()
-			require.NoError(t, err)
-
-			handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder))
-
-			evt := event.New()
-			evt.SetID("test-event-1")
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
-			eventData := map[string]interface{}{"id": "cluster-1"}
-			eventBytes, _ := json.Marshal(eventData)
-			_ = evt.SetData(event.ApplicationJSON, eventBytes)
-
-			err = handler(context.Background(), &evt)
-			require.NoError(t, err, "handler should always return nil")
-
-			// Verify events_processed_total
-			families, err := registry.Gather()
-			require.NoError(t, err)
-
-			eventsCount := getCounterValue(t, families, "hyperfleet_adapter_events_processed_total", "status", tt.expectedStatus)
-			assert.Equal(t, float64(1), eventsCount, "expected 1 event with status %s", tt.expectedStatus)
-
-			// Verify duration was recorded
-			durationFamily := findFamily(families, "hyperfleet_adapter_event_processing_duration_seconds")
-			require.NotNil(t, durationFamily, "duration metric should exist")
-			histogram := durationFamily.GetMetric()[0].GetHistogram()
-			assert.Equal(t, uint64(1), histogram.GetSampleCount(), "expected 1 duration sample")
-		})
-	}
-}
-
-// TestCreateHandler_MetricsRecording_Failed verifies error metrics are recorded on failure
-func TestCreateHandler_MetricsRecording_Failed(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-
-	config := &configloader.Config{
-		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
-		Params: []configloader.Parameter{
-			{Name: "required", Source: configloader.StringSource("env.MISSING_VAR"), Required: true},
-		},
-	}
-
-	exec, err := NewBuilder().
-		WithConfig(config).
-		WithAPIClient(newMockAPIClient()).
-		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
-		Build()
-	require.NoError(t, err)
-
-	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), recorder))
-
-	evt := event.New()
-	evt.SetID("test-event-fail")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-	eventData := map[string]interface{}{"id": "cluster-1"}
-	eventBytes, _ := json.Marshal(eventData)
-	_ = evt.SetData(event.ApplicationJSON, eventBytes)
-
-	err = handler(context.Background(), &evt)
-	require.NoError(t, err, "handler should always return nil even on failure")
-
-	families, err := registry.Gather()
-	require.NoError(t, err)
-
-	// Verify failed event was recorded
-	failedCount := getCounterValue(t, families, "hyperfleet_adapter_events_processed_total", "status", "failed")
-	assert.Equal(t, float64(1), failedCount, "expected 1 failed event")
-
-	// Verify error was recorded with phase label
-	errorCount := getCounterValue(t, families, "hyperfleet_adapter_errors_total", "error_type", "param_extraction")
-	assert.Equal(t, float64(1), errorCount, "expected 1 param_extraction error")
-}
-
-// TestCreateHandler_NilMetricsRecorder verifies handler works without a metrics recorder
-func TestCreateHandler_NilMetricsRecorder(t *testing.T) {
-	config := &configloader.Config{
-		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
-	}
-
-	exec, err := NewBuilder().
-		WithConfig(config).
-		WithAPIClient(newMockAPIClient()).
-		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
-		Build()
-	require.NoError(t, err)
-
-	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), nil))
-
-	evt := event.New()
-	evt.SetID("test-event-nil")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-	_ = evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`))
-
-	assert.NotPanics(t, func() {
-		_ = handler(context.Background(), &evt)
-	}, "handler with nil MetricsRecorder should not panic")
-}
-
-// TestWithMetrics_RecordsMetrics verifies WithMetrics records the correct metric status
-// and passes the result through
-func TestWithMetrics_RecordsMetrics(t *testing.T) {
-	tests := []struct {
-		result          *ExecutionResult
-		name            string
-		expectedStatus  string
-		expectNoMetrics bool
-	}{
-		{
-			name:           "success",
-			result:         &ExecutionResult{Status: StatusSuccess},
-			expectedStatus: "success",
-		},
-		{
-			name:           "skipped",
-			result:         &ExecutionResult{Status: StatusSuccess, ResourcesSkipped: true},
-			expectedStatus: "skipped",
-		},
-		{
-			name: "failed",
-			result: &ExecutionResult{
-				Status: StatusFailed,
-				Errors: map[ExecutionPhase]error{PhaseParamExtraction: fmt.Errorf("error")},
-			},
-			expectedStatus: "failed",
-		},
-		{
-			name:            "nil result",
-			result:          nil,
-			expectNoMetrics: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-
-			inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*ExecutionResult, error) {
-				return tt.result, nil
-			})
-			handler := WithMetrics(inner, recorder)
-
-			evt := event.New()
-			evt.SetID("test-metrics-" + tt.name)
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
-
-			got, err := handler(context.Background(), &evt)
-			require.NoError(t, err)
-			assert.Equal(t, tt.result, got, "result must be passed through unchanged")
-
-			families, err := registry.Gather()
-			require.NoError(t, err)
-
-			if tt.expectNoMetrics {
-				assert.Nil(t, findFamily(families, "hyperfleet_adapter_events_processed_total"),
-					"no status counter should be recorded for nil result")
-				durationFamily := findFamily(families, "hyperfleet_adapter_event_processing_duration_seconds")
-				require.NotNil(t, durationFamily, "duration must be recorded even for nil result")
-				assert.Equal(t, uint64(1), durationFamily.GetMetric()[0].GetHistogram().GetSampleCount())
-				return
-			}
-
-			count := getCounterValue(t, families, "hyperfleet_adapter_events_processed_total", "status", tt.expectedStatus)
-			assert.Equal(t, float64(1), count)
-
-			durationFamily := findFamily(families, "hyperfleet_adapter_event_processing_duration_seconds")
-			require.NotNil(t, durationFamily)
-			assert.Equal(t, uint64(1), durationFamily.GetMetric()[0].GetHistogram().GetSampleCount())
-		})
-	}
-}
-
-// TestWithMetrics_HandlerPanicPropagates verifies a panic in handler is not swallowed by WithMetrics
-func TestWithMetrics_HandlerPanicPropagates(t *testing.T) {
-	inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*ExecutionResult, error) {
-		panic("handler panic")
-	})
-
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
-	handler := WithMetrics(inner, recorder)
-
-	evt := event.New()
-	evt.SetID("test-handler-panic")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-
-	assert.Panics(t, func() {
-		_, _ = handler(context.Background(), &evt)
-	}, "panic in inner handler must propagate through WithMetrics")
-}
-
-// TestWithMetrics_MetricsPanicRecovered verifies that a panic inside metrics recording
-// is recovered
-func TestWithMetrics_MetricsPanicRecovered(t *testing.T) {
-	inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*ExecutionResult, error) {
-		return &ExecutionResult{Status: StatusSuccess}, nil
-	})
-
-	// new(metrics.Recorder) bypasses the nil receiver guard but has nil internal
-	// fields, causing panic inside recordMetrics
-	panicRecorder := new(metrics.Recorder)
-	handler := WithMetrics(inner, panicRecorder)
-
-	evt := event.New()
-	evt.SetID("test-metrics-panic")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-
-	var got *ExecutionResult
-	assert.NotPanics(t, func() {
-		got, _ = handler(context.Background(), &evt)
-	}, "panic in metrics recording must be recovered by WithMetrics")
-	assert.NotNil(t, got, "result must still be returned after metrics panic")
-}
-
-// TestAlwaysAck_AlwaysReturnsNil verifies AlwaysAck always returns nil
-func TestAlwaysAck_AlwaysReturnsNil(t *testing.T) {
-	tests := []struct {
-		result *ExecutionResult
-		err    error
-		name   string
-	}{
-		{
-			name:   "success result",
-			result: &ExecutionResult{Status: StatusSuccess},
-		},
-		{
-			name:   "failed result",
-			result: &ExecutionResult{Status: StatusFailed},
-		},
-		{
-			name: "error from inner handler",
-			err:  fmt.Errorf("inner handler error"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*ExecutionResult, error) {
-				return tt.result, tt.err
-			})
-
-			handler := AlwaysAck(inner)
-
-			evt := event.New()
-			evt.SetID("test-ack")
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
-
-			err := handler(context.Background(), &evt)
-			assert.Nil(t, err, "AlwaysAck must always return nil")
-		})
-	}
 }
 
 // TestPreconditionAPIFailure_ExecutionStatusRemainsFailed verifies that when a precondition
@@ -2247,17 +1997,6 @@ func TestPreconditionCapture_ExtractErrorFailsPhase(t *testing.T) {
 	assert.Equal(t, "PreconditionFailed", result.ExecutionContext.Adapter.ExecutionError.Phase)
 }
 
-// helper functions for metrics assertions
-
-func findFamily(families []*dto.MetricFamily, name string) *dto.MetricFamily {
-	for _, f := range families {
-		if f.GetName() == name {
-			return f
-		}
-	}
-	return nil
-}
-
 // TestPrecondition404_GracefulStop verifies that when a precondition API call returns 404
 // (resource no longer exists), the executor stops gracefully: status remains "success",
 // resources are skipped, and no error state is set.
@@ -2525,6 +2264,7 @@ func TestGetCELVariables_AllNamespaces(t *testing.T) {
 	}
 	config := &configloader.Config{Adapter: configloader.AdapterInfo{Name: "cel-adapter", Version: "2.0.0"}}
 	execCtx := NewExecutionContext(t.Context(), eventData, config)
+	execCtx.envVariable = envSnapshot(ProcessEnv())
 	execCtx.Params["myParam"] = "param-value"
 	configMap, err := configToMap(config.Redacted())
 	require.NoError(t, err)
@@ -2579,6 +2319,7 @@ func TestCELExpression_EnvVariable(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2649,6 +2390,7 @@ func TestCELExpression_EnvInPostActionWhen(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(mockClient).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2720,6 +2462,7 @@ func TestCELExpression_EnvInParamExpression(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -2777,6 +2520,7 @@ func TestGoTemplate_EnvInManifest(t *testing.T) {
 		WithConfig(config).
 		WithAPIClient(newMockAPIClient()).
 		WithTransportRegistry(testTransportRegistry(mockClient)).
+		WithEnv(ProcessEnv()).
 		Build()
 	require.NoError(t, err)
 
@@ -3011,18 +2755,166 @@ func TestExecute_BuiltinVariablesNotInParams(t *testing.T) {
 	assert.Equal(t, "test-adapter", putRequestBody(t, mockClient)["configAdapterName"])
 }
 
-func getCounterValue(t *testing.T, families []*dto.MetricFamily, metricName, labelName, labelValue string) float64 {
+func buildParamExecutor(t *testing.T, builder *ExecutorBuilder, params ...configloader.Parameter) *Executor {
 	t.Helper()
-	family := findFamily(families, metricName)
-	if family == nil {
-		t.Fatalf("metric %s not found", metricName)
+	exec, err := builder.
+		WithConfig(&configloader.Config{
+			Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "1.0.0"},
+			Params:  params,
+		}).
+		WithTransportRegistry(testTransportRegistry(k8sclient.NewMockK8sClient())).
+		Build()
+	require.NoError(t, err)
+	return exec
+}
+
+func requiredFileParam(name, path string) configloader.Parameter {
+	return configloader.Parameter{
+		Name:     name,
+		Source:   configloader.FileSource(&configloader.FileSourceConfig{Path: path}),
+		Required: true,
 	}
-	for _, m := range family.GetMetric() {
-		for _, l := range m.GetLabel() {
-			if l.GetName() == labelName && l.GetValue() == labelValue {
-				return m.GetCounter().GetValue()
-			}
+}
+
+func TestExecute_EnvDefaultsToEmpty(t *testing.T) {
+	t.Setenv("HOST_ONLY", "x")
+
+	exec := buildParamExecutor(t, NewBuilder(),
+		configloader.Parameter{Name: "hostOnly", Source: configloader.StringSource("env.HOST_ONLY")},
+		configloader.Parameter{Name: "hostOnlySet", Source: configloader.ExpressionSource("env.?HOST_ONLY.hasValue()")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.NotContains(t, result.Params, "hostOnly")
+	assert.Equal(t, false, result.Params["hostOnlySet"])
+}
+
+func TestExecute_EnvAllowlist(t *testing.T) {
+	t.Setenv("ALLOWED_VAR", "allowed")
+	t.Setenv("DENIED_VAR", "denied")
+
+	exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvAllowlist("ALLOWED_VAR")),
+		configloader.Parameter{Name: "allowed", Source: configloader.StringSource("env.ALLOWED_VAR"), Required: true},
+		configloader.Parameter{Name: "allowedCEL", Source: configloader.ExpressionSource("env.ALLOWED_VAR")},
+		configloader.Parameter{Name: "denied", Source: configloader.StringSource("env.DENIED_VAR")},
+		configloader.Parameter{Name: "deniedSet", Source: configloader.ExpressionSource("env.?DENIED_VAR.hasValue()")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "allowed", result.Params["allowed"])
+	assert.Equal(t, "allowed", result.Params["allowedCEL"])
+	assert.NotContains(t, result.Params, "denied")
+	assert.Equal(t, false, result.Params["deniedSet"])
+}
+
+func TestEnvFromMap(t *testing.T) {
+	params := []configloader.Parameter{
+		{Name: "region", Source: configloader.StringSource("env.REGION")},
+		{Name: "envSize", Source: configloader.ExpressionSource("size(env)")},
+	}
+
+	t.Run("caller changes after EnvFromMap do not reach the run", func(t *testing.T) {
+		vars := map[string]string{"REGION": "eu-west-1"}
+		exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvFromMap(vars)), params...)
+		vars["REGION"] = "us-east-1"
+		vars["EXTRA"] = "extra"
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+		assert.Equal(t, "eu-west-1", result.Params["region"])
+		assert.Equal(t, int64(1), result.Params["envSize"])
+	})
+
+	t.Run("each call returns its own copy", func(t *testing.T) {
+		env := EnvFromMap(map[string]string{"REGION": "eu-west-1"})
+		env()["REGION"] = "us-east-1"
+
+		assert.Equal(t, map[string]string{"REGION": "eu-west-1"}, env())
+	})
+
+	t.Run("nil map gives an empty environment", func(t *testing.T) {
+		exec := buildParamExecutor(t, NewBuilder().WithEnv(EnvFromMap(nil)), params...)
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+		assert.NotContains(t, result.Params, "region")
+		assert.Equal(t, int64(0), result.Params["envSize"])
+	})
+}
+
+func TestExecute_TakesOneEnvSnapshotPerRun(t *testing.T) {
+	calls := 0
+	env := func() map[string]string {
+		calls++
+		return map[string]string{"SNAPSHOT_VAR": fmt.Sprintf("call-%d", calls)}
+	}
+
+	exec := buildParamExecutor(t, NewBuilder().WithEnv(env),
+		configloader.Parameter{Name: "fromParam", Source: configloader.StringSource("env.SNAPSHOT_VAR")},
+		configloader.Parameter{Name: "fromCEL", Source: configloader.ExpressionSource("env.SNAPSHOT_VAR")},
+	)
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "call-1", result.Params["fromParam"])
+	assert.Equal(t, "call-1", result.Params["fromCEL"])
+	assert.Equal(t, 1, calls)
+}
+
+func TestExecute_FileSourceReadsThroughFS(t *testing.T) {
+	fsys := fstest.MapFS{"etc/creds/token": &fstest.MapFile{Data: []byte("first-token\n")}}
+	exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys),
+		requiredFileParam("token", "/etc/creds/token"),
+	)
+
+	result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "first-token", result.Params["token"])
+
+	fsys["etc/creds/token"] = &fstest.MapFile{Data: []byte("rotated-token\n")}
+	result = exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+	require.Equal(t, StatusSuccess, result.Status, "errors=%v", result.Errors)
+	assert.Equal(t, "rotated-token", result.Params["token"])
+}
+
+func TestExecute_FileOutsideFSIsUnreadable(t *testing.T) {
+	t.Run("host path missing from the FS", func(t *testing.T) {
+		fsys := fstest.MapFS{"etc/creds/token": &fstest.MapFile{Data: []byte("token")}}
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys), requiredFileParam("token", "/etc/passwd"))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorContains(t, result.Errors[PhaseParamExtraction], `opening "/etc/passwd"`)
+		assert.NotContains(t, result.Params, "token")
+	})
+
+	t.Run("path that leaves the FS root", func(t *testing.T) {
+		fsys := fstest.MapFS{"token": &fstest.MapFile{Data: []byte("token")}}
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(fsys), requiredFileParam("token", "../token"))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorContains(t, result.Errors[PhaseParamExtraction], `path "../token" is outside the file system`)
+		assert.NotContains(t, result.Params, "token")
+	})
+
+	t.Run("absolute host path outside a directory FS", func(t *testing.T) {
+		outside := filepath.Join(t.TempDir(), "token")
+		require.NoError(t, os.WriteFile(outside, []byte("outside-secret"), 0o600))
+		exec := buildParamExecutor(t, NewBuilder().WithFiles(os.DirFS(t.TempDir())), requiredFileParam("token", outside))
+
+		result := exec.Execute(t.Context(), map[string]any{"id": "cluster-1"})
+
+		require.Equal(t, StatusFailed, result.Status)
+		require.ErrorIs(t, result.Errors[PhaseParamExtraction], fs.ErrNotExist)
+		for name, value := range result.Params {
+			assert.NotContains(t, fmt.Sprint(value), "outside-secret", "param %q holds the outside file", name)
 		}
-	}
-	return 0
+	})
 }

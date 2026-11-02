@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"strings"
 
-	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
 	apierrors "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/errors"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
-	pkgotel "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/telemetry"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -56,7 +55,24 @@ func validateExecutorConfig(config *ExecutorConfig) error {
 		}
 	}
 
+	if config.Files == nil {
+		if steps := fileSteps(config.Config); len(steps) > 0 {
+			return fmt.Errorf("task config reads files but no file system was supplied: %s", strings.Join(steps, ", "))
+		}
+	}
+
 	return nil
+}
+
+func fileSteps(cfg *configloader.Config) []string {
+	var steps []string
+	for i, param := range cfg.Params {
+		if param.Source.IsFile() {
+			steps = append(steps, fmt.Sprintf("%s[%d].%s.file (%s)",
+				configloader.FieldParams, i, configloader.FieldSource, param.Name))
+		}
+	}
+	return steps
 }
 
 func apiCallSteps(cfg *configloader.Config) []string {
@@ -116,6 +132,7 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 	}
 
 	execCtx := NewExecutionContext(ctx, rawData, e.config.Config)
+	execCtx.envVariable = envSnapshot(e.config.Env)
 
 	// Initialize execution result
 	result := &ExecutionResult{
@@ -279,11 +296,13 @@ func (e *Executor) Execute(ctx context.Context, data interface{}) *ExecutionResu
 
 // executeParamExtraction extracts parameters from the event and environment
 func (e *Executor) executeParamExtraction(execCtx *ExecutionContext) error {
-	return extractParams(execCtx, e.config.Config, e.config.APIClient)
+	return extractParams(execCtx, e.config.Config, e.config.APIClient, e.config.Files)
 }
 
 // extractParams sets the config variable and extracts the configured params.
-func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiClient hyperfleetapi.Client) error {
+func extractParams(
+	execCtx *ExecutionContext, config *configloader.Config, apiClient hyperfleetapi.Client, fsys fs.FS,
+) error {
 	configMap, err := configToMap(config)
 	if err != nil {
 		return NewExecutorError(PhaseParamExtraction, "config", "failed to marshal config", err)
@@ -299,7 +318,7 @@ func extractParams(execCtx *ExecutionContext, config *configloader.Config, apiCl
 
 	// config.* param sources resolve against the real (unredacted) config so that
 	// sensitive fields like store URLs can still be explicitly extracted when needed.
-	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient)
+	return extractConfigParams(execCtx.Ctx, config, execCtx, configMap, apiClient, fsys)
 }
 
 // startTracedExecution creates an OTel span and adds trace context to logs.
@@ -317,29 +336,6 @@ func (e *Executor) startTracedExecution(ctx context.Context) (context.Context, t
 	ctx = logctx.WithOTelTraceContext(ctx)
 
 	return ctx, span
-}
-
-// CreateHandler creates a HandlerFunc that executes the adapter task for a given CloudEvent
-func (e *Executor) CreateHandler() HandlerFunc {
-	return func(ctx context.Context, evt *event.Event) (*ExecutionResult, error) {
-		// Add event ID to context for logging correlation
-		ctx = hfl.Set(ctx, logctx.EventIDKey, evt.ID())
-
-		// Extract W3C trace context from CloudEvent extensions (if present)
-		// This enables distributed tracing when upstream services (e.g., Sentinel)
-		// include traceparent/tracestate in the CloudEvent
-		ctx = pkgotel.ExtractTraceContextFromCloudEvent(ctx, evt)
-
-		slog.InfoContext(ctx, "event received",
-			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
-
-		result := e.Execute(ctx, evt.Data())
-
-		slog.InfoContext(ctx, "event processed",
-			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
-
-		return result, nil
-	}
 }
 
 // ParseEventData parses event data from various input types into structured EventData and raw map.
@@ -428,6 +424,18 @@ func (b *ExecutorBuilder) WithTransportClient(client transportclient.TransportCl
 // WithMetricsRecorder sets the optional Prometheus metrics recorder
 func (b *ExecutorBuilder) WithMetricsRecorder(recorder *metrics.Recorder) *ExecutorBuilder {
 	b.config.MetricsRecorder = recorder
+	return b
+}
+
+// WithEnv sets the environment variables a run reads as env.* and through env. params.
+func (b *ExecutorBuilder) WithEnv(env EnvFunc) *ExecutorBuilder {
+	b.config.Env = env
+	return b
+}
+
+// WithFiles sets the file system that file params read on every run.
+func (b *ExecutorBuilder) WithFiles(fsys fs.FS) *ExecutorBuilder {
+	b.config.Files = fsys
 	return b
 }
 

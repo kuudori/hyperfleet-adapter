@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudevents/sdk-go/v2/event"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/eventhandler"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/test/integration/testutil"
@@ -190,6 +191,7 @@ func TestExecutor_FullFlow_Success(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -323,6 +325,7 @@ func TestExecutor_PreconditionNotMet(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -425,6 +428,7 @@ func TestExecutor_PreconditionAPIFailure(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -518,6 +522,7 @@ func setup404IntegrationTest(t *testing.T) (*testutil.MockAPIServer, *executor.E
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -610,6 +615,7 @@ func TestExecutor_CELExpressionEvaluation(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -655,6 +661,7 @@ func TestExecutor_MultipleMessages(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -707,6 +714,7 @@ func TestExecutor_Handler_Integration(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -715,7 +723,7 @@ func TestExecutor_Handler_Integration(t *testing.T) {
 	}
 
 	// Get the handler function
-	handler := executor.AlwaysAck(exec.CreateHandler())
+	handler := eventhandler.AlwaysAck(eventhandler.CreateHandler(exec))
 
 	// Simulate broker calling the handler
 	evt := createTestEvent("cluster-handler-test")
@@ -758,6 +766,7 @@ func TestExecutor_Handler_PreconditionNotMet_ReturnsNil(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -765,7 +774,7 @@ func TestExecutor_Handler_PreconditionNotMet_ReturnsNil(t *testing.T) {
 		t.Fatalf("Failed to create executor: %v", err)
 	}
 
-	handler := executor.AlwaysAck(exec.CreateHandler())
+	handler := eventhandler.AlwaysAck(eventhandler.CreateHandler(exec))
 	evt := createTestEvent("cluster-skip")
 
 	// Handler should return nil even when precondition not met
@@ -790,6 +799,7 @@ func TestExecutor_ContextCancellation(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -825,6 +835,7 @@ func TestExecutor_MissingRequiredParam(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -866,7 +877,7 @@ func TestExecutor_MissingRequiredParam(t *testing.T) {
 	}
 
 	// Test handler behavior: should ACK (not NACK) invalid events
-	handler := executor.AlwaysAck(exec.CreateHandler())
+	handler := eventhandler.AlwaysAck(eventhandler.CreateHandler(exec))
 	err = handler(context.Background(), evt)
 	if err != nil {
 		t.Errorf("Handler should ACK (return nil) for param extraction failures, got error: %v", err)
@@ -890,6 +901,7 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -921,7 +933,7 @@ func TestExecutor_InvalidEventJSON(t *testing.T) {
 	assert.Empty(t, result.ResourceResults, "Resources should not execute for invalid event")
 
 	// Test handler behavior: should ACK (not NACK) invalid events
-	handler := executor.AlwaysAck(exec.CreateHandler())
+	handler := eventhandler.AlwaysAck(eventhandler.CreateHandler(exec))
 	err = handler(context.Background(), &evt)
 	assert.Nil(t, err, "Handler should ACK (return nil) for invalid events, not NACK")
 
@@ -941,6 +953,7 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -978,7 +991,7 @@ func TestExecutor_MissingEventFields(t *testing.T) {
 	assert.Empty(t, result.ResourceResults, "Resources should not execute for missing required field")
 
 	// Test handler behavior: should ACK (not NACK) events with missing required fields
-	handler := executor.AlwaysAck(exec.CreateHandler())
+	handler := eventhandler.AlwaysAck(eventhandler.CreateHandler(exec))
 	errPhase = handler(context.Background(), &evt)
 	assert.Nil(t, errPhase, "Handler should ACK (return nil) for missing required fields, not NACK")
 
@@ -1088,6 +1101,7 @@ func TestExecutor_LogAction(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1156,6 +1170,7 @@ func TestExecutor_PostActionAPIFailure(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1340,6 +1355,7 @@ func TestExecutor_ExecutionError_CELAccess(t *testing.T) {
 	assert.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1484,6 +1500,7 @@ func TestExecutor_PayloadBuildFailure(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(getK8sEnvForTest(t).Client).
 		Build()
@@ -1641,6 +1658,7 @@ func TestExecutor_PayloadWhenCondition(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -1795,6 +1813,7 @@ func TestExecutor_CELNamespaces_EnvAndEvent(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -1977,6 +1996,7 @@ func TestExecutor_CELNamespaces_ResourcesAdapterCaptures(t *testing.T) {
 
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()

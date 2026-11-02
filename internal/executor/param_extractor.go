@@ -3,10 +3,12 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
-	"os"
+	"path"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -23,11 +25,12 @@ func extractConfigParams(
 	execCtx *ExecutionContext,
 	configMap map[string]interface{},
 	apiClient hyperfleetapi.Client,
+	fsys fs.FS,
 ) error {
 	for _, param := range config.Params {
-		value, err := extractParam(ctx, param, execCtx, configMap, apiClient)
+		value, err := extractParam(ctx, param, execCtx, configMap, apiClient, fsys)
 		if err != nil {
-			statusCode, isAuthFailure := apiAuthFailureStatusCode(err)
+			statusCode, isAuthFailure := APIAuthFailureStatusCode(err)
 			if isAuthFailure {
 				logAPIAuthFailure(ctx, err, "phase", PhaseParamExtraction, "param", param.Name)
 			}
@@ -86,6 +89,7 @@ func extractParam(
 	execCtx *ExecutionContext,
 	configMap map[string]interface{},
 	apiClient hyperfleetapi.Client,
+	fsys fs.FS,
 ) (interface{}, error) {
 	switch {
 	case param.Source.IsAPICall():
@@ -93,7 +97,7 @@ func extractParam(
 	case param.Source.IsExpression():
 		return extractFromCELExpression(ctx, param, execCtx)
 	case param.Source.IsFile():
-		return extractFromFile(param)
+		return extractFromFile(param, fsys)
 	case param.Source.IsString():
 		return extractFromStringSource(param, execCtx, configMap)
 	default:
@@ -184,36 +188,47 @@ func extractFromCELExpression(
 // maxFileSourceSize is a defensive cap for file-based parameter sources (1 MB).
 const maxFileSourceSize = 1 << 20
 
-// extractFromFile reads a parameter value from a filesystem path.
+// extractFromFile reads a parameter value from a path in fsys.
 // The file is read fresh on every call (not cached between reconciliations).
-func extractFromFile(param configloader.Parameter) (interface{}, error) {
-	fs := param.Source.File
-	if fs == nil {
+func extractFromFile(param configloader.Parameter, fsys fs.FS) (interface{}, error) {
+	file := param.Source.File
+	if file == nil {
 		return nil, fmt.Errorf("param %q: file source has nil configuration", param.Name)
 	}
+	if fsys == nil {
+		return nil, fmt.Errorf("param %q: no file system was supplied for file source %q", param.Name, file.Path)
+	}
 
-	f, err := os.Open(fs.Path)
+	name := strings.TrimPrefix(path.Clean(file.Path), "/")
+	if !fs.ValidPath(name) {
+		return nil, fmt.Errorf("param %q: path %q is outside the file system", param.Name, file.Path)
+	}
+
+	f, err := fsys.Open(name)
 	if err != nil {
-		return nil, fmt.Errorf("param %q: opening %q: %w", param.Name, fs.Path, err)
+		if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
+			err = &fs.PathError{Op: pathErr.Op, Path: file.Path, Err: pathErr.Err}
+		}
+		return nil, fmt.Errorf("param %q: opening %q: %w", param.Name, file.Path, err)
 	}
 	defer f.Close() //nolint:errcheck // best-effort close on read-only file
 
 	limited := io.LimitReader(f, maxFileSourceSize+1)
 	raw, err := io.ReadAll(limited)
 	if err != nil {
-		return nil, fmt.Errorf("param %q: reading %q: %w", param.Name, fs.Path, err)
+		return nil, fmt.Errorf("param %q: reading %q: %w", param.Name, file.Path, err)
 	}
 	if len(raw) > maxFileSourceSize {
-		return nil, fmt.Errorf("param %q: file %q exceeds maximum size of %d bytes", param.Name, fs.Path, maxFileSourceSize)
+		return nil, fmt.Errorf("param %q: file %q exceeds maximum size of %d bytes", param.Name, file.Path, maxFileSourceSize)
 	}
 
 	content := string(raw)
-	if fs.Trim == nil || *fs.Trim {
+	if file.Trim == nil || *file.Trim {
 		content = strings.TrimSpace(content)
 	}
 
 	if param.Required && strings.TrimSpace(content) == "" {
-		return nil, fmt.Errorf("param %q: file %q is empty", param.Name, fs.Path)
+		return nil, fmt.Errorf("param %q: file %q is empty", param.Name, file.Path)
 	}
 
 	return content, nil

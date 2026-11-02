@@ -356,6 +356,7 @@ func TestExecutor_K8s_CreateResources(t *testing.T) {
 	// Create executor with real K8s client
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -508,6 +509,7 @@ func TestExecutor_K8s_UpdateExistingResource(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -616,6 +618,7 @@ func TestExecutor_K8s_DiscoveryByLabels(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -688,6 +691,7 @@ func TestExecutor_K8s_RecreateOnChange(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -744,6 +748,7 @@ func TestExecutor_K8s_MultipleResourceTypes(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -790,6 +795,7 @@ func TestExecutor_K8s_ResourceCreationFailure(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -937,6 +943,7 @@ func TestExecutor_K8s_MultipleMatchingResources(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()
@@ -1010,6 +1017,7 @@ func TestExecutor_K8s_PostActionsAfterPreconditionNotMet(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := executor.NewBuilder().
 		WithConfig(config).
+		WithEnv(executor.ProcessEnv()).
 		WithAPIClient(apiClient).
 		WithTransportClient(k8sEnv.Client).
 		Build()

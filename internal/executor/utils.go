@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strings"
 	"time"
@@ -33,8 +32,8 @@ func ToConditionDefs(conditions []configloader.Condition) []criteria.ConditionDe
 	return defs
 }
 
-// apiAuthFailureStatusCode returns the status code for wrapped API authorization errors.
-func apiAuthFailureStatusCode(err error) (int, bool) {
+// APIAuthFailureStatusCode returns the status code for wrapped API authorization errors.
+func APIAuthFailureStatusCode(err error) (int, bool) {
 	apiErr, ok := apierrors.IsAPIError(err)
 	if !ok {
 		return 0, false
@@ -54,7 +53,7 @@ func isAPIAuthFailureHTTPStatus(statusCode int) bool {
 // logAPIAuthFailure records a structured log for an API authentication or
 // authorization failure. Callers add context specific to their execution phase.
 func logAPIAuthFailure(ctx context.Context, err error, attrs ...any) {
-	statusCode, ok := apiAuthFailureStatusCode(err)
+	statusCode, ok := APIAuthFailureStatusCode(err)
 	if !ok {
 		return
 	}
@@ -381,17 +380,6 @@ func executionErrorToMap(execErr *ExecutionError) interface{} {
 		"step":    execErr.Step,
 		"message": execErr.Message,
 	}
-}
-
-// buildEnvMap returns all OS environment variables as a map[string]interface{} for CEL evaluation.
-func buildEnvMap() map[string]interface{} {
-	envMap := make(map[string]interface{})
-	for _, kv := range os.Environ() {
-		if i := strings.Index(kv, "="); i > 0 {
-			envMap[kv[:i]] = kv[i+1:]
-		}
-	}
-	return envMap
 }
 
 // adapterMetadataToMap converts AdapterMetadata struct to a map for CEL evaluation

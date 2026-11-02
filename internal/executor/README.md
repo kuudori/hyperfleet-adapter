@@ -1,6 +1,6 @@
 # Executor Package
 
-The `executor` package is the core event processing engine for the HyperFleet Adapter. It orchestrates the execution of CloudEvents according to the adapter configuration, coordinating parameter extraction, precondition evaluation, Kubernetes resource management, and post-action execution.
+The `executor` package is the core event processing engine for the HyperFleet Adapter. It runs the adapter task on one event payload, coordinating parameter extraction, precondition evaluation, Kubernetes resource management, and post-action execution.
 
 ## Key Concepts
 
@@ -27,7 +27,7 @@ The executor implements a four-phase execution pipeline:
 │                        Event Processing Pipeline                     │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  CloudEvent ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Done │
+│  Event data ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4 ──► Done │
 │                Extract    Precond.   Resources   Post-Act.           │
 │                Params     Eval.      Create      Execute             │
 │                                                                      │
@@ -79,11 +79,8 @@ if err != nil {
     return err
 }
 
-// Create handler for broker subscription
-handler := exec.CreateHandler()
-
-// Or execute directly
-result := exec.Execute(ctx, cloudEvent)
+// Execute directly
+result := exec.Execute(ctx, eventData)
 if result.Status == executor.StatusFailed {
     log.Errorf("Execution failed: %v", result.Errors)
 } else if result.ResourcesSkipped {
@@ -126,7 +123,7 @@ Extracts parameters from various sources:
 
 - **Environment Variables**: `source: "env.VARIABLE_NAME"`
 - **Event Data**: `source: "event.field.path"`
-- **File**: `source: { file: { path: "/path/to/file" } }` (read at reconciliation time)
+- **File**: `source: { file: { path: "/path/to/file" } }` (read through `WithFiles` on every run)
 - **Secrets**: `source: "secret.namespace.name.key"` (requires K8s client)
 - **ConfigMaps**: `source: "configmap.namespace.name.key"` (requires K8s client)
 
@@ -231,7 +228,7 @@ Preconditions have **two different data scopes** for capture and conditions:
 | `capturedField` | Explicitly captured fields (added to params) |
 | `adapter.*` | Adapter name and version, plus execution metadata |
 | `config.*` | Merged deployment and task config. The runtime redacts sensitive values. |
-| `env.*` | OS environment variables |
+| `env.*` | Variables from `WithEnv`; none by default. The adapter passes the process environment. |
 | `event.*` | Full triggering event payload |
 | `resources.*` | Created resources (empty during preconditions) |
 
@@ -504,7 +501,7 @@ exec, _ := executor.NewBuilder().
     Build()
 
 // Subscribe with executor handler
-broker_consumer.Subscribe(ctx, subscriber, topic, exec.CreateHandler())
+subscriber.Subscribe(ctx, topic, eventhandler.AlwaysAck(eventhandler.CreateHandler(exec)))
 ```
 
 </details>

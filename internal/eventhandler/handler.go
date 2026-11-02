@@ -1,4 +1,4 @@
-package executor
+package eventhandler
 
 import (
 	"context"
@@ -6,15 +6,40 @@ import (
 	"time"
 
 	"github.com/cloudevents/sdk-go/v2/event"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/logctx"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
+	pkgotel "github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/telemetry"
 	hfl "github.com/openshift-hyperfleet/hyperfleet-logger"
 )
 
 // HandlerFunc is a composable event handler. Build a broker-compatible handler with:
 //
-//	handler := AlwaysAck(WithMetrics(exec.CreateHandler(), metricsRecorder))
-type HandlerFunc func(ctx context.Context, evt *event.Event) (*ExecutionResult, error)
+//	handler := AlwaysAck(WithMetrics(CreateHandler(exec), metricsRecorder))
+type HandlerFunc func(ctx context.Context, evt *event.Event) (*executor.ExecutionResult, error)
+
+// CreateHandler creates a HandlerFunc that executes the adapter task for a given CloudEvent
+func CreateHandler(exec *executor.Executor) HandlerFunc {
+	return func(ctx context.Context, evt *event.Event) (*executor.ExecutionResult, error) {
+		// Add event ID to context for logging correlation
+		ctx = hfl.Set(ctx, logctx.EventIDKey, evt.ID())
+
+		// Extract W3C trace context from CloudEvent extensions (if present)
+		// This enables distributed tracing when upstream services (e.g., Sentinel)
+		// include traceparent/tracestate in the CloudEvent
+		ctx = pkgotel.ExtractTraceContextFromCloudEvent(ctx, evt)
+
+		slog.InfoContext(ctx, "event received",
+			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
+
+		result := exec.Execute(ctx, evt.Data())
+
+		slog.InfoContext(ctx, "event processed",
+			"event_type", evt.Type(), "event_source", evt.Source(), "event_time", evt.Time())
+
+		return result, nil
+	}
+}
 
 // WithMetrics wraps a HandlerFunc to record Prometheus metrics after execution.
 // A panic in metrics recording is recovered to prevent crashing the handler.
@@ -23,14 +48,14 @@ func WithMetrics(h HandlerFunc, recorder *metrics.Recorder) HandlerFunc {
 	if recorder == nil {
 		return h
 	}
-	return func(ctx context.Context, evt *event.Event) (*ExecutionResult, error) {
+	return func(ctx context.Context, evt *event.Event) (*executor.ExecutionResult, error) {
 		start := time.Now()
 		result, err := h(ctx, evt)
 		duration := time.Since(start)
 
 		resultForMetrics := result
-		if err != nil && (result == nil || result.Status == StatusSuccess) {
-			resultForMetrics = &ExecutionResult{Status: StatusFailed}
+		if err != nil && (result == nil || result.Status == executor.StatusSuccess) {
+			resultForMetrics = &executor.ExecutionResult{Status: executor.StatusFailed}
 		}
 
 		func() {
@@ -59,7 +84,7 @@ func AlwaysAck(h HandlerFunc) func(ctx context.Context, evt *event.Event) error 
 		if err != nil {
 			slog.WarnContext(ctx, "event handler error (acked)",
 				"event_type", evt.Type(), "error", err)
-		} else if result != nil && result.Status == StatusFailed {
+		} else if result != nil && result.Status == executor.StatusFailed {
 			phases := make([]string, 0, len(result.Errors))
 			for phase := range result.Errors {
 				phases = append(phases, string(phase))
@@ -72,7 +97,7 @@ func AlwaysAck(h HandlerFunc) func(ctx context.Context, evt *event.Event) error 
 }
 
 // recordMetrics records Prometheus metrics based on the execution result.
-func recordMetrics(recorder *metrics.Recorder, result *ExecutionResult, duration time.Duration) {
+func recordMetrics(recorder *metrics.Recorder, result *executor.ExecutionResult, duration time.Duration) {
 	if recorder == nil {
 		return
 	}
@@ -87,11 +112,11 @@ func recordMetrics(recorder *metrics.Recorder, result *ExecutionResult, duration
 	}
 
 	switch {
-	case result.Status == StatusFailed:
+	case result.Status == executor.StatusFailed:
 		recorder.RecordEventProcessed("failed")
 		for phase, err := range result.Errors {
 			recorder.RecordError(string(phase))
-			if statusCode, ok := apiAuthFailureStatusCode(err); ok {
+			if statusCode, ok := executor.APIAuthFailureStatusCode(err); ok {
 				recorder.RecordAPIAuthFailure(statusCode)
 			}
 		}
