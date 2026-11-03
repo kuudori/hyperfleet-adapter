@@ -32,8 +32,7 @@ func TestCreateHandler_PostActionAPIAuthFailuresAreAcknowledgedAndRecorded(t *te
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+			recorder, registry := newTestRecorder(t)
 			mockClient := hyperfleetapi.NewMockClient()
 			mockClient.PutResponse = &hyperfleetapi.Response{
 				StatusCode: tt.statusCode,
@@ -42,15 +41,10 @@ func TestCreateHandler_PostActionAPIAuthFailuresAreAcknowledgedAndRecorded(t *te
 				Attempts:   1,
 			}
 
-			exec, err := executor.NewBuilder().
-				WithConfig(authFailurePostActionConfig()).
-				WithAPIClient(mockClient).
-				WithTransportClient(k8sclient.NewMockK8sClient()).
-				Build()
-			require.NoError(t, err)
+			exec := newTestExecutor(t, authFailurePostActionConfig(), mockClient)
 
 			handler := AlwaysAck(WithMetrics(CreateHandler(exec), recorder))
-			err = handler(t.Context(), authFailureEvent(t, "cluster-auth-failure"))
+			err := handler(t.Context(), authFailureEvent(t, "cluster-auth-failure"))
 			require.NoError(t, err, "authentication failures must be ACKed for external remediation")
 
 			families, err := registry.Gather()
@@ -69,8 +63,7 @@ func TestCreateHandler_PostActionAPIAuthFailuresAreAcknowledgedAndRecorded(t *te
 }
 
 func TestCreateHandler_PostActionNonAuthAPIFailureDoesNotEmitAuthMetric(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	recorder, registry := newTestRecorder(t)
 	mockClient := hyperfleetapi.NewMockClient()
 	mockClient.PutResponse = &hyperfleetapi.Response{
 		StatusCode: http.StatusInternalServerError,
@@ -79,15 +72,10 @@ func TestCreateHandler_PostActionNonAuthAPIFailureDoesNotEmitAuthMetric(t *testi
 		Attempts:   1,
 	}
 
-	exec, err := executor.NewBuilder().
-		WithConfig(authFailurePostActionConfig()).
-		WithAPIClient(mockClient).
-		WithTransportClient(k8sclient.NewMockK8sClient()).
-		Build()
-	require.NoError(t, err)
+	exec := newTestExecutor(t, authFailurePostActionConfig(), mockClient)
 
 	handler := AlwaysAck(WithMetrics(CreateHandler(exec), recorder))
-	err = handler(t.Context(), authFailureEvent(t, "cluster-non-auth-failure"))
+	err := handler(t.Context(), authFailureEvent(t, "cluster-non-auth-failure"))
 	require.NoError(t, err, "existing always-ACK behavior for non-auth failures must remain unchanged")
 
 	families, err := registry.Gather()
@@ -112,8 +100,7 @@ func TestCreateHandler_OptionalAPIParameterAuthFailureIsLoggedAndRecorded(t *tes
 	)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	recorder, registry := newTestRecorder(t)
 	mockClient := hyperfleetapi.NewMockClient()
 	mockClient.GetResponse = &hyperfleetapi.Response{
 		StatusCode: http.StatusForbidden,
@@ -121,25 +108,20 @@ func TestCreateHandler_OptionalAPIParameterAuthFailureIsLoggedAndRecorded(t *tes
 		Body:       []byte(`optional-api-parameter-auth-response-must-not-be-logged`),
 	}
 
-	exec, err := executor.NewBuilder().
-		WithConfig(&configloader.Config{
-			Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
-			Params: []configloader.Parameter{
-				{Name: "clusterID", Source: configloader.StringSource("event.id"), Required: true},
-				{
-					Name: "cluster",
-					Source: configloader.APICallSource(&configloader.APICall{
-						Method: http.MethodGet,
-						URL:    "/clusters/{{ .clusterID }}",
-					}),
-					Default: map[string]interface{}{"name": "fallback"},
-				},
+	exec := newTestExecutor(t, &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
+		Params: []configloader.Parameter{
+			{Name: "clusterID", Source: configloader.StringSource("event.id"), Required: true},
+			{
+				Name: "cluster",
+				Source: configloader.APICallSource(&configloader.APICall{
+					Method: http.MethodGet,
+					URL:    "/clusters/{{ .clusterID }}",
+				}),
+				Default: map[string]interface{}{"name": "fallback"},
 			},
-		}).
-		WithAPIClient(mockClient).
-		WithTransportClient(k8sclient.NewMockK8sClient()).
-		Build()
-	require.NoError(t, err)
+		},
+	}, mockClient)
 
 	result, err := WithMetrics(CreateHandler(exec), recorder)(
 		t.Context(), authFailureEvent(t, "cluster-optional-auth-failure"))
@@ -228,8 +210,7 @@ func TestExecutor_APIAuthFailuresAreLoggedAcrossExecutionPhases(t *testing.T) {
 			)))
 			t.Cleanup(func() { slog.SetDefault(previous) })
 
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+			recorder, registry := newTestRecorder(t)
 			mockClient := hyperfleetapi.NewMockClient()
 			mockClient.GetResponse = &hyperfleetapi.Response{
 				StatusCode: http.StatusForbidden,
@@ -237,12 +218,7 @@ func TestExecutor_APIAuthFailuresAreLoggedAcrossExecutionPhases(t *testing.T) {
 				Body:       []byte(tt.responseBody),
 			}
 
-			exec, err := executor.NewBuilder().
-				WithConfig(tt.config).
-				WithAPIClient(mockClient).
-				WithTransportClient(k8sclient.NewMockK8sClient()).
-				Build()
-			require.NoError(t, err)
+			exec := newTestExecutor(t, tt.config, mockClient)
 
 			result, err := WithMetrics(CreateHandler(exec), recorder)(
 				t.Context(), authFailureEvent(t, "cluster-auth-failure"))
@@ -286,12 +262,35 @@ func authFailurePostActionConfig() *configloader.Config {
 
 func authFailureEvent(t *testing.T, clusterID string) *event.Event {
 	t.Helper()
-	evt := event.New()
-	evt.SetID("event-" + clusterID)
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("qe")
+	evt := newTestEvent(t, "event-"+clusterID)
 	payload, err := json.Marshal(map[string]interface{}{"id": clusterID})
 	require.NoError(t, err)
 	require.NoError(t, evt.SetData(event.ApplicationJSON, payload))
+	return evt
+}
+
+func newTestEvent(t *testing.T, id string) *event.Event {
+	t.Helper()
+	evt := event.New()
+	evt.SetID(id)
+	evt.SetType("com.hyperfleet.test")
+	evt.SetSource("test")
 	return &evt
+}
+
+func newTestRecorder(t *testing.T) (*metrics.Recorder, *prometheus.Registry) {
+	t.Helper()
+	registry := prometheus.NewRegistry()
+	return metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry), registry
+}
+
+func newTestExecutor(t *testing.T, config *configloader.Config, apiClient hyperfleetapi.Client) *executor.Executor {
+	t.Helper()
+	exec, err := executor.NewBuilder().
+		WithConfig(config).
+		WithAPIClient(apiClient).
+		WithTransportClient(k8sclient.NewMockK8sClient()).
+		Build()
+	require.NoError(t, err)
+	return exec
 }

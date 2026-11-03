@@ -2,12 +2,10 @@ package eventhandler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/cloudevents/sdk-go/v2/event"
-	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,19 +15,23 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient/desiretest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/executor"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/hyperfleetapi"
-	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportregistry"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/metrics"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
 )
 
 // TestCreateHandler_MetricsRecording verifies that WithMetrics records Prometheus metrics
 func TestCreateHandler_MetricsRecording(t *testing.T) {
 	tests := []struct {
 		name           string
-		preconditions  []configloader.Precondition
 		expectedStatus string // "success", "skipped", or "failed"
-		expectedErrors []string
+		preconditions  []configloader.Precondition
 	}{
 		{
 			name:           "success records success metric",
@@ -47,32 +49,21 @@ func TestCreateHandler_MetricsRecording(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+			recorder, registry := newTestRecorder(t)
 
 			config := &configloader.Config{
 				Adapter:       configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
 				Preconditions: tt.preconditions,
 			}
 
-			exec, err := executor.NewBuilder().
-				WithConfig(config).
-				WithAPIClient(hyperfleetapi.NewMockClient()).
-				WithTransportClient(k8sclient.NewMockK8sClient()).
-				Build()
-			require.NoError(t, err)
+			exec := newTestExecutor(t, config, hyperfleetapi.NewMockClient())
 
 			handler := AlwaysAck(WithMetrics(CreateHandler(exec), recorder))
 
-			evt := event.New()
-			evt.SetID("test-event-1")
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
-			eventData := map[string]interface{}{"id": "cluster-1"}
-			eventBytes, _ := json.Marshal(eventData)
-			_ = evt.SetData(event.ApplicationJSON, eventBytes)
+			evt := newTestEvent(t, "test-event-1")
+			require.NoError(t, evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`)))
 
-			err = handler(context.Background(), &evt)
+			err := handler(context.Background(), evt)
 			require.NoError(t, err, "handler should always return nil")
 
 			// Verify events_processed_total
@@ -93,8 +84,7 @@ func TestCreateHandler_MetricsRecording(t *testing.T) {
 
 // TestCreateHandler_MetricsRecording_Failed verifies error metrics are recorded on failure
 func TestCreateHandler_MetricsRecording_Failed(t *testing.T) {
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	recorder, registry := newTestRecorder(t)
 
 	config := &configloader.Config{
 		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
@@ -103,24 +93,14 @@ func TestCreateHandler_MetricsRecording_Failed(t *testing.T) {
 		},
 	}
 
-	exec, err := executor.NewBuilder().
-		WithConfig(config).
-		WithAPIClient(hyperfleetapi.NewMockClient()).
-		WithTransportClient(k8sclient.NewMockK8sClient()).
-		Build()
-	require.NoError(t, err)
+	exec := newTestExecutor(t, config, hyperfleetapi.NewMockClient())
 
 	handler := AlwaysAck(WithMetrics(CreateHandler(exec), recorder))
 
-	evt := event.New()
-	evt.SetID("test-event-fail")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-	eventData := map[string]interface{}{"id": "cluster-1"}
-	eventBytes, _ := json.Marshal(eventData)
-	_ = evt.SetData(event.ApplicationJSON, eventBytes)
+	evt := newTestEvent(t, "test-event-fail")
+	require.NoError(t, evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`)))
 
-	err = handler(context.Background(), &evt)
+	err := handler(context.Background(), evt)
 	require.NoError(t, err, "handler should always return nil even on failure")
 
 	families, err := registry.Gather()
@@ -141,23 +121,15 @@ func TestCreateHandler_NilMetricsRecorder(t *testing.T) {
 		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
 	}
 
-	exec, err := executor.NewBuilder().
-		WithConfig(config).
-		WithAPIClient(hyperfleetapi.NewMockClient()).
-		WithTransportClient(k8sclient.NewMockK8sClient()).
-		Build()
-	require.NoError(t, err)
+	exec := newTestExecutor(t, config, hyperfleetapi.NewMockClient())
 
 	handler := AlwaysAck(WithMetrics(CreateHandler(exec), nil))
 
-	evt := event.New()
-	evt.SetID("test-event-nil")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
-	_ = evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`))
+	evt := newTestEvent(t, "test-event-nil")
+	require.NoError(t, evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`)))
 
 	assert.NotPanics(t, func() {
-		_ = handler(context.Background(), &evt)
+		_ = handler(context.Background(), evt)
 	}, "handler with nil MetricsRecorder should not panic")
 }
 
@@ -171,26 +143,19 @@ func TestCreateHandler_ContinuesUpstreamTrace(t *testing.T) {
 	t.Cleanup(func() {
 		otel.SetTracerProvider(previousProvider)
 		otel.SetTextMapPropagator(previousPropagator)
+		// Shutdown only flushes to the in-memory SpanRecorder, which cannot fail.
 		_ = provider.Shutdown(context.Background())
 	})
 
-	exec, err := executor.NewBuilder().
-		WithConfig(&configloader.Config{
-			Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
-		}).
-		WithAPIClient(hyperfleetapi.NewMockClient()).
-		WithTransportClient(k8sclient.NewMockK8sClient()).
-		Build()
-	require.NoError(t, err)
+	exec := newTestExecutor(t, &configloader.Config{
+		Adapter: configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
+	}, hyperfleetapi.NewMockClient())
 
-	evt := event.New()
-	evt.SetID("test-event-trace")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
+	evt := newTestEvent(t, "test-event-trace")
 	evt.SetExtension("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
-	_ = evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`))
+	require.NoError(t, evt.SetData(event.ApplicationJSON, []byte(`{"id":"cluster-1"}`)))
 
-	_, err = CreateHandler(exec)(t.Context(), &evt)
+	_, err := CreateHandler(exec)(t.Context(), evt)
 	require.NoError(t, err)
 
 	ended := spans.Ended()
@@ -200,11 +165,87 @@ func TestCreateHandler_ContinuesUpstreamTrace(t *testing.T) {
 	assert.Equal(t, "b7ad6b7169203331", ended[0].Parent().SpanID().String())
 }
 
+// TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric verifies that an apply refused
+// because a delete is still pending counts as a success, neither failed nor skipped
+func TestCreateHandler_PendingDeleteDoesNotRecordErrorMetric(t *testing.T) {
+	const (
+		transportName = "desire-primary"
+		owner         = "hyperfleet-adapter"
+	)
+	identity := desiretest.TestIdentity{
+		ManagementCluster: "cluster-1",
+		Resource:          "configmaps",
+		Namespace:         "default",
+		Name:              "test-config",
+	}
+	definition := configloader.TransportDefinition{
+		Type:            configloader.TransportTypeRemote,
+		TargetCluster:   identity.ManagementCluster,
+		ResourcePlurals: map[string]string{"v1/ConfigMap": identity.Resource},
+	}
+
+	store := memory.New()
+	_, err := store.CreateDeleteDesire(t.Context(), desire.DeleteDesire{
+		Identity: identity.Delete(),
+		Owner:    owner,
+	})
+	require.NoError(t, err)
+
+	exec, err := executor.NewBuilder().
+		WithConfig(&configloader.Config{
+			Adapter:    configloader.AdapterInfo{Name: "test-adapter", Version: "v0.1.0"},
+			Transports: map[string]configloader.TransportDefinition{transportName: definition},
+			Resources: []configloader.Resource{{
+				Name:      "test-resource",
+				Transport: configloader.NamedTransport(transportName),
+				Manifest: map[string]interface{}{
+					"apiVersion": "v1",
+					"kind":       "ConfigMap",
+					"metadata": map[string]interface{}{
+						"name":        identity.Name,
+						"namespace":   identity.Namespace,
+						"annotations": map[string]interface{}{"hyperfleet.io/generation": "1"},
+					},
+					"data": map[string]interface{}{"key": "value"},
+				},
+				Discovery: &configloader.DiscoveryConfig{Namespace: identity.Namespace, ByName: identity.Name},
+				Lifecycle: &configloader.ResourceLifecycle{
+					Delete: &configloader.LifecycleDelete{PropagationPolicy: "Background"},
+				},
+			}},
+		}).
+		WithAPIClient(hyperfleetapi.NewMockClient()).
+		WithTransportRegistry(transportclient.Registry{
+			transportName: {
+				Client: desireclient.NewClient(store, owner),
+				Target: transportregistry.Target(transportName, definition),
+			},
+		}).
+		Build()
+	require.NoError(t, err)
+
+	recorder, registry := newTestRecorder(t)
+	result, err := WithMetrics(CreateHandler(exec), recorder)(t.Context(), newTestEvent(t, "pending-delete"))
+	require.NoError(t, err)
+	require.Equal(t, executor.StatusSuccess, result.Status, "errors=%v", result.Errors)
+	require.Len(t, result.ResourceResults, 1)
+	require.Equal(t, "delete pending, retrying on next event", result.ResourceResults[0].OperationReason)
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), getCounterValue(t, families,
+		"hyperfleet_adapter_events_processed_total", "status", "success"))
+	assert.Zero(t, getCounterValue(t, families,
+		"hyperfleet_adapter_events_processed_total", "status", "failed"))
+	assert.Nil(t, findFamily(families, "hyperfleet_adapter_errors_total"))
+}
+
 // TestWithMetrics_RecordsMetrics verifies WithMetrics records the correct metric status
 // and passes the result through
 func TestWithMetrics_RecordsMetrics(t *testing.T) {
 	tests := []struct {
 		result          *executor.ExecutionResult
+		err             error
 		name            string
 		expectedStatus  string
 		expectNoMetrics bool
@@ -228,6 +269,17 @@ func TestWithMetrics_RecordsMetrics(t *testing.T) {
 			expectedStatus: "failed",
 		},
 		{
+			name:           "inner handler error with nil result",
+			err:            fmt.Errorf("inner handler error"),
+			expectedStatus: "failed",
+		},
+		{
+			name:           "inner handler error with success result",
+			result:         &executor.ExecutionResult{Status: executor.StatusSuccess},
+			err:            fmt.Errorf("inner handler error"),
+			expectedStatus: "failed",
+		},
+		{
 			name:            "nil result",
 			result:          nil,
 			expectNoMetrics: true,
@@ -236,21 +288,17 @@ func TestWithMetrics_RecordsMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			registry := prometheus.NewRegistry()
-			recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+			recorder, registry := newTestRecorder(t)
 
 			inner := HandlerFunc(func(_ context.Context, _ *event.Event) (*executor.ExecutionResult, error) {
-				return tt.result, nil
+				return tt.result, tt.err
 			})
 			handler := WithMetrics(inner, recorder)
 
-			evt := event.New()
-			evt.SetID("test-metrics-" + tt.name)
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
+			evt := newTestEvent(t, "test-metrics-"+tt.name)
 
-			got, err := handler(context.Background(), &evt)
-			require.NoError(t, err)
+			got, err := handler(context.Background(), evt)
+			require.ErrorIs(t, err, tt.err)
 			assert.Equal(t, tt.result, got, "result must be passed through unchanged")
 
 			families, err := registry.Gather()
@@ -286,17 +334,13 @@ func TestWithMetrics_HandlerPanicPropagates(t *testing.T) {
 		panic("handler panic")
 	})
 
-	registry := prometheus.NewRegistry()
-	recorder := metrics.NewRecorder("test-adapter", "v0.1.0", "test", registry)
+	recorder, _ := newTestRecorder(t)
 	handler := WithMetrics(inner, recorder)
 
-	evt := event.New()
-	evt.SetID("test-handler-panic")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
+	evt := newTestEvent(t, "test-handler-panic")
 
 	assert.Panics(t, func() {
-		_, _ = handler(context.Background(), &evt)
+		_, _ = handler(context.Background(), evt)
 	}, "panic in inner handler must propagate through WithMetrics")
 }
 
@@ -312,14 +356,11 @@ func TestWithMetrics_MetricsPanicRecovered(t *testing.T) {
 	panicRecorder := new(metrics.Recorder)
 	handler := WithMetrics(inner, panicRecorder)
 
-	evt := event.New()
-	evt.SetID("test-metrics-panic")
-	evt.SetType("com.hyperfleet.test")
-	evt.SetSource("test")
+	evt := newTestEvent(t, "test-metrics-panic")
 
 	var got *executor.ExecutionResult
 	assert.NotPanics(t, func() {
-		got, _ = handler(context.Background(), &evt)
+		got, _ = handler(context.Background(), evt)
 	}, "panic in metrics recording must be recovered by WithMetrics")
 	assert.NotNil(t, got, "result must still be returned after metrics panic")
 }
@@ -353,12 +394,9 @@ func TestAlwaysAck_AlwaysReturnsNil(t *testing.T) {
 
 			handler := AlwaysAck(inner)
 
-			evt := event.New()
-			evt.SetID("test-ack")
-			evt.SetType("com.hyperfleet.test")
-			evt.SetSource("test")
+			evt := newTestEvent(t, "test-ack")
 
-			err := handler(context.Background(), &evt)
+			err := handler(context.Background(), evt)
 			assert.Nil(t, err, "AlwaysAck must always return nil")
 		})
 	}

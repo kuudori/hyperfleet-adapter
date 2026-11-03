@@ -68,8 +68,8 @@ func fileSteps(cfg *configloader.Config) []string {
 	var steps []string
 	for i, param := range cfg.Params {
 		if param.Source.IsFile() {
-			steps = append(steps, fmt.Sprintf("%s[%d].%s.file (%s)",
-				configloader.FieldParams, i, configloader.FieldSource, param.Name))
+			steps = append(steps, fmt.Sprintf("%s[%d].%s.%s (%s)",
+				configloader.FieldParams, i, configloader.FieldSource, configloader.FieldFile, param.Name))
 		}
 	}
 	return steps
