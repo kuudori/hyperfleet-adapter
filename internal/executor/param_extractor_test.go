@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"testing/fstest"
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/configloader"
 	"github.com/stretchr/testify/assert"
@@ -230,6 +231,75 @@ func TestConvertToBool(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.want, got)
 			}
+		})
+	}
+}
+
+func TestExtractFromFile_PathRules(t *testing.T) {
+	fsys := fstest.MapFS{
+		"secrets/token":   {Data: []byte("file-token\n")},
+		"a/b":             {Data: []byte("cleaned-path")},
+		"etc/creds/token": {Data: []byte("absolute-path")},
+	}
+
+	tests := []struct {
+		name    string
+		path    string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "relative path resolves from the file system root",
+			path: "secrets/token",
+			want: "file-token",
+		},
+		{
+			name: "leading slash is dropped",
+			path: "/secrets/token",
+			want: "file-token",
+		},
+		{
+			name: "absolute path resolves inside the file system",
+			path: "/etc/creds/token",
+			want: "absolute-path",
+		},
+		{
+			name: "path is cleaned before it is opened",
+			path: "/a/link/../b",
+			want: "cleaned-path",
+		},
+		{
+			name:    "parent traversal is rejected",
+			path:    "../token",
+			wantErr: `path "../token" is outside the file system`,
+		},
+		{
+			name:    "traversal left after cleaning is rejected",
+			path:    "secrets/../../token",
+			wantErr: `path "secrets/../../token" is outside the file system`,
+		},
+		{
+			name:    "open error reports the configured path",
+			path:    "/secrets/missing",
+			wantErr: `opening "/secrets/missing"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			param := configloader.Parameter{
+				Name:   "token",
+				Source: configloader.FileSource(&configloader.FileSourceConfig{Path: tt.path}),
+			}
+
+			got, err := extractFromFile(param, fsys)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

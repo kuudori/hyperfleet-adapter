@@ -188,8 +188,16 @@ func extractFromCELExpression(
 // maxFileSourceSize is a defensive cap for file-based parameter sources (1 MB).
 const maxFileSourceSize = 1 << 20
 
-// extractFromFile reads a parameter value from a path in fsys.
-// The file is read fresh on every call (not cached between reconciliations).
+// extractFromFile reads a parameter value from a path in fsys. The file is read fresh on
+// every call, so a rotated secret is picked up on the next event.
+//
+// Path rules:
+//   - The path is cleaned first, so "." and ".." segments collapse and repeated slashes drop.
+//   - Leading slashes are dropped, so file.Path is always relative to the file system root.
+//   - The cleaned path must stay inside the file system. fs.ValidPath rejects a path that
+//     escapes the root, so "../token" fails instead of reading outside.
+//   - An Open error reports the configured path, not the cleaned one, so a log line matches
+//     what the task config says.
 func extractFromFile(param configloader.Parameter, fsys fs.FS) (interface{}, error) {
 	file := param.Source.File
 	if file == nil {

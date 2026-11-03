@@ -43,6 +43,7 @@ const (
 	FieldDescription = "description"
 	FieldRequired    = "required"
 	FieldDefault     = "default"
+	FieldFile        = "file"
 )
 
 // Payload field names (for post.payloads)
