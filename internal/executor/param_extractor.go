@@ -194,8 +194,12 @@ const maxFileSourceSize = 1 << 20
 // Path rules:
 //   - The path is cleaned first, so "." and ".." segments collapse and repeated slashes drop.
 //   - Leading slashes are dropped, so file.Path is always relative to the file system root.
-//   - The cleaned path must stay inside the file system. fs.ValidPath rejects a path that
-//     escapes the root, so "../token" fails instead of reading outside.
+//   - fs.ValidPath then rejects a path that is not lexically rooted in the file system,
+//     so "../token" fails. This is lexical validation only: fs.ValidPath checks the path
+//     syntax and cannot see symlinks, so with an os.DirFS rooted at a restricted directory
+//     a valid path may still resolve outside it. Containment requires an fs.FS that
+//     enforces it; the adapter itself runs with os.DirFS("/"), where every path is in scope
+//     by design.
 //   - An Open error reports the configured path, not the cleaned one, so a log line matches
 //     what the task config says.
 func extractFromFile(param configloader.Parameter, fsys fs.FS) (interface{}, error) {
