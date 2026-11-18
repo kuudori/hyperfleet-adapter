@@ -1,10 +1,8 @@
 .DEFAULT_GOAL := help
 
-# CGO_ENABLED=0 is not FIPS compliant. large commercial vendors and FedRAMP require FIPS compliant crypto
-# Use ?= so callers can override on the command line, e.g. CGO_ENABLED=0 make build for a non-FIPS static binary
+# FIPS mode is turned on only in the container image build. See the Dockerfile.
 CGO_ENABLED ?= 1
-GOEXPERIMENT ?= boringcrypto
-GOFIPS140 ?= off
+export CGO_ENABLED
 
 GO ?= go
 TOOL_MOD := tools/go.mod
@@ -62,11 +60,11 @@ help: ## Display this help
 .PHONY: build
 build: ## Build the adapter binary
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=$(CGO_ENABLED) GOEXPERIMENT=$(GOEXPERIMENT) GOFIPS140=$(GOFIPS140) $(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/adapter
+	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY_NAME) ./cmd/adapter
 
 .PHONY: install
 install: build ## Build and install binary to GOPATH/bin
-	CGO_ENABLED=$(CGO_ENABLED) GOEXPERIMENT=$(GOEXPERIMENT) GOFIPS140=$(GOFIPS140) $(GO) install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/adapter
+	$(GO) install $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/adapter
 
 .PHONY: clean
 clean: ## Remove build artifacts
@@ -97,7 +95,11 @@ test-coverage: test ## Run tests and show coverage
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (requires Docker/Podman)
-	@TEST_TIMEOUT=$(TEST_TIMEOUT) bash scripts/run-integration-tests.sh
+	@GO="$(GO)" TEST_TIMEOUT=$(TEST_TIMEOUT) bash scripts/run-integration-tests.sh
+
+.PHONY: test-integration-run
+test-integration-run: ## Run integration Go tests after container setup (used by integration scripts).
+	$(GO) test -v -count=1 -tags=integration ./test/integration/... -timeout $(TEST_TIMEOUT)
 
 .PHONY: image-integration-test
 image-integration-test: ## Build integration test image with envtest

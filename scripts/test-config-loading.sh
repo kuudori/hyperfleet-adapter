@@ -64,7 +64,7 @@ cleanup() { rm -f "$ADAPTER_BIN"; rm -rf "$TMPDIR_TEST"; }
 trap cleanup EXIT
 
 echo -e "${YELLOW}Building adapter binary...${NC}"
-(cd "$ROOT_DIR" && go build -o "$ADAPTER_BIN" ./cmd/adapter)
+make -C "$ROOT_DIR" build BINARY_NAME="$ADAPTER_BIN"
 echo "  Built: $ADAPTER_BIN"
 
 # Minimal task config (required by config-dump; task params are not under test here)

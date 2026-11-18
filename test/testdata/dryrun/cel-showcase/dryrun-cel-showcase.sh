@@ -2,7 +2,8 @@
 set -euo pipefail
 
 #execute from root repository folder
-go run ./cmd/adapter/main.go serve \
+make build
+./bin/hyperfleet-adapter serve \
   --log-level debug \
   --dry-run-verbose \
   --config ./test/testdata/dryrun/dryrun-kubernetes-adapter-config.yaml \

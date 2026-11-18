@@ -73,6 +73,18 @@ This project follows the [Contributor Covenant Code of Conduct](https://www.cont
 
 ### Building the Project
 
+FIPS mode is enabled only in the container image build. Local `make build`,
+`make test`, and integration tests do not enable FIPS by default. The Dockerfile
+selects `GOFIPS140=v1.0.0` and builds with `-tags=fips,no_openssl`:
+`cmd/adapter/fips.go` enables FIPS and rejects runtime attempts to disable it;
+`no_openssl` selects Go's native crypto backend on Red Hat Go. The image build
+checks the selected module, the compiled FIPS default, and startup with
+`GOLANG_FIPS=1`. Do not disable TLS 1.2 EMS enforcement with `fips140ems=0`;
+the build check rejects compiled overrides only. Neither that check nor the
+runtime FIPS-mode guard detects a deployment-time `GODEBUG=fips140ems=0`
+override; deployment configuration must be reviewed separately. The prohibition
+also applies to module/workspace defaults and main-package directives.
+
 ```bash
 # Build the binary
 make build

@@ -22,16 +22,21 @@ RUN --mount=type=cache,target=/opt/app-root/src/go/pkg/mod,uid=1001 \
 
 COPY --chown=1001:0 . .
 
+# Enable FIPS only in the image: select the validated module and include fips.go.
+# no_openssl selects Go's native backend on the Red Hat toolset.
 RUN --mount=type=cache,target=/opt/app-root/src/go/pkg/mod,uid=1001 \
     --mount=type=cache,target=/opt/app-root/src/.cache/go-build,uid=1001 \
-    GOOS=linux \
+    GOOS=linux GOFIPS140=v1.0.0 \
     GIT_SHA=${GIT_SHA} GIT_DIRTY=${GIT_DIRTY} BUILD_DATE=${BUILD_DATE} \
-    make build
+    make build GOFLAGS="-trimpath -tags=fips,no_openssl"
 
-# Fail the build if the binary wasn't compiled with FIPS-compliant
-# flags (see container-image-standard.md)
-RUN go version -m /build/bin/hyperfleet-adapter | grep -q "CGO_ENABLED=1" || { echo "FIPS check FAILED: missing CGO_ENABLED=1"; exit 1; }
-RUN go version -m /build/bin/hyperfleet-adapter | grep -q "GOEXPERIMENT=boringcrypto" || { echo "FIPS check FAILED: missing GOEXPERIMENT=boringcrypto"; exit 1; }
+# Check the selected module, compiled default, and startup on a simulated FIPS node.
+RUN go version -m /build/bin/hyperfleet-adapter | grep -Eq 'GOFIPS140=v1[.]0[.]0(-[[:xdigit:]]+)?$' || { echo "FIPS check FAILED: missing GOFIPS140=v1.0.0"; exit 1; }
+RUN go version -m /build/bin/hyperfleet-adapter \
+    | grep -E '^[[:space:]]*build[[:space:]]+DefaultGODEBUG=([^,]*,)*fips140=on(,|$)' \
+    | grep -Ev 'DefaultGODEBUG=([^,]*,)*fips140ems=0(,|$)' \
+    || { echo "FIPS check FAILED: require fips140=on without fips140ems=0"; exit 1; }
+RUN GOLANG_FIPS=1 /build/bin/hyperfleet-adapter --help >/dev/null || { echo "FIPS check FAILED: binary does not start in FIPS mode"; exit 1; }
 
 # Runtime stage
 FROM ${BASE_IMAGE}
