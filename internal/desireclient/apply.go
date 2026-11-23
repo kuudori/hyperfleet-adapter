@@ -286,8 +286,8 @@ func (c *Client) logApplyError(ctx context.Context, id desire.Identity, err erro
 	}
 }
 
-// ensureReadDesire creates the paired read desire if it doesn't already
-// exist. ErrAlreadyExists is a no-op success.
+// ensureReadDesire reads the paired mirror and creates or replaces it as needed.
+// If a fresh read can resolve a write conflict, it retries once and returns any second conflict.
 func (c *Client) ensureReadDesire(
 	ctx context.Context, id desire.Identity, targetVersion, originID string, recreate bool,
 ) error {

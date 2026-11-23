@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-
 	"math/big"
 	"net/http"
 	"time"

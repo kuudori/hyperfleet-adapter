@@ -804,11 +804,16 @@ func TestBaseURLPaths(t *testing.T) {
 
 func TestParseBaseURL(t *testing.T) {
 	for _, bad := range []string{
+		"http://store.example", "http://10.0.0.1",
 		"store.example", "ftp://store.example", "https://", "https://user:pw@store.example",
 		"https://store.example?x=1", "https://store.example?", "https://store.example#frag", "://bad",
 	} {
 		_, err := ParseBaseURL(bad)
 		assert.Error(t, err, bad)
+	}
+	for _, raw := range []string{"http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost", "http://LOCALHOST"} {
+		_, err := ParseBaseURL(raw)
+		assert.NoError(t, err, raw)
 	}
 	u, err := ParseBaseURL("https://store.example/base/")
 	require.NoError(t, err)

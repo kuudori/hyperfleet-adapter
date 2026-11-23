@@ -732,7 +732,7 @@ An `api` store (see [API store](configuration.md#api-store)) behaves differently
 
 - The store API records the adapter's service-account subject as the `owner` of each desire, not `adapter.name`. Each adapter release needs its own service account. Two adapters that share one account act as one owner and overwrite each other's desires.
 - Renaming the service account or its namespace changes the owner. The existing desires then fail with `owner conflict`. Only the original service account can delete them.
-- The store client retries network failures, timeouts and HTTP 502, 503 and 504 for up to two minutes per HTTP request, and waits for `Retry-After` on HTTP 429. An update makes two requests. A discovery makes one request per list page, plus one per read record that has the discovered resource type and matches any namespace and name set by discovery. A store outage can therefore hold an event for several minutes or longer.
+- The store client retries network failures, timeouts and HTTP 502, 503 and 504 for up to two minutes per HTTP request, and waits for `Retry-After` on HTTP 429. A successful remote update makes at least four requests. The adapter first reads the apply desire and its paired read desire. The store client then reads the apply desire again for its `resource_id` and sends the update with a PUT. A discovery makes one request per list page, plus one per read record that has the discovered resource type and matches any namespace and name set by discovery. A store outage can therefore hold an event for several minutes or longer.
 
 ---
 
