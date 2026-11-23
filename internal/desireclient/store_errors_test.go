@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/desirestore"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,16 @@ func TestStoreError_Text(t *testing.T) {
 		},
 		{"no cause without desire text", errors.New("desire: cas noop"), "store request failed"},
 		{"error without desire text", errors.New("connection reset"), "connection reset"},
+		{
+			"store API error",
+			&desirestore.ProblemError{StatusCode: 400, Code: "HYPERFLEET-VAL-005", Fields: []string{"desire-id"}},
+			"store API returned HTTP 400 HYPERFLEET-VAL-005 desire-id",
+		},
+		{
+			"store API transport error",
+			&desirestore.TransportError{Cause: errors.New("lookup desire-store.example: no such host")},
+			"store API request failed: lookup desire-store.example: no such host",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

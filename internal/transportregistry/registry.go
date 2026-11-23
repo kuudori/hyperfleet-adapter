@@ -14,6 +14,7 @@ import (
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/desireclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/k8sclient"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/desirestore"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/utils"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire/store/memory"
@@ -41,7 +42,7 @@ func Build(ctx context.Context, config *configloader.Config) (*Runtime, error) {
 	}
 
 	runtime := &Runtime{Registry: make(transportclient.Registry)}
-	stores, err := runtime.buildStores(ctx, config.Stores)
+	stores, err := runtime.buildStores(ctx, config)
 	if err != nil {
 		closeAfterBuildFailure(ctx, runtime)
 		return nil, err
@@ -150,8 +151,22 @@ func Target(name string, definition configloader.TransportDefinition) transportc
 		return &desireclient.TransportContext{
 			ManagementCluster: targetCluster,
 			Resource:          plural,
+			ResourceID:        eventResourceID(vars),
 		}, nil
 	}
+}
+
+// eventResourceID returns the id of the HyperFleet API resource in the
+// triggering event's data, or "" when the data has no string id.
+func eventResourceID(vars map[string]any) string {
+	v, err := utils.GetNestedValue(vars, configloader.FieldEvent+".id")
+	if err != nil {
+		return ""
+	}
+	if id, ok := v.(string); ok {
+		return id
+	}
+	return ""
 }
 
 // needsImplicitKubernetes reports whether any resource omits its transport or
@@ -181,16 +196,32 @@ func (r *Runtime) Close() error {
 	return firstErr
 }
 
+// storeEntry is a built store and the owner identity that its transports
+// write as.
+type storeEntry struct {
+	store desire.SpecStore
+	owner string
+}
+
 func (r *Runtime) buildStores(
 	ctx context.Context,
-	definitions map[string]configloader.StoreDefinition,
-) (map[string]desire.SpecStore, error) {
-	stores := make(map[string]desire.SpecStore, len(definitions))
+	config *configloader.Config,
+) (map[string]storeEntry, error) {
+	definitions := config.Stores
+	stores := make(map[string]storeEntry, len(definitions))
 	for _, name := range utils.SortedMapKeys(definitions) {
 		definition := definitions[name]
 		switch definition.Type {
 		case configloader.StoreTypeMemory:
-			stores[configloader.NormalizeRegistryName(name)] = memory.New()
+			stores[configloader.NormalizeRegistryName(name)] = storeEntry{store: memory.New(), owner: config.Adapter.Name}
+		case configloader.StoreTypeAPI:
+			store, err := buildAPIStore(name, definition)
+			if err != nil {
+				return nil, err
+			}
+			slog.InfoContext(ctx, "built store API client",
+				"store", name, "url", definition.URL, "owner", store.Owner())
+			stores[configloader.NormalizeRegistryName(name)] = storeEntry{store: store, owner: store.Owner()}
 		case configloader.StoreTypeRedis:
 			options, err := redis.ParseURL(definition.URL)
 			if err != nil {
@@ -207,7 +238,9 @@ func (r *Runtime) buildStores(
 				return nil, fmt.Errorf("build store %q: ping Redis: %w", name, err)
 			}
 			r.closers = append(r.closers, client)
-			stores[configloader.NormalizeRegistryName(name)] = redisstore.New(client)
+			stores[configloader.NormalizeRegistryName(name)] = storeEntry{
+				store: redisstore.New(client), owner: config.Adapter.Name,
+			}
 		default:
 			return nil, fmt.Errorf("build store %q: unsupported type %q", name, definition.Type)
 		}
@@ -215,21 +248,40 @@ func (r *Runtime) buildStores(
 	return stores, nil
 }
 
+// buildAPIStore builds a store API client that authenticates with the
+// projected token and writes as the token's subject. It sends no request.
+func buildAPIStore(name string, definition configloader.StoreDefinition) (*desirestore.Store, error) {
+	creds, err := desirestore.NewProjectedToken(definition.TokenPath, definition.TokenScheme)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"build store %q: %w (enable adapterConfig.desireStore.auth or set stores.%s.token_path)", name, err, name)
+	}
+	var opts []desirestore.Option
+	if definition.CAFile != "" {
+		opts = append(opts, desirestore.WithCAFile(definition.CAFile))
+	}
+	store, err := desirestore.New(definition.URL, creds, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("build store %q: %w", name, err)
+	}
+	return store, nil
+}
+
 func buildTransport(
 	ctx context.Context,
 	config *configloader.Config,
 	definition configloader.TransportDefinition,
-	stores map[string]desire.SpecStore,
+	stores map[string]storeEntry,
 ) (transportclient.TransportClient, error) {
 	switch definition.Type {
 	case configloader.TransportTypeKubernetes:
 		return buildKubernetes(ctx, config.Clients.Kubernetes)
 	case configloader.TransportTypeRemote:
-		store, ok := stores[configloader.NormalizeRegistryName(definition.Store)]
+		entry, ok := stores[configloader.NormalizeRegistryName(definition.Store)]
 		if !ok {
 			return nil, fmt.Errorf("store %q is not configured", definition.Store)
 		}
-		return desireclient.NewClient(store, config.Adapter.Name), nil
+		return desireclient.NewClient(entry.store, entry.owner), nil
 	default:
 		return nil, fmt.Errorf("unsupported type %q", definition.Type)
 	}

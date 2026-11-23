@@ -96,9 +96,45 @@ transport uses local Kubernetes. A local-only deployment can omit both maps.
 | `transports.<name>` with `type: remote` | `type`, `store`, `target_cluster`, `resource_plurals` | All routing fields are required. `store` names a declared store. `target_cluster` is a literal Kubernetes cluster name or a template using defined task parameters. `resource_plurals` maps static `apiVersion/Kind` keys to plural resource names; API groups may contain dots. |
 | `stores.<name>` with `type: memory` | `type` | In-process storage that does not survive a restart. No URL is accepted. |
 | `stores.<name>` with `type: redis` | `type`, `url` | A valid Redis URL is required. Use `rediss://` when the URL contains credentials. |
+| `stores.<name>` with `type: api` | `type`, `url`, and optional `token_path`, `token_scheme`, `ca_file` | The Desire Store REST v1 API, reached through its gateway. `url` is an absolute `http` or `https` URL with a host and no user info, query or fragment. A trailing `/` is ignored, and any path is kept as a prefix of every request path. `token_path` is the absolute path of the projected service-account token; it defaults to `/var/run/secrets/hyperfleet-desire-store/token`. `token_scheme` is the `Authorization` scheme; it defaults to `Bearer`, the scheme that the store API specification declares. The HyperFleet gateway in hyperfleet-infra sends a token to Kubernetes TokenReview only when the header starts with `ServiceAccount `, so set `token_scheme: ServiceAccount` behind a gateway with that rule. `ca_file` is the absolute path of a PEM bundle that the store client trusts in addition to the system roots. |
 
 Every declared store must be used by a remote transport. Store connection settings
 belong in deployment config; task config has no environment or flag overrides.
+
+#### API store
+
+An `api` store sends the projected service-account token in `token_path` with every
+request, and re-reads the file each time. Enable `adapterConfig.desireStore.auth` in the
+chart to mount a token with the `hyperfleet-desire-store` audience at the default
+`token_path`. The adapter fails to start when it cannot read the token or the token has no
+`sub` claim. The adapter sends no request at startup, so an unreachable gateway or a
+rejected token shows on the first event.
+
+The store API records the token's `sub` (`system:serviceaccount:<namespace>:<name>`) as
+the owner of every desire that the adapter writes, so each adapter release needs its own
+service account. The chart refuses to render `adapterConfig.desireStore.auth` with the
+`default` service account.
+
+The adapter reads `ca_file` once, at startup. After the CA bundle changes, restart the
+adapter, for example with `kubectl rollout restart deployment/<name>`. Mount the bundle
+with the chart's `extraVolumes` and `extraVolumeMounts`.
+
+<!-- api-store-example -->
+```yaml
+adapter:
+  name: cluster-adapter
+stores:
+  desire-store:
+    type: api
+    url: https://desire-store-gateway.example.com
+transports:
+  remote-primary:
+    type: remote
+    store: desire-store
+    target_cluster: "{{ .resourceId }}"
+    resource_plurals:
+      "v1/ConfigMap": configmaps
+```
 
 #### Remote transport prerequisites
 

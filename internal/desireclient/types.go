@@ -28,6 +28,11 @@ type TransportContext struct {
 	// it from the route's GVK map instead of guessing from Kind or using a RESTMapper.
 	// Required for all operations.
 	Resource string
+	// ResourceID is the ID of the HyperFleet API resource that the event is
+	// about. Every desire this transport creates records it as OriginID (the
+	// store API's resource_id). Optional: the memory and Redis stores accept an
+	// empty value, and the store API rejects it.
+	ResourceID string
 }
 
 // resolveTransportContext type-asserts the generic TransportContext and

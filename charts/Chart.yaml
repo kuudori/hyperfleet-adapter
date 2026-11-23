@@ -2,7 +2,7 @@ apiVersion: v2
 name: hyperfleet-adapter
 description: HyperFleet Adapter - Event-driven adapter services for HyperFleet cluster provisioning
 type: application
-version: 2.2.0
+version: 2.3.0
 appVersion: "0.0.0-dev"
 maintainers:
   - name: HyperFleet Team

@@ -232,7 +232,7 @@ stores:
   desired:
     type: unsupported
 `,
-			errorMsg: `stores.desired.type "unsupported" is unsupported (supported: memory, redis)`,
+			errorMsg: `stores.desired.type "unsupported" is unsupported (supported: memory, redis, api)`,
 		},
 		{
 			name: "redis store without URL",

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/openshift-hyperfleet/hyperfleet-adapter/pkg/desirestore"
 	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 )
 
@@ -30,6 +31,13 @@ func (e *storeError) Error() string {
 	case errors.Is(e.err, desire.ErrAborted):
 		return "aborted"
 	}
+	// The store API client writes its own error text.
+	var pe *desirestore.ProblemError
+	var te *desirestore.TransportError
+	var ue *desirestore.UsageError
+	if errors.As(e.err, &pe) || errors.As(e.err, &te) || errors.As(e.err, &ue) {
+		return e.err.Error()
+	}
 	// Other errors wrap a cause such as a Redis network error. Report the
 	// outermost error in the chain whose text does not name desires.
 	for err := e.err; err != nil; err = errors.Unwrap(err) {
@@ -50,4 +58,11 @@ func storeErr(err error) error {
 		return nil
 	}
 	return &storeError{err: err}
+}
+
+// reReadable reports whether a fresh read can resolve a store error: a version
+// conflict, except a record that a timed-out delete found changed or created
+// again.
+func reReadable(err error) bool {
+	return errors.Is(err, desire.ErrVersionConflict) && !errors.Is(err, desirestore.ErrRecreated)
 }

@@ -103,6 +103,8 @@ const (
 const (
 	StoreTypeMemory = "memory"
 	StoreTypeRedis  = "redis"
+	// StoreTypeAPI is the Desire Store REST v1 API, reached through its gateway.
+	StoreTypeAPI = "api"
 )
 
 // Resource field names

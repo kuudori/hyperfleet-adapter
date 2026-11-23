@@ -11,6 +11,12 @@ GOFMT ?= gofmt
 # Keep promtool out of tools/go.mod: it pulls Prometheus' large server dependency graph.
 PROMTOOL := github.com/prometheus/prometheus@v0.304.2
 
+# Desire Store wire models: generated from the released spec module and committed,
+# so that modules importing pkg/desirestore build without running make generate.
+DESIRE_STORE_SPEC_MODULE := github.com/openshift-hyperfleet/hyperfleet-desire-store-spec
+DESIRE_STORE_SPEC_PATH := schemas/desire-store/openapi.yaml
+DESIRE_STORE_WIRE_DIR := pkg/desirestore/internal/wire
+
 # Binary output directory and name
 BIN_DIR := bin
 BINARY_NAME := $(BIN_DIR)/hyperfleet-adapter
@@ -70,6 +76,21 @@ install: build ## Build and install binary to GOPATH/bin
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR)
 	rm -f coverage.out coverage.html
+
+##@ Code Generation
+
+.PHONY: generate
+generate: ## Generate the Desire Store wire models from the spec module with oapi-codegen
+	$(GO) mod download $(DESIRE_STORE_SPEC_MODULE)
+	mkdir -p openapi
+	@rm -f openapi/desire-store.yaml
+	@cp "$$($(GO) list -m -f '{{.Dir}}' $(DESIRE_STORE_SPEC_MODULE))/$(DESIRE_STORE_SPEC_PATH)" openapi/desire-store.yaml
+	$(call gotool,oapi-codegen) --config $(DESIRE_STORE_WIRE_DIR)/oapi-codegen.yaml openapi/desire-store.yaml
+
+.PHONY: verify-generate
+verify-generate: generate ## Fail if the generated wire models differ from the committed ones
+	@git diff --exit-code -- $(DESIRE_STORE_WIRE_DIR)/wire.gen.go || \
+		(echo "ERROR: $(DESIRE_STORE_WIRE_DIR) is out of date. Run 'make generate' and commit the result." && exit 1)
 
 ##@ Testing
 
@@ -387,6 +408,80 @@ test-helm: verify-helm-docs ## Test Helm charts (lint, template, validate, kubec
 		echo "ERROR: expected helm template to fail when messageRetentionDuration=0"; exit 1; \
 	fi
 	@echo "Pub/Sub zero retention validation OK"
+	@echo ""
+	@echo "Testing Desire Store projected token..."
+	@output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set adapterConfig.desireStore.auth.enabled=true) \
+		&& echo "$$output" | grep -q 'audience: "hyperfleet-desire-store"' \
+		&& echo "$$output" | grep -q 'mountPath: "/var/run/secrets/hyperfleet-desire-store"' \
+		&& echo "$$output" | grep -q 'path: "token"' \
+		|| { echo "ERROR: expected the hyperfleet-desire-store projected token in rendered output"; exit 1; }; \
+		echo "$$output" | $(call gotool,kubeconform) $(KUBECONFORM_FLAGS)
+	@echo "Desire Store projected token OK"
+	@echo ""
+	@echo "Testing that the Desire Store token on the default service account fails validation..."
+	@if output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set serviceAccount.create=false \
+		--set adapterConfig.desireStore.auth.enabled=true 2>&1); then \
+		echo "ERROR: expected helm template to fail for the default service account"; exit 1; \
+	fi; \
+	echo "$$output" | grep -q 'requires a dedicated service account' \
+		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
+	@echo "Desire Store default service account validation OK"
+	@echo ""
+	@echo "Testing that both projected tokens in one directory fail validation..."
+	@if output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set adapterConfig.hyperfleetApi.auth.enabled=true \
+		--set adapterConfig.hyperfleetApi.auth.tokenPath=/var/run/secrets/shared/api-token \
+		--set adapterConfig.desireStore.auth.enabled=true \
+		--set adapterConfig.desireStore.auth.tokenPath=/var/run/secrets/shared/store-token 2>&1); then \
+		echo "ERROR: expected helm template to fail for two token mounts in one directory"; exit 1; \
+	fi; \
+	echo "$$output" | grep -q 'must be in different directories' \
+		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
+	@echo "Desire Store token directory validation OK"
+	@echo ""
+	@echo "Testing that a Desire Store token in a chart config directory fails validation..."
+	@if output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set adapterConfig.desireStore.auth.enabled=true \
+		--set adapterConfig.desireStore.auth.tokenPath=/etc/adapter/token/token 2>&1); then \
+		echo "ERROR: expected helm template to fail for a token under /etc/adapter"; exit 1; \
+	fi; \
+	echo "$$output" | grep -q 'must not be in, under or above /etc/adapter' \
+		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
+	@echo "Desire Store token config directory validation OK"
 	@for values in charts/examples/*/values.yaml; do \
 		echo "Rendering $$values example overlay..."; \
 		output=$$(helm template example charts/ -f "$$values" \
@@ -426,7 +521,7 @@ vet: ## Run go vet
 go-vet: vet ## Alias for vet
 
 .PHONY: lint
-lint: ## Run golangci-lint
+lint: verify-generate ## Run golangci-lint
 	$(call gotool,golangci-lint) run ./...
 
 .PHONY: tools

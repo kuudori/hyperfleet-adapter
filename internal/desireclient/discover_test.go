@@ -310,3 +310,47 @@ func TestDiscoverResources_RequiresTransportContext(t *testing.T) {
 	_, err := c.DiscoverResources(ctx, testGVK(), &manifest.DiscoveryConfig{}, nil)
 	require.Error(t, err)
 }
+
+type matchingReadDesireStore struct {
+	desire.SpecStore
+	skipped []desire.Identity
+}
+
+func (m *matchingReadDesireStore) ListReadDesiresMatching(
+	ctx context.Context, managementCluster string, keep func(desire.Identity) bool,
+) ([]desire.ReadDesire, error) {
+	reads, err := m.ListReadDesires(ctx, managementCluster)
+	if err != nil {
+		return nil, err
+	}
+	var kept []desire.ReadDesire
+	for _, rd := range reads {
+		if keep(rd.Identity) {
+			kept = append(kept, rd)
+		} else {
+			m.skipped = append(m.skipped, rd.Identity)
+		}
+	}
+	return kept, nil
+}
+
+func TestDiscoverResources_PassesScopeToMatchingStore(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemoryStore()
+	store := &matchingReadDesireStore{SpecStore: mem}
+	c := newTestClient(store)
+
+	desiretest.PutSyncedReadDesire(t, ctx, mem, testID.Read(), testOwner, configMapManifest(1))
+	otherResource := testID
+	otherResource.Resource = "secrets"
+	desiretest.PutSyncedReadDesire(t, ctx, mem, otherResource.Read(), testOwner, configMapManifest(1))
+	otherNamespace := testID
+	otherNamespace.Namespace = "other"
+	desiretest.PutSyncedReadDesire(t, ctx, mem, otherNamespace.Read(), testOwner, configMapManifest(1))
+
+	discovery := &manifest.DiscoveryConfig{Namespace: testNamespace, ByName: testName}
+	list, err := c.DiscoverResources(ctx, testGVK(), discovery, testTransportContext())
+	require.NoError(t, err)
+	require.Len(t, list.Items, 1)
+	assert.ElementsMatch(t, []desire.Identity{otherResource.Read(), otherNamespace.Read()}, store.skipped)
+}

@@ -177,7 +177,7 @@ func TestDeleteResource_DoesNotRecreateExistingReadDesire(t *testing.T) {
 	}
 	// Pre-existing read desire targets a different version than the GVK
 	// DeleteResource will be called with below.
-	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", false))
+	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", "", false))
 
 	deleteGVK := testGVK()
 	deleteGVK.Version = "v1beta1"
@@ -202,7 +202,7 @@ func TestDeleteResource_RecreatesReadDesireIfExternallyDeleted(t *testing.T) {
 		ManagementCluster: testManagementCluster, Type: desire.TypeRead,
 		Resource: testResource, Namespace: testNamespace, Name: testName,
 	}
-	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", false))
+	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", "", false))
 
 	rd, err := store.GetReadDesire(ctx, readID)
 	require.NoError(t, err)

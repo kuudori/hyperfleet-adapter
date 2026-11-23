@@ -45,6 +45,25 @@ adapterConfig:
       # -- How long the token is cached in memory (`HYPERFLEET_API_AUTH_TOKEN_CACHE_TTL`).
       # Zero means re-read on every request.
       tokenCacheTtl: 30s
+  # TODO(HYPERFLEET-1866): CA distribution and rotation are decided there.
+  # -- Desire Store API settings, for `stores.<name>.type: api` in the adapter config.
+  # A gateway CA bundle is mounted with `extraVolumes` and `extraVolumeMounts`
+  # and named in `stores.<name>.ca_file`. The adapter reads it at startup only,
+  # so restart the adapter after the bundle changes.
+  desireStore:
+    # -- Projected service account token for the Desire Store API. The API takes
+    # the owner of every desire from the token subject, so each adapter release
+    # needs its own service account; rendering fails for the `default` account.
+    auth:
+      # -- Mount the projected token
+      enabled: false
+      # -- Service account token audience that the gateway's TokenReview checks
+      audience: hyperfleet-desire-store
+      # -- Absolute path where the token file is mounted. Must equal
+      # `stores.<name>.token_path`, which defaults to this path.
+      tokenPath: /var/run/secrets/hyperfleet-desire-store/token
+      # -- Token lifetime in seconds for the projected service account token
+      expirationSeconds: 3600
   # -- Log level for the adapter
   log:
     # -- Log level (`debug`, `info`, `warn`, `error`)

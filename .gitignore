@@ -54,3 +54,6 @@ configs/*.local.yaml
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
+
+# Spec copy extracted by make generate
+/openapi/

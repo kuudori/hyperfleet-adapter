@@ -58,6 +58,7 @@ func TestBuildIdentity(t *testing.T) {
 		wantErr   string
 	}{
 		{name: "valid", namespace: testNamespace, resName: testName},
+		{name: "colon name is accepted", namespace: testNamespace, resName: "system:controller:x"},
 		{
 			name:      "invalid namespace is rejected",
 			namespace: "Invalid_Namespace",
@@ -67,7 +68,7 @@ func TestBuildIdentity(t *testing.T) {
 		{
 			name:      "invalid name is rejected",
 			namespace: testNamespace,
-			resName:   "Invalid_Name",
+			resName:   "bad/name",
 			wantErr:   "invalid identity",
 		},
 	}

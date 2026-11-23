@@ -8,6 +8,7 @@ import (
 
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/manifest"
 	"github.com/openshift-hyperfleet/hyperfleet-adapter/internal/transportclient"
+	"github.com/openshift-hyperfleet/hyperfleet-applier/pkg/desire"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -34,7 +35,11 @@ func (c *Client) DiscoverResources(
 		return nil, err
 	}
 
-	reads, err := c.store.ListReadDesires(ctx, tc.ManagementCluster)
+	namespace := discovery.GetNamespace()
+	inScope := func(id desire.Identity) bool {
+		return id.Group == gvk.Group && id.Resource == tc.Resource && (namespace == "" || id.Namespace == namespace)
+	}
+	reads, err := c.listReadDesires(ctx, tc.ManagementCluster, inScope)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"remote transport: failed to list mirrors for partition %q: %w", tc.ManagementCluster, storeErr(err))
@@ -43,10 +48,7 @@ func (c *Client) DiscoverResources(
 	list := &unstructured.UnstructuredList{}
 	hasUnsyncedRead := false
 	for _, rd := range reads {
-		if rd.Identity.Group != gvk.Group || rd.Identity.Resource != tc.Resource {
-			continue
-		}
-		if namespace := discovery.GetNamespace(); namespace != "" && rd.Identity.Namespace != namespace {
+		if !inScope(rd.Identity) {
 			continue
 		}
 
@@ -80,4 +82,21 @@ func (c *Client) DiscoverResources(
 		return nil, transportclient.ErrNotSyncedYet
 	}
 	return list, nil
+}
+
+// readDesireMatcher is a store that can skip records while it lists, such as
+// desirestore.Store, whose list reads each record with its own request.
+type readDesireMatcher interface {
+	ListReadDesiresMatching(
+		ctx context.Context, managementCluster string, keep func(desire.Identity) bool,
+	) ([]desire.ReadDesire, error)
+}
+
+func (c *Client) listReadDesires(
+	ctx context.Context, managementCluster string, keep func(desire.Identity) bool,
+) ([]desire.ReadDesire, error) {
+	if matcher, ok := c.store.(readDesireMatcher); ok {
+		return matcher.ListReadDesiresMatching(ctx, managementCluster, keep)
+	}
+	return c.store.ListReadDesires(ctx, managementCluster)
 }

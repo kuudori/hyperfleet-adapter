@@ -1,6 +1,6 @@
 # hyperfleet-adapter
 
-![Version: 2.2.0](https://img.shields.io/badge/Version-2.2.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.0.0-dev](https://img.shields.io/badge/AppVersion-0.0.0--dev-informational?style=flat-square)
+![Version: 2.3.0](https://img.shields.io/badge/Version-2.3.0-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.0.0-dev](https://img.shields.io/badge/AppVersion-0.0.0--dev-informational?style=flat-square)
 
 HyperFleet Adapter - Event-driven adapter services for HyperFleet cluster provisioning
 
@@ -27,7 +27,7 @@ helm install hyperfleet-adapter oci://REGISTRY/hyperfleet-adapter \
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| adapterConfig | object | `{"create":true,"hyperfleetApi":{"auth":{"audience":"hyperfleet-api","enabled":false,"expirationSeconds":3600,"scheme":"Bearer","tokenCacheTtl":"30s","tokenPath":"/var/run/secrets/hyperfleet/token"},"baseUrl":"http://hyperfleet-api:8000","version":"v1"},"log":{"level":"info"}}` | Adapter deployment configuration. Controls how the adapter-config ConfigMap is created. Use `adapterConfig.yaml` for inline YAML, `adapterConfig.files` for chart-packaged files, or set `create: false` and provide `configMapName` to reference an existing ConfigMap. |
+| adapterConfig | object | `{"create":true,"desireStore":{"auth":{"audience":"hyperfleet-desire-store","enabled":false,"expirationSeconds":3600,"tokenPath":"/var/run/secrets/hyperfleet-desire-store/token"}},"hyperfleetApi":{"auth":{"audience":"hyperfleet-api","enabled":false,"expirationSeconds":3600,"scheme":"Bearer","tokenCacheTtl":"30s","tokenPath":"/var/run/secrets/hyperfleet/token"},"baseUrl":"http://hyperfleet-api:8000","version":"v1"},"log":{"level":"info"}}` | Adapter deployment configuration. Controls how the adapter-config ConfigMap is created. Use `adapterConfig.yaml` for inline YAML, `adapterConfig.files` for chart-packaged files, or set `create: false` and provide `configMapName` to reference an existing ConfigMap. |
 | adapterConfig.create | bool | `true` | Create the adapter-config ConfigMap |
 | adapterConfig.hyperfleetApi | object | `{"auth":{"audience":"hyperfleet-api","enabled":false,"expirationSeconds":3600,"scheme":"Bearer","tokenCacheTtl":"30s","tokenPath":"/var/run/secrets/hyperfleet/token"},"baseUrl":"http://hyperfleet-api:8000","version":"v1"}` | HyperFleet API connection settings injected as environment variables |
 | adapterConfig.hyperfleetApi.baseUrl | string | `"http://hyperfleet-api:8000"` | API base URL (`HYPERFLEET_API_BASE_URL`) |
@@ -39,6 +39,12 @@ helm install hyperfleet-adapter oci://REGISTRY/hyperfleet-adapter \
 | adapterConfig.hyperfleetApi.auth.scheme | string | `"Bearer"` | Authorization header scheme used when sending the token (`HYPERFLEET_API_AUTH_SCHEME`). Defaults to `Bearer`; set to `ServiceAccount` when fronted by a gateway that differentiates machine callers from human-jwt callers. |
 | adapterConfig.hyperfleetApi.auth.expirationSeconds | int | `3600` | Token lifetime in seconds for the projected service account token |
 | adapterConfig.hyperfleetApi.auth.tokenCacheTtl | string | `"30s"` | How long the token is cached in memory (`HYPERFLEET_API_AUTH_TOKEN_CACHE_TTL`). Zero means re-read on every request. |
+| adapterConfig.desireStore | object | `{"auth":{"audience":"hyperfleet-desire-store","enabled":false,"expirationSeconds":3600,"tokenPath":"/var/run/secrets/hyperfleet-desire-store/token"}}` | Desire Store API settings, for `stores.<name>.type: api` in the adapter config. A gateway CA bundle is mounted with `extraVolumes` and `extraVolumeMounts` and named in `stores.<name>.ca_file`. The adapter reads it at startup only, so restart the adapter after the bundle changes. |
+| adapterConfig.desireStore.auth | object | `{"audience":"hyperfleet-desire-store","enabled":false,"expirationSeconds":3600,"tokenPath":"/var/run/secrets/hyperfleet-desire-store/token"}` | Projected service account token for the Desire Store API. The API takes the owner of every desire from the token subject, so each adapter release needs its own service account; rendering fails for the `default` account. |
+| adapterConfig.desireStore.auth.enabled | bool | `false` | Mount the projected token |
+| adapterConfig.desireStore.auth.audience | string | `"hyperfleet-desire-store"` | Service account token audience that the gateway's TokenReview checks |
+| adapterConfig.desireStore.auth.tokenPath | string | `"/var/run/secrets/hyperfleet-desire-store/token"` | Absolute path where the token file is mounted. Must equal `stores.<name>.token_path`, which defaults to this path. |
+| adapterConfig.desireStore.auth.expirationSeconds | int | `3600` | Token lifetime in seconds for the projected service account token |
 | adapterConfig.log | object | `{"level":"info"}` | Log level for the adapter |
 | adapterConfig.log.level | string | `"info"` | Log level (`debug`, `info`, `warn`, `error`) |
 | adapterTaskConfig | object | `{"create":true}` | Adapter task configuration. Controls how the adapter-task-config ConfigMap is created. Supports inline YAML, chart-packaged files, or external content via `--set-file`. |

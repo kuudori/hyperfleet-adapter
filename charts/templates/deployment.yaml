@@ -167,6 +167,11 @@ spec:
               mountPath: {{ .Values.adapterConfig.hyperfleetApi.auth.tokenPath | dir }}
               readOnly: true
             {{- end }}
+            {{- if .Values.adapterConfig.desireStore.auth.enabled }}
+            - name: desire-store-token
+              mountPath: {{ .Values.adapterConfig.desireStore.auth.tokenPath | dir | quote }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -197,6 +202,15 @@ spec:
                 audience: {{ .Values.adapterConfig.hyperfleetApi.auth.audience }}
                 expirationSeconds: {{ .Values.adapterConfig.hyperfleetApi.auth.expirationSeconds }}
                 path: {{ .Values.adapterConfig.hyperfleetApi.auth.tokenPath | base }}
+        {{- end }}
+        {{- if .Values.adapterConfig.desireStore.auth.enabled }}
+        - name: desire-store-token
+          projected:
+            sources:
+            - serviceAccountToken:
+                audience: {{ .Values.adapterConfig.desireStore.auth.audience | quote }}
+                expirationSeconds: {{ .Values.adapterConfig.desireStore.auth.expirationSeconds }}
+                path: {{ .Values.adapterConfig.desireStore.auth.tokenPath | base | quote }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

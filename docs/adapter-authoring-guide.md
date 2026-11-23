@@ -726,6 +726,14 @@ These behaviors also differ from the local transport:
 - `propagationPolicy` has no effect on a remote delete.
 - A successful apply means the store accepted the write. It does not mean the target cluster has the object yet.
 
+Every desire that a remote transport creates carries the `id` of the event's data as its `resource_id`: the ID of the HyperFleet API resource that the event is about. Sentinel's default `messageData` maps `id` to `resource.id`. A deployment whose `messageData` drops or renames `id` leaves `resource_id` empty. The memory and Redis stores accept an empty value. An `api` store rejects every create with `resource_id is required by the store API and the event has no id`.
+
+An `api` store (see [API store](configuration.md#api-store)) behaves differently in these ways:
+
+- The store API records the adapter's service-account subject as the `owner` of each desire, not `adapter.name`. Each adapter release needs its own service account. Two adapters that share one account act as one owner and overwrite each other's desires.
+- Renaming the service account or its namespace changes the owner. The existing desires then fail with `owner conflict`. Only the original service account can delete them.
+- The store client retries network failures, timeouts and HTTP 502, 503 and 504 for up to two minutes per HTTP request, and waits for `Retry-After` on HTTP 429. An update makes two requests. A discovery makes one request per list page, plus one per read record that has the discovered resource type and, when the discovery sets one, its namespace. A store outage can therefore hold an event for several minutes or longer.
+
 ---
 
 ## The eventual-consistency contract for remote reads

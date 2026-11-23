@@ -146,9 +146,9 @@ func TestEnsureReadDesire_RecreatesOnReadDesireGone(t *testing.T) {
 		Resource: testResource, Namespace: testNamespace, Name: testName,
 	}
 
-	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", false))
+	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", "", false))
 	require.NoError(t, store.DeleteReadDesire(ctx, readID, c.owner, 1), "simulate an external deletion of the read desire")
-	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", false),
+	require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", "", false),
 		"an externally deleted read desire must be re-created on the next ensure")
 }
 
@@ -225,8 +225,8 @@ func TestEnsureReadDesire_RecreateAndVersionChangeMatrix(t *testing.T) {
 				Resource: testResource, Namespace: testNamespace, Name: testName,
 			}
 
-			require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", tt.recreate))
-			require.NoError(t, c.ensureReadDesire(ctx, readID, tt.newVersion, tt.recreate))
+			require.NoError(t, c.ensureReadDesire(ctx, readID, "v1", "", tt.recreate))
+			require.NoError(t, c.ensureReadDesire(ctx, readID, tt.newVersion, "", tt.recreate))
 
 			assert.Equal(t, tt.wantDeleteCalls, store.deleteReadDesireCalls)
 

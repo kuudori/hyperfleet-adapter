@@ -223,6 +223,26 @@ rbac.authorization.k8s.io
 {{- end }}
 
 {{/*
+Validate a projected token path. Takes (list <values key> <path>).
+*/}}
+{{- define "hyperfleet-adapter.validateTokenPath" -}}
+{{- $key := index . 0 -}}
+{{- $tokenPath := index . 1 -}}
+{{- if not (hasPrefix "/" $tokenPath) -}}
+{{- fail (printf "%s must be an absolute path (start with /)" $key) -}}
+{{- end -}}
+{{- if or (hasSuffix "/" $tokenPath) (eq ($tokenPath | base) "/") -}}
+{{- fail (printf "%s must include a filename, not just a directory" $key) -}}
+{{- end -}}
+{{- $tokenDir := $tokenPath | dir -}}
+{{- range list "/etc/adapter" "/etc/broker" "/var/run/secrets/kubernetes.io/serviceaccount" -}}
+{{- if or (eq $tokenDir .) (hasPrefix (printf "%s/" .) $tokenDir) (hasPrefix (printf "%s/" (trimSuffix "/" $tokenDir)) .) -}}
+{{- fail (printf "%s must not be in, under or above %s, where the pod mounts other files" $key .) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Validate required values that must not remain as placeholders.
 */}}
 {{- define "hyperfleet-adapter.validateValues" -}}
@@ -238,11 +258,16 @@ Validate required values that must not remain as placeholders.
 {{- fail "image.tag must be set (e.g. --set image.tag=abc1234)" -}}
 {{- end -}}
 {{- if .Values.adapterConfig.hyperfleetApi.auth.enabled -}}
-{{- if not (hasPrefix "/" .Values.adapterConfig.hyperfleetApi.auth.tokenPath) -}}
-{{- fail "adapterConfig.hyperfleetApi.auth.tokenPath must be an absolute path (start with /)" -}}
+{{- include "hyperfleet-adapter.validateTokenPath" (list "adapterConfig.hyperfleetApi.auth.tokenPath" .Values.adapterConfig.hyperfleetApi.auth.tokenPath) -}}
 {{- end -}}
-{{- if eq (.Values.adapterConfig.hyperfleetApi.auth.tokenPath | base) "" -}}
-{{- fail "adapterConfig.hyperfleetApi.auth.tokenPath must include a filename, not just a directory" -}}
+{{- if .Values.adapterConfig.desireStore.auth.enabled -}}
+{{- $tokenPath := .Values.adapterConfig.desireStore.auth.tokenPath -}}
+{{- include "hyperfleet-adapter.validateTokenPath" (list "adapterConfig.desireStore.auth.tokenPath" $tokenPath) -}}
+{{- if and .Values.adapterConfig.hyperfleetApi.auth.enabled (eq ($tokenPath | dir) (.Values.adapterConfig.hyperfleetApi.auth.tokenPath | dir)) -}}
+{{- fail "adapterConfig.desireStore.auth.tokenPath and adapterConfig.hyperfleetApi.auth.tokenPath must be in different directories" -}}
+{{- end -}}
+{{- if eq (include "hyperfleet-adapter.serviceAccountName" .) "default" -}}
+{{- fail "adapterConfig.desireStore.auth requires a dedicated service account: the Desire Store API takes the desire owner from it. Set serviceAccount.create=true or serviceAccount.name" -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

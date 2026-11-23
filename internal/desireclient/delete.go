@@ -44,7 +44,7 @@ func (c *Client) DeleteResource(
 
 	// recreate=false makes sure an existing readdesire is not recreated for a
 	// delete desire that will be processed soon.
-	if err = c.ensureReadDesire(ctx, readID, gvk.Version, false); err != nil {
+	if err = c.ensureReadDesire(ctx, readID, gvk.Version, tc.ResourceID, false); err != nil {
 		return fmt.Errorf(
 			"remote transport: failed to create the paired mirror for %s/%s: %w", gvk.Kind, name, err)
 	}
@@ -52,6 +52,7 @@ func (c *Client) DeleteResource(
 	if _, err = c.store.CreateDeleteDesire(ctx, desire.DeleteDesire{
 		Identity: deleteID,
 		Owner:    c.owner,
+		OriginID: tc.ResourceID,
 	}); err != nil && !errors.Is(err, desire.ErrAlreadyExists) {
 		return fmt.Errorf(
 			"remote transport: failed to create the delete request for %s/%s: %w", namespace, name, storeErr(err))

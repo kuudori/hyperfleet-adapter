@@ -1,0 +1,13 @@
+# oapi-codegen configuration for the Desire Store wire models.
+# See: https://github.com/oapi-codegen/oapi-codegen
+# make generate runs it from the repository root.
+
+package: wire
+output: pkg/desirestore/internal/wire/wire.gen.go
+generate:
+  models: true
+output-options:
+  # Optional fields are plain values with omitempty, as in the service.
+  prefer-skip-optional-pointer: true
+  overlay:
+    path: pkg/desirestore/internal/wire/overlay.yaml

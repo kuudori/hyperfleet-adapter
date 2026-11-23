@@ -673,6 +673,14 @@ type TransportDefinition struct {
 type StoreDefinition struct {
 	Type string `yaml:"type" mapstructure:"type"`
 	URL  string `yaml:"url,omitempty" mapstructure:"url"`
+	// TokenPath is the projected service-account token file of an api store.
+	// Empty means desirestore.DefaultTokenPath, where the chart mounts it.
+	TokenPath string `yaml:"token_path,omitempty" mapstructure:"token_path"`
+	// TokenScheme is the Authorization scheme of an api store. Empty means Bearer.
+	TokenScheme string `yaml:"token_scheme,omitempty" mapstructure:"token_scheme"`
+	// CAFile is a PEM bundle that an api store trusts in addition to the
+	// system roots. It is read once, at startup.
+	CAFile string `yaml:"ca_file,omitempty" mapstructure:"ca_file"`
 }
 
 // NormalizeRegistryName returns the canonical lookup form of a transport or

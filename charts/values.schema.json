@@ -43,6 +43,37 @@
             }
           }
         },
+        "desireStore": {
+          "type": "object",
+          "description": "Desire Store API settings for stores of type api",
+          "properties": {
+            "auth": {
+              "type": "object",
+              "description": "Projected service account token for the Desire Store API",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Mount the projected token"
+                },
+                "audience": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Token audience that the gateway's TokenReview checks"
+                },
+                "tokenPath": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Absolute path of the token file; must equal stores.<name>.token_path"
+                },
+                "expirationSeconds": {
+                  "type": "integer",
+                  "minimum": 600,
+                  "description": "Token lifetime in seconds"
+                }
+              }
+            }
+          }
+        },
         "log": {
           "type": "object",
           "description": "Logging configuration",

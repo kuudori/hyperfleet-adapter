@@ -26,7 +26,22 @@ func (c *Client) CleanupAfterDeletion(
 	if err != nil {
 		return err
 	}
+	// At most one re-run: only the deletes can report a version conflict, and
+	// a fresh read gives them the current versions. A second conflict in a row
+	// is left to the next event, and so is a record that a timed-out delete
+	// found changed or created again.
+	if err = c.cleanupOnce(ctx, tc, gvk, namespace, name); !reReadable(err) {
+		return err
+	}
+	slog.DebugContext(ctx, "desireclient: cleanup: version conflict, re-reading once",
+		"namespace", namespace, "name", name)
+	return c.cleanupOnce(ctx, tc, gvk, namespace, name)
+}
 
+// cleanupOnce reads the stored state and removes the confirmed desires once.
+func (c *Client) cleanupOnce(
+	ctx context.Context, tc *TransportContext, gvk schema.GroupVersionKind, namespace, name string,
+) error {
 	deleteID, err := buildIdentity(tc, desire.TypeDelete, gvk, namespace, name)
 	if err != nil {
 		return err
