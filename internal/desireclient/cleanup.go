@@ -29,7 +29,7 @@ func (c *Client) CleanupAfterDeletion(
 	// At most one re-run: only the deletes can report a version conflict, and
 	// a fresh read gives them the current versions. A second conflict in a row
 	// is left to the next event, and so is a record that a timed-out delete
-	// found changed or created again.
+	// found at a different version. A recreation at the same version is indistinguishable.
 	if err = c.cleanupOnce(ctx, tc, gvk, namespace, name); !reReadable(err) {
 		return err
 	}

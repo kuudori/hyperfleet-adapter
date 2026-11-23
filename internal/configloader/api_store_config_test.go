@@ -63,9 +63,16 @@ func TestAdapterConfigValidationOfAPIStore(t *testing.T) {
 		store    string
 		errorMsg string
 	}{
+		{name: "non-loopback HTTP",
+			store:    "type: api\n    url: http://gateway.example",
+			errorMsg: "stores.desired.url is invalid for api store: url must use https outside loopback"},
+		{name: "memory with token", store: "type: memory\n    token_path: /t/token",
+			errorMsg: "stores.desired.token_path, token_scheme and ca_file are only valid for api stores"},
+		{name: "redis with CA", store: "type: redis\n    url: redis://redis:6379\n    ca_file: /c/ca.crt",
+			errorMsg: "stores.desired.token_path, token_scheme and ca_file are only valid for api stores"},
 		{name: "trailing slash URL", store: "type: api\n    url: https://gateway.example/"},
 		{name: "path prefix URL", store: "type: api\n    url: https://gateway.example/prefix"},
-		{name: "all optional fields", store: "type: api\n    url: http://gateway.example\n" +
+		{name: "all optional fields", store: "type: api\n    url: https://gateway.example\n" +
 			"    token_path: /t/token\n    token_scheme: Bearer\n    ca_file: /c/ca.crt"},
 		{
 			name: "missing URL", store: "type: api",
@@ -73,11 +80,11 @@ func TestAdapterConfigValidationOfAPIStore(t *testing.T) {
 		},
 		{
 			name: "URL with query", store: "type: api\n    url: https://gateway.example?x=1",
-			errorMsg: `stores.desired.url is invalid for api store: url "https://gateway.example?x=1" must not have a query`,
+			errorMsg: `stores.desired.url is invalid for api store: url must not have a query`,
 		},
 		{
 			name: "non-HTTP URL", store: "type: api\n    url: redis://gateway.example:6379",
-			errorMsg: `stores.desired.url is invalid for api store: url "redis://gateway.example:6379" must use http or https`,
+			errorMsg: `stores.desired.url is invalid for api store: url must use http or https`,
 		},
 		{
 			name: "URL with user info", store: "type: api\n    url: https://user:secret@gateway.example",

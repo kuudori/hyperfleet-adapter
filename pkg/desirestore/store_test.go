@@ -262,7 +262,7 @@ func TestConflictCodesMapToSentinels(t *testing.T) {
 			require.ErrorIs(t, err, tt.want)
 			var pe *ProblemError
 			require.ErrorAs(t, err, &pe)
-			assert.Equal(t, "store API returned HTTP 409 "+tt.code, err.Error())
+			assert.Equal(t, "create apply record: store API returned HTTP 409 "+tt.code, err.Error())
 			// Conflicts are never retried by the store.
 			assert.Equal(t, 1, f.count(http.MethodPut))
 		})
@@ -522,6 +522,14 @@ func TestTimedOutDelete(t *testing.T) {
 		_, err = f.store.GetApplyDesire(t.Context(), aID)
 		require.NoError(t, err, "the recreated record stays")
 	})
+	t.Run("version conflict on the retried delete", func(t *testing.T) {
+		f, s, created := setup(t)
+		f.script(fault{method: http.MethodDelete, status: 503, body: problemBody(503, "HYPERFLEET-SVC-001")},
+			fault{method: http.MethodDelete, status: 409, body: problemBody(409, codeVersionConflict)})
+		err := s.DeleteReadDesire(t.Context(), id, testOwner, created.Version)
+		require.ErrorIs(t, err, desire.ErrVersionConflict)
+		require.ErrorIs(t, err, ErrRecreated)
+	})
 	t.Run("404 on the retried delete is success", func(t *testing.T) {
 		f, s, created := setup(t)
 		f.script(fault{method: http.MethodDelete, status: http.StatusServiceUnavailable,
@@ -650,7 +658,7 @@ func TestNonRetryableErrorsMakeOneRequest(t *testing.T) {
 			var pe *ProblemError
 			require.ErrorAs(t, err, &pe)
 			assert.Equal(t, tt.status, pe.StatusCode)
-			assert.Equal(t, tt.text, err.Error())
+			assert.Equal(t, "create apply record: "+tt.text, err.Error())
 			assert.NotErrorIs(t, err, desire.ErrNotFound)
 			assert.Equal(t, 1, f.count(http.MethodPut))
 			assert.Equal(t, 0, f.count(http.MethodGet))
@@ -721,13 +729,13 @@ func TestUsageErrorsMakeNoRequest(t *testing.T) {
 	_, err := s.CreateApplyDesire(ctx, d)
 	var ue *UsageError
 	require.ErrorAs(t, err, &ue)
-	assert.EqualError(t, err, "owner does not match the client identity")
+	assert.EqualError(t, err, "create apply record: owner does not match the client identity")
 
 	d = newApply(coreID(desire.TypeApply, "x"), configMap("x", 1))
 	d.OriginID = ""
 	_, err = s.CreateApplyDesire(ctx, d)
 	require.ErrorAs(t, err, &ue)
-	assert.EqualError(t, err, "resource_id is required by the store API and the event has no id")
+	assert.EqualError(t, err, "create apply record: resource_id is required by the store API and the event has no id")
 
 	assert.ErrorAs(t, s.DeleteApplyDesire(ctx, d.Identity, "someone-else", 1), &ue)
 	_, err = s.UpdateApplyDesireSpec(ctx, d.Identity, d.Spec, "someone-else", 1)
@@ -835,7 +843,7 @@ func TestDNSFailureKeepsCause(t *testing.T) {
 	_, err := s.GetApplyDesire(t.Context(), coreID(desire.TypeApply, "x"))
 	var te *TransportError
 	require.ErrorAs(t, err, &te)
-	assert.Equal(t, "store API request failed: lookup "+testStoreHost+": no such host", err.Error())
+	assert.Equal(t, "get apply record: store API request failed: lookup "+testStoreHost+": no such host", err.Error())
 }
 
 func TestRedirectIsNotFollowed(t *testing.T) {

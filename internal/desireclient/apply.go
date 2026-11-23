@@ -84,7 +84,7 @@ func (c *Client) applyOnce(
 		return nil, false, err
 	}
 	if stale, isStale, staleErr := c.staleResult(ctx, tc, st); isStale || staleErr != nil {
-		return stale, false, staleErr
+		return stale, mirrorConflict(staleErr), staleErr
 	}
 
 	decision := manifest.CompareGenerations(st.newGen, st.existingGen, st.existing != nil)
@@ -100,7 +100,7 @@ func (c *Client) applyOnce(
 	if err = c.ensureReadDesireWithExisting(
 		ctx, st.readID, st.gvk.Version, tc.ResourceID, recreate, st.paired,
 	); err != nil {
-		return nil, false, fmt.Errorf(
+		return nil, mirrorConflict(err), fmt.Errorf(
 			"remote transport: failed to create the paired mirror for %s/%s: %w", st.gvk.Kind, st.applyID.Name, err)
 	}
 
@@ -291,70 +291,51 @@ func (c *Client) logApplyError(ctx context.Context, id desire.Identity, err erro
 func (c *Client) ensureReadDesire(
 	ctx context.Context, id desire.Identity, targetVersion, originID string, recreate bool,
 ) error {
-	read, err := c.store.GetReadDesire(ctx, id)
-	if err != nil && !errors.Is(err, desire.ErrNotFound) {
-		return fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
+	for attempt := 0; ; attempt++ {
+		read, err := c.store.GetReadDesire(ctx, id)
+		if err != nil && !errors.Is(err, desire.ErrNotFound) {
+			return fmt.Errorf("remote transport: failed to get the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
+		}
+		var existing *desire.ReadDesire
+		if err == nil {
+			existing = &read
+		}
+		err = c.ensureReadDesireWithExisting(ctx, id, targetVersion, originID, recreate, existing)
+		if attempt == 1 || !mirrorConflict(err) {
+			return err
+		}
 	}
-	if err == nil {
-		return c.ensureReadDesireWithExisting(ctx, id, targetVersion, originID, recreate, &read)
-	}
-	return c.ensureReadDesireWithExisting(ctx, id, targetVersion, originID, recreate, nil)
 }
 
 func (c *Client) ensureReadDesireWithExisting(
 	ctx context.Context, id desire.Identity, targetVersion, originID string, recreate bool,
 	existing *desire.ReadDesire,
 ) error {
-	// At most one retry: a second ErrAlreadyExists or ErrVersionConflict in a
-	// row means another writer is racing on every attempt, which is left to
-	// the next event. So is a mirror that a timed-out delete found changed or
-	// created again.
-	for attempt := 0; ; attempt++ {
-		if existing != nil {
-			if err := desire.CheckOwner(ctx, id, existing.Owner, c.owner); err != nil {
-				return storeErr(err)
-			}
-			if !recreate || existing.TargetVersion == targetVersion {
-				return nil
-			}
-			if err := c.store.DeleteReadDesire(ctx, id, c.owner, existing.Version); err != nil {
-				if !reReadable(err) || attempt > 0 {
-					return fmt.Errorf("remote transport: failed to delete the existing mirror for %s/%s: %w",
-						id.Namespace, id.Name, storeErr(err))
-				}
-				des, getErr := c.store.GetReadDesire(ctx, id)
-				switch {
-				case errors.Is(getErr, desire.ErrNotFound):
-					existing = nil
-				case getErr != nil:
-					return fmt.Errorf("remote transport: failed to get the existing mirror for %s/%s: %w",
-						id.Namespace, id.Name, storeErr(getErr))
-				default:
-					existing = &des
-				}
-				continue
-			}
+	if existing != nil {
+		if err := desire.CheckOwner(ctx, id, existing.Owner, c.owner); err != nil {
+			return storeErr(err)
 		}
-
-		_, err := c.store.CreateReadDesire(ctx, desire.ReadDesire{
-			Identity:      id,
-			Owner:         c.owner,
-			OriginID:      originID,
-			TargetVersion: targetVersion,
-		})
-		if err == nil {
+		if !recreate || existing.TargetVersion == targetVersion {
 			return nil
 		}
-		if !errors.Is(err, desire.ErrAlreadyExists) || attempt > 0 {
-			return fmt.Errorf(
-				"remote transport: failed to create the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
+		if err := c.store.DeleteReadDesire(ctx, id, c.owner, existing.Version); err != nil {
+			return fmt.Errorf("remote transport: failed to delete the existing mirror for %s/%s: %w",
+				id.Namespace, id.Name, storeErr(err))
 		}
-
-		des, err := c.store.GetReadDesire(ctx, id)
-		if err != nil {
-			return fmt.Errorf(
-				"remote transport: failed to get the existing mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
-		}
-		existing = &des
 	}
+
+	_, err := c.store.CreateReadDesire(ctx, desire.ReadDesire{
+		Identity:      id,
+		Owner:         c.owner,
+		OriginID:      originID,
+		TargetVersion: targetVersion,
+	})
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("remote transport: failed to create the mirror for %s/%s: %w", id.Namespace, id.Name, storeErr(err))
+}
+
+func mirrorConflict(err error) bool {
+	return reReadable(err) || errors.Is(err, desire.ErrAlreadyExists)
 }

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
+
 	"math/big"
 	"net/http"
 	"time"
@@ -75,10 +75,10 @@ func (r *retrier) getRecord(ctx context.Context, id desire.Identity) (*wire.Desi
 // deadline.
 func (r *retrier) wait(ctx context.Context, method string, err error) bool {
 	if !retryable(ctx, err) {
-		slog.WarnContext(ctx, "store API request failed", "method", method, "error", err, "cause", rawCause(err))
+		r.s.logger.DebugContext(ctx, "store API request failed", "method", method, "error", err, "cause", rawCause(err))
 		return false
 	}
-	slog.DebugContext(ctx, "store API request failed, retrying",
+	r.s.logger.DebugContext(ctx, "store API request failed, retrying",
 		"method", method, "attempt", r.attempt+1, "error", err)
 	delay := retryAfterOf(err)
 	if delay <= 0 {
@@ -94,7 +94,7 @@ func (r *retrier) wait(ctx context.Context, method string, err error) bool {
 		stop = true
 	}
 	if stop {
-		slog.WarnContext(ctx, "store API request failed, not retrying further",
+		r.s.logger.DebugContext(ctx, "store API request failed, not retrying further",
 			"attempts", r.attempt, "error", err, "cause", rawCause(err))
 		return false
 	}
@@ -188,7 +188,7 @@ func (s *Store) roundTrip(
 	}
 	defer func() {
 		if closeErr := httpResp.Body.Close(); closeErr != nil {
-			slog.DebugContext(ctx, "failed to close store API response body", "error", closeErr)
+			s.logger.DebugContext(ctx, "failed to close store API response body", "error", closeErr)
 		}
 	}()
 	data, err := io.ReadAll(httpResp.Body)

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+
 	"net/http"
 	"net/url"
 	"strconv"
@@ -183,16 +183,7 @@ func (e *recoveryError) Unwrap() []error {
 // details, which Error() leaves out.
 func (s *Store) problem(ctx context.Context, r *response) error {
 	pe := problemFromResponse(r)
-	slog.Log(ctx, problemLogLevel(pe), "store API returned an error",
+	s.logger.DebugContext(ctx, "store API returned an error",
 		"status", pe.StatusCode, "code", pe.Code, "title", pe.Title, "detail", pe.Detail, "trace_id", pe.TraceID)
 	return pe
-}
-
-// problemLogLevel logs not found and conflicts at debug level: they are
-// routine outcomes that the caller handles.
-func problemLogLevel(pe *ProblemError) slog.Level {
-	if pe.Unwrap() == nil {
-		return slog.LevelWarn
-	}
-	return slog.LevelDebug
 }

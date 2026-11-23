@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +28,7 @@ const (
 // Store implements desire.SpecStore over the Desire Store REST v1 API for one
 // owner. It is safe for concurrent use.
 type Store struct {
+	logger         *slog.Logger
 	creds          Credentials
 	client         *http.Client
 	sleep          func(context.Context, time.Duration) error
@@ -39,11 +42,17 @@ type Store struct {
 var _ desire.SpecStore = (*Store)(nil)
 
 type options struct {
+	logger *slog.Logger
 	caFile string
 }
 
 // Option configures a Store.
 type Option func(*options)
+
+// WithLogger sets the logger for diagnostic details. New uses slog.Default by default.
+func WithLogger(logger *slog.Logger) Option {
+	return func(o *options) { o.logger = logger }
+}
 
 // WithCAFile adds the PEM certificates in path to the system roots for this
 // client only. The file is read once, in New.
@@ -51,7 +60,7 @@ func WithCAFile(path string) Option {
 	return func(o *options) { o.caFile = path }
 }
 
-// ParseBaseURL checks a store API base URL: absolute http or https, with a
+// ParseBaseURL checks a store API base URL: HTTPS or loopback HTTP, with a
 // host and without user info, query or fragment. It trims a trailing "/" and
 // keeps any other path as a prefix of every request path.
 func ParseBaseURL(raw string) (*url.URL, error) {
@@ -61,23 +70,24 @@ func ParseBaseURL(raw string) (*url.URL, error) {
 	}
 	switch {
 	case u.User != nil:
-		// Checked first so that later messages never echo credentials.
 		return nil, errors.New("url must not contain user info")
 	case u.Scheme != "http" && u.Scheme != "https":
-		return nil, fmt.Errorf("url %q must use http or https", raw)
-	case u.Host == "":
-		return nil, fmt.Errorf("url %q must have a host", raw)
+		return nil, errors.New("url must use http or https")
+	case u.Hostname() == "":
+		return nil, errors.New("url must have a host")
+	case u.Scheme == "http" && !net.ParseIP(u.Hostname()).IsLoopback() && !strings.EqualFold(u.Hostname(), "localhost"):
+		return nil, errors.New("url must use https outside loopback")
 	case u.RawQuery != "" || u.ForceQuery:
-		return nil, fmt.Errorf("url %q must not have a query", raw)
+		return nil, errors.New("url must not have a query")
 	case strings.Contains(raw, "#"):
-		return nil, fmt.Errorf("url %q must not have a fragment", raw)
+		return nil, errors.New("url must not have a fragment")
 	}
 	// Trim on the escaped form, so that an encoded slash (%2F) at the end of
 	// the prefix stays part of it.
 	escaped := strings.TrimRight(u.EscapedPath(), "/")
 	unescaped, err := url.PathUnescape(escaped)
 	if err != nil {
-		return nil, fmt.Errorf("url %q has an invalid path", raw)
+		return nil, errors.New("url has an invalid path")
 	}
 	u.Path, u.RawPath = unescaped, escaped
 	return u, nil
@@ -101,11 +111,15 @@ func New(baseURL string, creds Credentials, opts ...Option) (*Store, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
 	client, err := newHTTPClient(o.caFile)
 	if err != nil {
 		return nil, err
 	}
 	return &Store{
+		logger:         o.logger,
 		base:           base.String(),
 		creds:          creds,
 		owner:          owner,

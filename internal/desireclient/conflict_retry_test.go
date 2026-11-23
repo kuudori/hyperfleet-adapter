@@ -396,3 +396,25 @@ func TestEnsureReadDesire_RecreatedMirrorIsNotDeletedAgain(t *testing.T) {
 	require.ErrorIs(t, err, desire.ErrVersionConflict)
 	assert.Equal(t, 1, store.deleteReadCalls)
 }
+
+func TestMirrorConflictRechecksApplyGeneration(t *testing.T) {
+	ctx := t.Context()
+	store := &conflictStore{Store: memory.New()}
+	c := newTestClient(store)
+	require.NoError(t, c.ensureReadDesire(ctx, testID.Read(), "v2", "", false))
+	store.beforeDeleteRead = func(n int) error {
+		if n > 1 {
+			return nil
+		}
+		_, err := store.Store.CreateApplyDesire(ctx, desire.ApplyDesire{Identity: testID.Apply(), Owner: testOwner,
+			Spec: desire.ApplySpec{KubeContent: json.RawMessage(configMapManifest(3))}})
+		require.NoError(t, err)
+		return desire.ErrVersionConflict
+	}
+	result, err := c.ApplyResource(ctx, configMapManifest(2), nil, testTransportContext())
+	require.NoError(t, err)
+	require.Equal(t, manifest.OperationSkip, result.Operation)
+	mirror, err := store.GetReadDesire(ctx, testID.Read())
+	require.NoError(t, err)
+	require.Equal(t, "v2", mirror.TargetVersion)
+}

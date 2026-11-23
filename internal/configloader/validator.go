@@ -136,6 +136,9 @@ func (v *AdapterConfigValidator) validateTransportRegistry() error {
 	for _, name := range storeNames {
 		store := v.config.Stores[name]
 		path := fmt.Sprintf("%s.%s", FieldStores, name)
+		if store.Type != StoreTypeAPI && (store.TokenPath != "" || store.TokenScheme != "" || store.CAFile != "") {
+			return fmt.Errorf("%s.token_path, token_scheme and ca_file are only valid for api stores", path)
+		}
 		switch store.Type {
 		case StoreTypeMemory:
 			if store.URL != "" {

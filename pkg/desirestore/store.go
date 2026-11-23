@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -52,6 +53,7 @@ func (s *Store) create(
 	}
 }
 
+// Delete recovery compares versions. Recreating a record can reuse the original version.
 func (s *Store) delete(ctx context.Context, id desire.Identity, owner string, version int64) error {
 	if err := s.checkOwner(owner); err != nil {
 		return err
@@ -95,6 +97,9 @@ func (s *Store) deleteResult(ctx context.Context, resp *response, wasAmbiguous b
 	if wasAmbiguous && errors.Is(pe, desire.ErrNotFound) {
 		return nil
 	}
+	if wasAmbiguous && errors.Is(pe, desire.ErrVersionConflict) {
+		return errors.Join(pe, ErrRecreated)
+	}
 	return pe
 }
 
@@ -104,7 +109,7 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 		wire.DesireWrite{ResourceId: d.OriginID, KubeContent: d.Spec.KubeContent},
 		func(w *wire.Desire) bool { return jsonEqual(w.KubeContent, d.Spec.KubeContent) })
 	if err != nil {
-		return desire.ApplyDesire{}, err
+		return desire.ApplyDesire{}, fmt.Errorf("create apply record: %w", err)
 	}
 	return toApply(d.Identity.ManagementCluster, w)
 }
@@ -113,7 +118,7 @@ func (s *Store) CreateApplyDesire(ctx context.Context, d desire.ApplyDesire) (de
 func (s *Store) GetApplyDesire(ctx context.Context, id desire.Identity) (desire.ApplyDesire, error) {
 	w, err := s.retrier().getRecord(ctx, id)
 	if err != nil {
-		return desire.ApplyDesire{}, err
+		return desire.ApplyDesire{}, fmt.Errorf("get apply record: %w", err)
 	}
 	return toApply(id.ManagementCluster, w)
 }
@@ -125,14 +130,14 @@ func (s *Store) UpdateApplyDesireSpec(
 	ctx context.Context, id desire.Identity, spec desire.ApplySpec, owner string, version int64,
 ) (desire.ApplyDesire, error) {
 	if err := s.checkOwner(owner); err != nil {
-		return desire.ApplyDesire{}, err
+		return desire.ApplyDesire{}, fmt.Errorf("update apply record: %w", err)
 	}
 	if version < 1 {
 		return desire.ApplyDesire{}, &UsageError{Reason: "an update needs the stored version"}
 	}
 	current, err := s.retrier().getRecord(ctx, id)
 	if err != nil {
-		return desire.ApplyDesire{}, err
+		return desire.ApplyDesire{}, fmt.Errorf("update apply record: %w", err)
 	}
 	data, err := json.Marshal(wire.DesireWrite{
 		ResourceId: current.ResourceId, KubeContent: spec.KubeContent, Version: version,
@@ -146,12 +151,12 @@ func (s *Store) UpdateApplyDesireSpec(
 		if err == nil {
 			w, decodeErr := s.decodeRecord(ctx, resp, http.StatusOK)
 			if decodeErr != nil {
-				return desire.ApplyDesire{}, decodeErr
+				return desire.ApplyDesire{}, fmt.Errorf("update apply record: %w", decodeErr)
 			}
 			return toApply(id.ManagementCluster, w)
 		}
 		if !r.wait(ctx, http.MethodPut, err) {
-			return desire.ApplyDesire{}, err
+			return desire.ApplyDesire{}, fmt.Errorf("update apply record: %w", err)
 		}
 		if !ambiguous(err) {
 			continue
@@ -161,7 +166,7 @@ func (s *Store) UpdateApplyDesireSpec(
 		case errors.Is(readErr, desire.ErrNotFound):
 			return desire.ApplyDesire{}, &recoveryError{reason: "is absent", sentinels: []error{desire.ErrNotFound}}
 		case readErr != nil:
-			return desire.ApplyDesire{}, readErr
+			return desire.ApplyDesire{}, fmt.Errorf("update apply record: %w", readErr)
 		case w.Version == version:
 		case w.Version > version && w.Owner == s.owner && jsonEqual(w.KubeContent, spec.KubeContent):
 			return toApply(id.ManagementCluster, w)
@@ -181,7 +186,7 @@ func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (
 	w, err := s.create(ctx, d.Identity, d.Owner, wire.DesireWrite{ResourceId: d.OriginID},
 		func(*wire.Desire) bool { return true })
 	if err != nil {
-		return desire.DeleteDesire{}, err
+		return desire.DeleteDesire{}, fmt.Errorf("create delete record: %w", err)
 	}
 	return toDelete(d.Identity.ManagementCluster, w)
 }
@@ -190,7 +195,7 @@ func (s *Store) CreateDeleteDesire(ctx context.Context, d desire.DeleteDesire) (
 func (s *Store) GetDeleteDesire(ctx context.Context, id desire.Identity) (desire.DeleteDesire, error) {
 	w, err := s.retrier().getRecord(ctx, id)
 	if err != nil {
-		return desire.DeleteDesire{}, err
+		return desire.DeleteDesire{}, fmt.Errorf("get delete record: %w", err)
 	}
 	return toDelete(id.ManagementCluster, w)
 }
@@ -206,7 +211,7 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 		wire.DesireWrite{ResourceId: d.OriginID, TargetVersion: d.TargetVersion},
 		func(w *wire.Desire) bool { return w.TargetVersion == d.TargetVersion })
 	if err != nil {
-		return desire.ReadDesire{}, err
+		return desire.ReadDesire{}, fmt.Errorf("create read record: %w", err)
 	}
 	return toRead(d.Identity.ManagementCluster, w)
 }
@@ -215,7 +220,7 @@ func (s *Store) CreateReadDesire(ctx context.Context, d desire.ReadDesire) (desi
 func (s *Store) GetReadDesire(ctx context.Context, id desire.Identity) (desire.ReadDesire, error) {
 	w, err := s.retrier().getRecord(ctx, id)
 	if err != nil {
-		return desire.ReadDesire{}, err
+		return desire.ReadDesire{}, fmt.Errorf("get read record: %w", err)
 	}
 	return toRead(id.ManagementCluster, w)
 }

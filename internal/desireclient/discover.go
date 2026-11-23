@@ -37,7 +37,8 @@ func (c *Client) DiscoverResources(
 
 	namespace := discovery.GetNamespace()
 	inScope := func(id desire.Identity) bool {
-		return id.Group == gvk.Group && id.Resource == tc.Resource && (namespace == "" || id.Namespace == namespace)
+		return id.Group == gvk.Group && id.Resource == tc.Resource && (namespace == "" || id.Namespace == namespace) &&
+			(!discovery.IsSingleResource() || id.Name == discovery.GetName())
 	}
 	reads, err := c.listReadDesires(ctx, tc.ManagementCluster, inScope)
 	if err != nil {

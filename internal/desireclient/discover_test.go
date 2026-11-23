@@ -335,12 +335,15 @@ func (m *matchingReadDesireStore) ListReadDesiresMatching(
 }
 
 func TestDiscoverResources_PassesScopeToMatchingStore(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	mem := newMemoryStore()
 	store := &matchingReadDesireStore{SpecStore: mem}
 	c := newTestClient(store)
 
 	desiretest.PutSyncedReadDesire(t, ctx, mem, testID.Read(), testOwner, configMapManifest(1))
+	otherName := testID
+	otherName.Name = "other"
+	desiretest.PutSyncedReadDesire(t, ctx, mem, otherName.Read(), testOwner, configMapManifest(1))
 	otherResource := testID
 	otherResource.Resource = "secrets"
 	desiretest.PutSyncedReadDesire(t, ctx, mem, otherResource.Read(), testOwner, configMapManifest(1))
@@ -352,5 +355,6 @@ func TestDiscoverResources_PassesScopeToMatchingStore(t *testing.T) {
 	list, err := c.DiscoverResources(ctx, testGVK(), discovery, testTransportContext())
 	require.NoError(t, err)
 	require.Len(t, list.Items, 1)
-	assert.ElementsMatch(t, []desire.Identity{otherResource.Read(), otherNamespace.Read()}, store.skipped)
+	skipped := []desire.Identity{otherResource.Read(), otherNamespace.Read(), otherName.Read()}
+	assert.ElementsMatch(t, skipped, store.skipped)
 }

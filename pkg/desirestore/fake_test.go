@@ -207,6 +207,7 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 func (f *fakeServer) answerFault(
 	w http.ResponseWriter, r *http.Request, route *routers.Route, pathParams map[string]string, ft fault,
 ) {
+	f.t.Helper()
 	if ft.delay > 0 {
 		select {
 		case <-r.Context().Done():
@@ -248,6 +249,7 @@ func (f *fakeServer) answerFault(
 }
 
 func readBody(t testing.TB, r *http.Request) []byte {
+	t.Helper()
 	if r.Body == nil {
 		return nil
 	}
@@ -260,6 +262,7 @@ func readBody(t testing.TB, r *http.Request) []byte {
 }
 
 func (f *fakeServer) validateRequest(r *http.Request, body []byte) (*routers.Route, map[string]string) {
+	f.t.Helper()
 	route, pathParams, err := loadContract(f.t).FindRoute(r)
 	if err != nil {
 		f.t.Errorf("%s %s: no specification route: %v", r.Method, r.URL, err)
@@ -287,6 +290,7 @@ func (f *fakeServer) validateRequest(r *http.Request, body []byte) (*routers.Rou
 func (f *fakeServer) validateResponse(
 	r *http.Request, route *routers.Route, pathParams map[string]string, status int, header http.Header, body []byte,
 ) {
+	f.t.Helper()
 	input := &openapi3filter.ResponseValidationInput{
 		RequestValidationInput: &openapi3filter.RequestValidationInput{Request: r, PathParams: pathParams, Route: route},
 		Status:                 status,
@@ -442,6 +446,7 @@ func (f *fakeServer) put(
 }
 
 func (f *fakeServer) list(w http.ResponseWriter, r *http.Request, partition string) {
+	f.t.Helper()
 	refs, err := f.references(r.Context(), partition, desire.DesireType(r.URL.Query().Get("type")))
 	if err != nil {
 		f.t.Errorf("list: %v", err)
@@ -567,6 +572,7 @@ func fromRead(d desire.ReadDesire) *wire.Desire {
 }
 
 func writeResult(t testing.TB, w http.ResponseWriter, status int, rec *wire.Desire, err error) {
+	t.Helper()
 	switch {
 	case err == nil:
 		writeJSON(t, w, status, rec)
@@ -607,18 +613,21 @@ func mustJSON(v any) json.RawMessage {
 // writeBody writes a response body. A write fails when the client gave up
 // after a scripted delay, which the tests expect, so it is only logged.
 func writeBody(t testing.TB, w http.ResponseWriter, body []byte) {
+	t.Helper()
 	if _, err := w.Write(body); err != nil {
 		t.Logf("write response: %v", err)
 	}
 }
 
 func writeProblem(t testing.TB, w http.ResponseWriter, status int, code string) {
+	t.Helper()
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	writeBody(t, w, []byte(problemBody(status, code)))
 }
 
 func writeJSON(t testing.TB, w http.ResponseWriter, status int, v any) {
+	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	writeBody(t, w, mustJSON(v))

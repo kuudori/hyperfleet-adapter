@@ -234,6 +234,9 @@ Validate a projected token path. Takes (list <values key> <path>).
 {{- if or (hasSuffix "/" $tokenPath) (eq ($tokenPath | base) "/") -}}
 {{- fail (printf "%s must include a filename, not just a directory" $key) -}}
 {{- end -}}
+{{- if or (eq (base $tokenPath) ".") (hasPrefix ".." (base $tokenPath)) -}}
+{{- fail (printf "%s has a reserved projected-token filename" $key) -}}
+{{- end -}}
 {{- $tokenDir := $tokenPath | dir -}}
 {{- range list "/etc/adapter" "/etc/broker" "/var/run/secrets/kubernetes.io/serviceaccount" -}}
 {{- if or (eq $tokenDir .) (hasPrefix (printf "%s/" .) $tokenDir) (hasPrefix (printf "%s/" (trimSuffix "/" $tokenDir)) .) -}}
