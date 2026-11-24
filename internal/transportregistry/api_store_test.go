@@ -101,7 +101,11 @@ func TestBuiltAPITransportWritesAsTokenSubject(t *testing.T) {
 		puts = append(puts, id)
 		mu.Unlock()
 		parts := strings.SplitN(id, ":", 5)
-		require.Len(t, parts, 5)
+		if len(parts) != 5 {
+			t.Errorf("unexpected desire id %q", id)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		writeTestBody(t, w, fmt.Sprintf(`{"id":%q,"type":%q,"group":%q,"resource":%q,"namespace":%q,"name":%q,`+
 			`"version":1,"generation":1,"owner":%q,"resource_id":"cls-1","target_version":"v1"}`,
@@ -128,6 +132,7 @@ func TestBuiltAPITransportWritesAsTokenSubject(t *testing.T) {
 }
 
 func writeTestBody(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
 	if _, err := w.Write([]byte(body)); err != nil {
 		t.Logf("write response: %v", err)
 	}
