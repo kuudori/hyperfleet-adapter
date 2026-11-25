@@ -482,6 +482,42 @@ test-helm: verify-helm-docs ## Test Helm charts (lint, template, validate, kubec
 	echo "$$output" | grep -q 'must not be in, under or above /etc/adapter' \
 		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
 	@echo "Desire Store token config directory validation OK"
+	@echo ""
+	@echo "Testing that a Desire Store token with a reserved filename fails validation..."
+	@if output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set adapterConfig.desireStore.auth.enabled=true \
+		--set adapterConfig.desireStore.auth.tokenPath=/var/run/secrets/store/..data 2>&1); then \
+		echo "ERROR: expected helm template to fail for a reserved token filename"; exit 1; \
+	fi; \
+	echo "$$output" | grep -q 'has a reserved projected-token filename' \
+		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
+	@echo "Desire Store token reserved filename validation OK"
+	@echo ""
+	@echo "Testing that a Desire Store token path with a trailing slash fails validation..."
+	@if output=$$(helm template test-release charts/ \
+		--set image.registry=quay.io \
+		--set image.repository=openshift-hyperfleet/hyperfleet-adapter \
+		--set image.tag=test \
+		--set adapterConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set adapterTaskConfig.yaml="apiVersion: hyperfleet.redhat.com/v1alpha1" \
+		--set broker.type=googlepubsub \
+		--set broker.googlepubsub.subscriptionId=test-sub \
+		--set broker.googlepubsub.topic=test-topic \
+		--set adapterConfig.desireStore.auth.enabled=true \
+		--set adapterConfig.desireStore.auth.tokenPath=/var/run/secrets/store/ 2>&1); then \
+		echo "ERROR: expected helm template to fail for a token path without a filename"; exit 1; \
+	fi; \
+	echo "$$output" | grep -q 'must include a filename' \
+		|| { echo "ERROR: unexpected failure: $$output"; exit 1; }
+	@echo "Desire Store token filename validation OK"
 	@for values in charts/examples/*/values.yaml; do \
 		echo "Rendering $$values example overlay..."; \
 		output=$$(helm template example charts/ -f "$$values" \
